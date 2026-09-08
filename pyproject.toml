@@ -1,0 +1,61 @@
+[project]
+name = "ink-engine"
+version = "0.1.0"
+description = "A standalone, Django-free Ink interactive-fiction interpreter and plugin engine"
+readme = "README.md"
+authors = [
+    {name = "Benjamin Schollnick",email = "Benjamin@schollnick.net"}
+]
+requires-python = ">=3.12,<3.15"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+]
+
+[tool.poetry]
+packages = [{ include = "ink_engine" }]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.0.2,<10.0.0)",
+    "pytest-cov (>=7.1.0,<8.0.0)",
+    "mypy (>=2.0.0,<3.0.0)",
+    "black (>=26,<27)",
+    "isort (>=6.0.0)",
+    "pylint (>=4.0.5,<5.0.0)"
+]
+
+[tool.black]
+line-length = 150
+
+[tool.isort]
+profile = "black"
+src_paths = ["ink_engine", "tests"]
+skip_gitignore = true
+
+[tool.mypy]
+python_version = "3.14"
+explicit_package_bases = true
+pretty = true
+color_output = true
+ignore_missing_imports = true
+mypy_path = "."
+
+[tool.pylint]
+max-line-length = 150
+# No pylint_django / django-settings-module / mypy_django_plugin here --
+# their presence would itself signal a Django dependency leaking back in.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--tb=short --strict-markers"

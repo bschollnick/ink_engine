@@ -1,0 +1,55 @@
+{
+ "inkVersion": 21,
+ "root": [
+  [
+   "ev",
+   1,
+   2,
+   3,
+   {
+    "x()": "SUM3",
+    "exArgs": 3
+   },
+   "pop",
+   "/ev",
+   "end",
+   [
+    "done",
+    {
+     "#n": "g-0"
+    }
+   ],
+   null
+  ],
+  "done",
+  {
+   "SUM3": [
+    {
+     "temp=": "c"
+    },
+    {
+     "temp=": "b"
+    },
+    {
+     "temp=": "a"
+    },
+    "ev",
+    {
+     "VAR?": "a"
+    },
+    {
+     "VAR?": "b"
+    },
+    "+",
+    {
+     "VAR?": "c"
+    },
+    "+",
+    "/ev",
+    "~ret",
+    null
+   ]
+  }
+ ],
+ "listDefs": {}
+}
