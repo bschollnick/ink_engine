@@ -57,6 +57,14 @@ class InkPathError(ValueError):
     """Raised when a path string cannot be resolved against a container tree."""
 
 
+class UnboundExternalError(ValueError):
+    """Raised when an EXTERNAL call has neither a bound Python callable
+    nor a resolvable Ink fallback, matching inklecate's own runtime
+    error ("Missing function binding for external... and no fallback
+    ink function found") rather than degrading to a silent 0.
+    """
+
+
 class _Unresolved:  # pylint: disable=too-few-public-methods
     """Sentinel distinguishing "never resolved" from a real cached `None`
     (a target path that genuinely fails to resolve) on
@@ -2649,18 +2657,32 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         `engine_bindings` constructor/from_dict() parameter, is entirely
         the host application's responsibility; an untrusted story is
         simply never given any, so this branch is unreachable for it and
-        every EXTERNAL call falls through to the unchanged Ink-fallback
-        path below. Every bound callable MUST be stateless — it receives
+        every EXTERNAL call falls through to the Ink-fallback path
+        below. Every bound callable MUST be stateless — it receives
         only the popped argument values (never `self`/this
         InkRuntimeState, and never any implicit shared state) and
         returns one value, mirroring an ordinary Ink function's own
         args-in/one-value-out shape exactly, so nothing about a specific
         game session can leak into module-level/shared Python state.
 
+        **No binding and no fallback**: an EXTERNAL call that resolves
+        to neither a real Python callable nor an Ink fallback container
+        raises `UnboundExternalError`, matching real Ink's own runtime
+        behavior exactly (inklecate compiles such a story successfully
+        but raises "Missing function binding for external... and no
+        fallback ink function found" the moment it is actually called).
+        A non-EXTERNAL unresolved function call is a different,
+        pre-existing case and still degrades to pushing 0 rather than
+        raising.
+
         Args:
             call: The function call being processed.
             holder: The container directly holding this call (used to
                 resolve its target path if relative).
+
+        Raises:
+            UnboundExternalError: The call is EXTERNAL and neither a
+                bound Python callable nor an Ink fallback exists for it.
         """
         if call.is_external and self.engine_bindings:
             binding = self.engine_bindings.get(str(call.target_path))
@@ -2675,9 +2697,14 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
 
         target = self._resolve_target_cached(call, holder, call.target_path)
         if not isinstance(target, Container):
-            # An unresolvable function name is a story error in real Ink;
-            # degrade gracefully rather than crash, matching this
-            # section's standing "recognized but not runnable" philosophy.
+            if call.is_external:
+                raise UnboundExternalError(
+                    f"Missing function binding for external: '{call.target_path}', and no fallback ink function found."
+                )
+            # An unresolvable ordinary function name is a story error in
+            # real Ink; degrade gracefully rather than crash, matching
+            # this section's standing "recognized but not runnable"
+            # philosophy.
             self.eval_stack.append(0)
             assert self.pointer is not None
             self.pointer = self._advance_past(self.pointer)
@@ -3213,13 +3240,14 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
     def _shuffle_index(self, num_elements: int, loop_index: int, iteration_index: int) -> int:
         """Compute which element `{~a|b|c}` should resolve to this visit.
 
-        Ports Story.NextSequenceShuffleIndex: derives a seed from the
-        current container's path (a simple character-sum hash, matching
-        the C# source exactly rather than a stronger hash — real Ink's own
-        algorithm is this simple), the loop count (how many full passes
-        through the shuffle have completed), and story_seed; then draws
-        without replacement from the element indices until iteration_index
-        is reached.
+        Modeled on Story.NextSequenceShuffleIndex: derives a seed from the
+        current container's path (a simple character-sum hash), the loop
+        count (how many full passes through the shuffle have completed),
+        and story_seed; then draws without replacement from the element
+        indices until iteration_index is reached. Reproduces Ink's
+        documented shuffle/shuffle-once/shuffle-stopping semantics; the
+        exact hash has not been directly diffed against
+        ink-engine-runtime's own C# source.
 
         Args:
             num_elements: How many alternatives the shuffle has.

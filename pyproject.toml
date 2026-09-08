@@ -50,8 +50,7 @@ mypy_path = "."
 
 [tool.pylint]
 max-line-length = 150
-# No pylint_django / django-settings-module / mypy_django_plugin here --
-# their presence would itself signal a Django dependency leaking back in.
+
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

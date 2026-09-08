@@ -18,6 +18,7 @@ from ink_engine.engine import (
     Container,
     FunctionCall,
     InkRuntimeState,
+    UnboundExternalError,
     find_unbound_externals,
     load_list_defs,
     load_story_root,
@@ -168,6 +169,27 @@ class UnboundExternalTests(SimpleTestCase):
         del data["root"][2]["UPPERCASE"]
         root = load_story_root(data)
         self.assertEqual(find_unbound_externals(root), ["UPPERCASE"])
+
+
+class UnboundExternalDispatchTests(SimpleTestCase):
+    """An EXTERNAL call with neither a bound Python callable nor a
+    resolvable Ink fallback raises UnboundExternalError instead of
+    silently pushing 0 — matches real inklecate, which compiles such a
+    story successfully but raises "Missing function binding for
+    external... and no fallback ink function found" the moment the call
+    is actually reached (confirmed directly against inklecate v1.2.1,
+    inkVersion 21)."""
+
+    def test_no_binding_no_fallback_raises(self):
+        """Removing UPPERCASE's own fallback function from the compiled
+        tree, then actually running the story with no engine_bindings,
+        must raise rather than silently render "0" for the call
+        expression."""
+        data = _load("external_uppercase.ink.json")
+        del data["root"][2]["UPPERCASE"]
+        state = InkRuntimeState(load_story_root(data))
+        with self.assertRaises(UnboundExternalError):
+            state.continue_story()
 
 
 class VoidReturnTests(SimpleTestCase):
