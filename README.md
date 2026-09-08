@@ -13,7 +13,7 @@ UI here, no way to double-click your way into playing a story — `ink-engine`
 is the interpreter a host application embeds to *add* Ink support to itself.
 If you're looking to actually play an Ink story, or ship one:
 
-- **[if_player](../if_player/)** — a standalone, native desktop player built
+- **[if_player](https://github.com/bschollnick/if-player)** — a standalone, native desktop player built
   on this engine, for playing `.inkj` game folders directly (with image/video
   support), no server or account required.
 - **[QuickBBS](https://github.com/bschollnick/quickbbs)** — a self-hosted
