@@ -34,8 +34,11 @@ system is inert when unused, exactly as worn slots are in `inventory.py`.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+from ink_engine.plugin import Plugin
 
 # A quest the player has never encountered has no stage at all. Stories
 # compare stages against thresholds, so the unstarted value must be lower
@@ -545,3 +548,129 @@ def unreachable_goals(catalog: dict[str, QuestSpec], reachable_goal_ids: set[str
         catalog order. Empty is the healthy answer.
     """
     return [(spec.quest_id, goal_id) for spec in catalog.values() for goal_id in spec.goal_ids if goal_id not in reachable_goal_ids]
+
+
+STATE_KEY = "quests"
+
+
+def _init_quest_state() -> dict[str, Any]:
+    """Return a brand-new session's own, empty QuestState.
+
+    Returns:
+        `QuestState().to_dict()` -- no quests started.
+    """
+    return QuestState().to_dict()
+
+
+def _bind(state_dict: dict[str, Any], engine_state: dict[str, Any]) -> dict[str, Callable[..., Any]]:
+    """Build this session's quest bindings.
+
+    Only the catalog-FREE half of this module's own functions become
+    real Ink EXTERNAL calls: `outstanding_goals()`/`is_complete()`/
+    `remaining_requirements()`/`journal_entries()`/`unreachable_goals()`
+    all need `catalog: dict[str, QuestSpec]`, the game's own quest
+    structure -- an argument shape no EXTERNAL call can carry (Ink
+    passes scalars, never a dict of dataclasses). A host application
+    that has its own catalog in hand calls those directly in Python
+    (e.g. from a panel/journal view), exactly the way `location_graph.py`'s
+    own `_in` functions are called by a DEPENDENT plugin's `_bind`
+    rather than exposed to Ink directly.
+
+    Args:
+        state_dict: This session's own serialized `QuestState`, read
+            fresh on every call and overwritten in place by any write.
+        engine_state: The full session state. Unused -- this plugin
+            reads and writes only its own slot -- but `Plugin.bind`'s
+            contract is always this exact two-argument shape.
+
+    Returns:
+        The bindings dict for the Ink function names a story calls.
+    """
+
+    def quest_stage_now(quest_id: str) -> int:
+        """EXTERNAL quest_stage_now(quest_id) -- the quest's current
+        stage, or 0 if never started."""
+        return stage_of_in(state_dict.setdefault("stages", {}), quest_id)
+
+    def is_quest_started_now(quest_id: str) -> bool:
+        """EXTERNAL is_quest_started_now(quest_id) -- whether the player
+        has encountered this quest at all."""
+        return is_started_in(state_dict.setdefault("stages", {}), quest_id)
+
+    def start_quest_now(quest_id: str, stage: int = 1) -> int:
+        """EXTERNAL start_quest_now(quest_id, stage) -- begin a quest,
+        idempotent if already started. Returns 1 (Ink has no void
+        EXTERNAL return)."""
+        current = QuestState.from_dict(state_dict)
+        updated = start_quest(current, quest_id, stage)
+        state_dict.clear()
+        state_dict.update(updated.to_dict())
+        return 1
+
+    def set_quest_stage_now(quest_id: str, stage: int) -> int:
+        """EXTERNAL set_quest_stage_now(quest_id, stage) -- set a
+        quest's stage unconditionally, including backwards. Returns 1."""
+        current = QuestState.from_dict(state_dict)
+        updated = set_stage(current, quest_id, stage)
+        state_dict.clear()
+        state_dict.update(updated.to_dict())
+        return 1
+
+    def advance_quest_now(quest_id: str, stage: int) -> int:
+        """EXTERNAL advance_quest_now(quest_id, stage) -- move a quest
+        forward, never backward; a no-op when it would regress. Returns
+        1."""
+        current = QuestState.from_dict(state_dict)
+        updated = advance_to(current, quest_id, stage)
+        state_dict.clear()
+        state_dict.update(updated.to_dict())
+        return 1
+
+    def meet_goal_now(quest_id: str, goal_id: str) -> int:
+        """EXTERNAL meet_goal_now(quest_id, goal_id) -- mark one goal
+        met, idempotent if already met. Returns 1."""
+        current = QuestState.from_dict(state_dict)
+        updated = meet_goal(current, quest_id, goal_id)
+        state_dict.clear()
+        state_dict.update(updated.to_dict())
+        return 1
+
+    def is_goal_met_now(quest_id: str, goal_id: str) -> bool:
+        """EXTERNAL is_goal_met_now(quest_id, goal_id) -- whether one
+        goal has been met."""
+        return is_met_in(state_dict.setdefault("met_goals", {}), quest_id, goal_id)
+
+    def fail_quest_now(quest_id: str) -> int:
+        """EXTERNAL fail_quest_now(quest_id) -- mark a quest as ended
+        badly, idempotent if already failed. Returns 1."""
+        current = QuestState.from_dict(state_dict)
+        updated = fail_quest(current, quest_id)
+        state_dict.clear()
+        state_dict.update(updated.to_dict())
+        return 1
+
+    def is_quest_failed_now(quest_id: str) -> bool:
+        """EXTERNAL is_quest_failed_now(quest_id) -- whether a quest
+        ended badly."""
+        return is_failed_in(state_dict.setdefault("failed", []), quest_id)
+
+    return {
+        "quest_stage_now": quest_stage_now,
+        "is_quest_started_now": is_quest_started_now,
+        "start_quest_now": start_quest_now,
+        "set_quest_stage_now": set_quest_stage_now,
+        "advance_quest_now": advance_quest_now,
+        "meet_goal_now": meet_goal_now,
+        "is_goal_met_now": is_goal_met_now,
+        "fail_quest_now": fail_quest_now,
+        "is_quest_failed_now": is_quest_failed_now,
+    }
+
+
+PLUGIN = Plugin(
+    name="quests",
+    display_name="Quests",
+    state_key=STATE_KEY,
+    init_state=_init_quest_state,
+    bind=_bind,
+)

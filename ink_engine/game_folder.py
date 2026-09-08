@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import Any
 
 #: The compiled-story file extension this engine plays. `.ink` (uncompiled
 #: source) is never accepted here — see this module's own docstring.
@@ -116,13 +117,72 @@ def read_required_plugins(game_dir: Path) -> list[str]:
     return _read_manifest_string_list_field(game_dir, REQUIRED_PLUGINS_FIELD)
 
 
+#: Returned by `_read_manifest_field()` when the field is absent, the
+#: manifest is missing/unparseable, or its value is not a plain literal
+#: -- distinct from a real `None`/`False`/`0` a manifest might legitimately
+#: assign, so a caller can tell "not found" apart from "found and is
+#: `None`".
+_FIELD_NOT_FOUND = object()
+
+
+def _read_manifest_field(game_dir: Path, field_name: str) -> Any:
+    """Read one literal field's raw value from `game_dir/__init__.py`, as data.
+
+    Scoped to reading exactly one named field at a time — not a
+    general-purpose manifest reader (a host application needing other
+    manifest data is expected to bring its own reader). Shared by every
+    public single-field reader in this module (`find_main_story_file()`'s
+    own `MAIN_STORY_FILE` read, `read_play_layout()`, `read_required_plugins()`)
+    rather than each writing its own one-off `ast`-parsing loop; each
+    caller does its own type check on the result.
+
+    Args:
+        game_dir: The game folder's real filesystem path.
+        field_name: The top-level manifest name to read (e.g.
+            `"MAIN_STORY_FILE"`, `"PLAY_LAYOUT"`, `"REQUIRED_PLUGINS"`).
+
+    Returns:
+        The literal value assigned to `field_name` at the top level of
+        `__init__.py`, or `_FIELD_NOT_FOUND` if the file is missing,
+        cannot be parsed, or assigns no such name to a literal value.
+    """
+    init_path = game_dir / "__init__.py"
+    if not init_path.is_file():
+        return _FIELD_NOT_FOUND
+    try:
+        tree = ast.parse(init_path.read_text(encoding="utf-8"), filename=str(init_path))
+    except (SyntaxError, UnicodeDecodeError):
+        return _FIELD_NOT_FOUND
+
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(target, ast.Name) and target.id == field_name for target in node.targets):
+            continue
+        try:
+            return ast.literal_eval(node.value)
+        except ValueError:
+            return _FIELD_NOT_FOUND
+    return _FIELD_NOT_FOUND
+
+
+def _read_manifest_string_field(game_dir: Path, field_name: str) -> str | None:
+    """Read one literal string field from `game_dir/__init__.py`.
+
+    Args:
+        game_dir: The game folder's real filesystem path.
+        field_name: The top-level manifest name to read.
+
+    Returns:
+        The literal string value assigned to `field_name`, or None if
+        absent or assigned something other than a string.
+    """
+    value = _read_manifest_field(game_dir, field_name)
+    return value if isinstance(value, str) else None
+
+
 def _read_manifest_string_list_field(game_dir: Path, field_name: str) -> list[str]:
     """Read one literal list-of-strings field from `game_dir/__init__.py`.
-
-    Shares the same untrusted-content posture as
-    `_read_manifest_string_field()` (parsed via `ast`, never imported) —
-    a sibling reader for a field whose value is a list rather than a bare
-    string (currently only `REQUIRED_PLUGINS`).
 
     Args:
         game_dir: The game folder's real filesystem path.
@@ -130,68 +190,9 @@ def _read_manifest_string_list_field(game_dir: Path, field_name: str) -> list[st
 
     Returns:
         The literal list of strings assigned to `field_name`, or `[]` if
-        the file is missing, cannot be parsed, assigns no such name, or
-        assigns something other than a list of strings.
+        absent or assigned something other than a list of strings.
     """
-    init_path = game_dir / "__init__.py"
-    if not init_path.is_file():
-        return []
-    try:
-        tree = ast.parse(init_path.read_text(encoding="utf-8"), filename=str(init_path))
-    except (SyntaxError, UnicodeDecodeError):
-        return []
-
-    for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(isinstance(target, ast.Name) and target.id == field_name for target in node.targets):
-            continue
-        try:
-            value = ast.literal_eval(node.value)
-        except ValueError:
-            return []
-        if isinstance(value, list) and all(isinstance(item, str) for item in value):
-            return value
-        return []
+    value = _read_manifest_field(game_dir, field_name)
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return value
     return []
-
-
-def _read_manifest_string_field(game_dir: Path, field_name: str) -> str | None:
-    """Read one literal string field from `game_dir/__init__.py`, as data.
-
-    Scoped to reading exactly one named field at a time — not a
-    general-purpose manifest reader (a host application needing other
-    manifest data is expected to bring its own reader). Shared by
-    `find_main_story_file()`
-    (`MAIN_STORY_FILE`) and `read_play_layout()` (`PLAY_LAYOUT`) rather
-    than each writing its own one-off parser.
-
-    Args:
-        game_dir: The game folder's real filesystem path.
-        field_name: The top-level manifest name to read (e.g.
-            `"MAIN_STORY_FILE"`, `"PLAY_LAYOUT"`).
-
-    Returns:
-        The literal string value assigned to `field_name` at the top
-        level of `__init__.py`, or None if the file is missing, cannot be
-        parsed, or assigns no such name to a literal string.
-    """
-    init_path = game_dir / "__init__.py"
-    if not init_path.is_file():
-        return None
-    try:
-        tree = ast.parse(init_path.read_text(encoding="utf-8"), filename=str(init_path))
-    except (SyntaxError, UnicodeDecodeError):
-        return None
-
-    for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(isinstance(target, ast.Name) and target.id == field_name for target in node.targets):
-            continue
-        try:
-            value = ast.literal_eval(node.value)
-        except ValueError:
-            return None
-        return value if isinstance(value, str) else None
-    return None

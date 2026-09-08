@@ -9,6 +9,7 @@ import json
 from unittest import TestCase as SimpleTestCase
 
 from ink_engine.engine_plugins.skills import (
+    PLUGIN,
     CheckResult,
     SkillState,
     adjust_level,
@@ -242,3 +243,58 @@ class SkillStateSerializationTests(SimpleTestCase):
         expected_result, _ = check(state, level=10, max_level=20)
         self.assertEqual(result_after.roll, expected_result.roll)
         self.assertNotEqual(result_before.roll, result_after.roll)
+
+
+class BindingTests(SimpleTestCase):
+    """The EXTERNAL surface a story actually calls."""
+
+    def setUp(self):
+        self.state = PLUGIN.init_state()
+        self.bindings = PLUGIN.bind(self.state, {})
+
+    def test_writes_persist_into_the_session_state_dict(self):
+        """A binding that did not write through would lose everything at
+        the end of the request."""
+        self.bindings["set_skill_level_now"]("hero", "Strength", 15)
+        self.assertEqual(SkillState.from_dict(self.state).skill_levels["hero"]["Strength"], 15)
+
+    def test_get_set_round_trips_through_the_bindings(self):
+        self.assertEqual(self.bindings["skill_level_now"]("hero", "Strength"), 0)
+        self.bindings["set_skill_level_now"]("hero", "Strength", 15)
+        self.assertEqual(self.bindings["skill_level_now"]("hero", "Strength"), 15)
+
+    def test_adjust_returns_and_persists_the_new_level(self):
+        self.bindings["set_skill_level_now"]("hero", "Strength", 10)
+        new_level = self.bindings["adjust_skill_level_now"]("hero", "Strength", 5)
+        self.assertEqual(new_level, 15)
+        self.assertEqual(self.bindings["skill_level_now"]("hero", "Strength"), 15)
+
+    def test_check_advances_state_and_records_the_roll_and_target(self):
+        success = self.bindings["skill_check_now"](10, 20, 0)
+        self.assertIsInstance(success, bool)
+        roll = self.bindings["last_skill_roll_now"]()
+        target = self.bindings["last_skill_target_now"]()
+        self.assertTrue(1 <= roll <= 100)
+        self.assertEqual(target, 50)
+        self.assertEqual(success, roll <= target)
+
+    def test_last_roll_and_target_are_zero_before_any_check(self):
+        self.assertEqual(self.bindings["last_skill_roll_now"](), 0)
+        self.assertEqual(self.bindings["last_skill_target_now"](), 0)
+
+    def test_repeated_checks_advance_the_rng_each_time(self):
+        """Two checks in a row must not repeat the same roll -- proves
+        the RNG seed in state_dict is really advancing, not reset each
+        call."""
+        self.bindings["skill_check_now"](50, 100, 0)
+        first_roll = self.bindings["last_skill_roll_now"]()
+        rolls_differ = False
+        for _ in range(10):
+            self.bindings["skill_check_now"](50, 100, 0)
+            if self.bindings["last_skill_roll_now"]() != first_roll:
+                rolls_differ = True
+                break
+        self.assertTrue(rolls_differ, "10 consecutive checks all rolled the same value -- RNG is not advancing")
+
+    def test_the_plugin_declares_its_own_state_slot(self):
+        self.assertEqual(PLUGIN.state_key, "skills")

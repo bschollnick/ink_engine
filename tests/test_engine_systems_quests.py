@@ -12,6 +12,7 @@ import json
 from unittest import TestCase as SimpleTestCase
 
 from ink_engine.engine_plugins.quests import (
+    PLUGIN,
     UNSTARTED_STAGE,
     JournalEntry,
     QuestSpec,
@@ -317,3 +318,47 @@ class QuestUnreachableGoalAuditTests(SimpleTestCase):
 
     def test_a_fully_reachable_catalog_reports_nothing(self):
         self.assertEqual([], unreachable_goals(CATALOG, {"goal_1", "goal_2", "goal_3"}))
+
+
+class BindingTests(SimpleTestCase):
+    """The EXTERNAL surface a story actually calls -- deliberately just
+    the catalog-free half of this module's own API (see _bind()'s own
+    docstring for why outstanding_goals()/is_complete()/
+    remaining_requirements()/journal_entries()/unreachable_goals() are
+    not here)."""
+
+    def setUp(self):
+        self.state = PLUGIN.init_state()
+        self.bindings = PLUGIN.bind(self.state, {})
+
+    def test_writes_persist_into_the_session_state_dict(self):
+        self.bindings["start_quest_now"]("quest_a", 1)
+        self.assertEqual(QuestState.from_dict(self.state).stages["quest_a"], 1)
+
+    def test_stage_start_advance_round_trip_through_the_bindings(self):
+        self.assertEqual(self.bindings["quest_stage_now"]("quest_a"), UNSTARTED_STAGE)
+        self.assertFalse(self.bindings["is_quest_started_now"]("quest_a"))
+        self.bindings["start_quest_now"]("quest_a", 1)
+        self.assertTrue(self.bindings["is_quest_started_now"]("quest_a"))
+        self.bindings["advance_quest_now"]("quest_a", 3)
+        self.assertEqual(self.bindings["quest_stage_now"]("quest_a"), 3)
+        self.bindings["advance_quest_now"]("quest_a", 1)  # regression is a no-op
+        self.assertEqual(self.bindings["quest_stage_now"]("quest_a"), 3)
+
+    def test_set_quest_stage_now_allows_regression(self):
+        self.bindings["start_quest_now"]("quest_a", 5)
+        self.bindings["set_quest_stage_now"]("quest_a", 1)
+        self.assertEqual(self.bindings["quest_stage_now"]("quest_a"), 1)
+
+    def test_goal_met_round_trips_through_the_bindings(self):
+        self.assertFalse(self.bindings["is_goal_met_now"]("quest_a", "goal_1"))
+        self.bindings["meet_goal_now"]("quest_a", "goal_1")
+        self.assertTrue(self.bindings["is_goal_met_now"]("quest_a", "goal_1"))
+
+    def test_fail_quest_round_trips_through_the_bindings(self):
+        self.assertFalse(self.bindings["is_quest_failed_now"]("quest_a"))
+        self.bindings["fail_quest_now"]("quest_a")
+        self.assertTrue(self.bindings["is_quest_failed_now"]("quest_a"))
+
+    def test_the_plugin_declares_its_own_state_slot(self):
+        self.assertEqual(PLUGIN.state_key, "quests")

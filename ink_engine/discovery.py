@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -94,7 +95,6 @@ def _package_name_for(directory: Path) -> str:
     init_file = directory / "__init__.py"
     if not init_file.exists():
         raise ValueError(f"'{directory}' has no __init__.py -- not a real Python package, cannot be scanned as a directory source")
-    import sys
 
     for name, module in sys.modules.items():
         module_file = getattr(module, "__file__", None)

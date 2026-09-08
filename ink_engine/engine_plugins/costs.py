@@ -118,14 +118,7 @@ def cost_of(state: CostTableState, key: str, variant: str = "", default: float =
     Returns:
         The amount, or `default`.
     """
-    cost = state.costs.get(key)
-    if cost is None:
-        return default
-    if variant:
-        amount = cost.get("variants", {}).get(variant)
-        if amount is not None:
-            return amount
-    return cost.get("amount", default)
+    return cost_of_in({"costs": state.costs}, key, variant, default)
 
 
 def resource_of(state: CostTableState, key: str, default: str = "") -> str:

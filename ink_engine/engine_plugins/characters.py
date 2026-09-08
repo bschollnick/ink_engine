@@ -270,7 +270,7 @@ def read_attribute(state: CharacterState, character_id: str, attribute: str, def
     Returns:
         The stored value, or `default`.
     """
-    return state.records.get(character_id, {}).get("attributes", {}).get(attribute, default)
+    return read_attribute_in(state.records, character_id, attribute, default)
 
 
 def does_attribute_exist(state: CharacterState, character_id: str, attribute: str) -> bool:
