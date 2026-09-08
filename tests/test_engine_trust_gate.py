@@ -1,31 +1,26 @@
-"""claude_docs/plans/external_expansion_IF_engine.md Steps 2/3: the
-trust-gate contract and `_call_function`'s real EXTERNAL dispatch branch.
+"""The trust-gate contract and `_call_function`'s real EXTERNAL dispatch
+branch.
 
-This module locks in the single most important regression this plan must
-never introduce: an EXTERNAL call from an untrusted story must always run
-its Ink-side fallback, never a real Python callable, regardless of whether
-a binding happens to be registered somewhere — proven now for real, since
-Step 3 landed a genuine dispatch branch in `_call_function`. It also proves
-the trusted half actually works (a real Python callable is reached, its
-return value flows back into the story), and — per the explicit per-session
-isolation requirement in the plan — that two concurrent InkRuntimeState
-sessions calling the exact same registered Python callable never leak state
-into each other.
+This module locks in the single most important behavior a host
+application relies on: an EXTERNAL call from an untrusted story must
+always run its Ink-side fallback, never a real Python callable,
+regardless of whether a binding happens to be registered somewhere. It
+also proves the trusted half actually works (a real Python callable is
+reached, its return value flows back into the story), and that two
+concurrent InkRuntimeState sessions calling the exact same registered
+Python callable never leak state into each other.
 
-**Portable, 2026-09-08** (the `ink_engine` standalone-library extraction —
-see claude_docs/plans/ink_engine_standalone_extraction.md): `ink_engine`
-itself has NO trust concept at all — the trust decision (a real
-`Story.is_engine_trusted` DB flag, and QuickBBS's own `bindings_for()`
-branching on it) is entirely QuickBBS's own adapter concern, tested
-separately in `quickbbs/interactive_fiction/tests/test_engine_api.py`.
-What belongs here, and is genuinely portable, is the ENGINE's own half
-of the contract: `InkRuntimeState`'s dispatch is a pure function of
-whatever `engine_bindings` dict it is constructed with — a name present
-in that dict reaches Python, a name absent from it always falls through
-to the story's own Ink stub. `_bindings_for()` below is a trivial local
-stand-in for the trust decision (mirroring what a host's own adapter
-does), never `Story`/the ORM — this file needs no database and no Django
-at all to prove the engine's own real, load-bearing behavior.
+`ink_engine` itself has NO trust concept at all — deciding which
+stories/sessions get real bindings is entirely a host application's own
+adapter concern. What belongs here, and is genuinely portable, is the
+ENGINE's own half of the contract: `InkRuntimeState`'s dispatch is a
+pure function of whatever `engine_bindings` dict it is constructed
+with — a name present in that dict reaches Python, a name absent from it
+always falls through to the story's own Ink stub. `_bindings_for()`
+below is a trivial local stand-in for the trust decision a host
+application's own adapter would make — this file needs no database and
+no host framework at all to prove the engine's own real, load-bearing
+behavior.
 """
 
 from __future__ import annotations
@@ -54,29 +49,28 @@ def _mark_ran_binding() -> bool:
 
 
 def _bindings_for(is_engine_trusted: bool) -> dict[str, object]:
-    """A trivial stand-in for the trust decision a real host's own
-    adapter owns (QuickBBS's `engine_services.bindings_for()`) — only
-    ever returns real bindings when explicitly told the caller is
-    trusted, mirroring where that decision really lives (a host's own
-    view/session layer, never the interpreter itself)."""
+    """A trivial stand-in for the trust decision a real host application's
+    own adapter owns — only ever returns real bindings when explicitly
+    told the caller is trusted, mirroring where that decision really
+    lives (a host's own view/session layer, never the interpreter
+    itself)."""
     return {"MARK_RAN": _mark_ran_binding} if is_engine_trusted else {}
 
 
 class UntrustedExternalCallAlwaysUsesFallbackTests(TestCase):
-    """Step 2/3's real regression, now proven against the actual dispatch
-    branch: an EXTERNAL call with no binding for that name always runs its
+    """An EXTERNAL call with no binding for that name always runs its
     Ink fallback, never a registered Python callable — even when a real
     binding for that exact function name exists and would be reachable had
     the caller passed it in."""
 
     def test_marking_a_story_untrusted_still_runs_the_ink_fallback(self):
-        """section4_external_dispatch_proof.ink's MARK_RAN() fallback sets
+        """external_dispatch_proof.ink's MARK_RAN() fallback sets
         a real global (True) — proving the call actually dispatched into
         Ink content, not the Python binding above, which would also set
         the eval stack's return value to True but never touch this
         InkRuntimeState's own `globals` dict at all, so the two paths are
         genuinely distinguishable by more than just the resulting value."""
-        compiled_json = _load("section4_external_dispatch_proof.ink.json")
+        compiled_json = _load("external_dispatch_proof.ink.json")
         state = InkRuntimeState(load_story_root(compiled_json), engine_bindings=_bindings_for(is_engine_trusted=False))
         self.assertEqual(state.engine_bindings, {})
         state.continue_story()
@@ -84,8 +78,8 @@ class UntrustedExternalCallAlwaysUsesFallbackTests(TestCase):
 
 
 class TrustedExternalCallReachesThePythonBindingTests(TestCase):
-    """Step 3: a caller that supplies a real binding for a name reaches
-    the registered Python callable instead of its Ink fallback."""
+    """A caller that supplies a real binding for a name reaches the
+    registered Python callable instead of its Ink fallback."""
 
     def test_trusted_story_dispatches_to_the_real_python_callable(self):
         """With a real binding registered, MARK_RAN()'s Ink fallback
@@ -93,7 +87,7 @@ class TrustedExternalCallReachesThePythonBindingTests(TestCase):
         True) must NOT run — proving the Python callable was reached
         instead of the fallback, not just that some code path happened to
         also produce a truthy value."""
-        compiled_json = _load("section4_external_dispatch_proof.ink.json")
+        compiled_json = _load("external_dispatch_proof.ink.json")
         state = InkRuntimeState(load_story_root(compiled_json), engine_bindings=_bindings_for(is_engine_trusted=True))
         self.assertIn("MARK_RAN", state.engine_bindings)
         state.continue_story()

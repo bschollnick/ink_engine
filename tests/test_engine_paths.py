@@ -1,17 +1,14 @@
-"""Section 1 tests: container/path addressing (ink_engine.engine).
+"""Container/path addressing tests (ink_engine.engine).
 
-Fixture JSON at tests/fixtures/section1_simple.ink.json was compiled from
-tests/fixtures/section1_simple.ink using the local inklecate build
-(claude_docs/tools/ink-reference) and hand-inspected (see the plan's Step 2
-Section 1 entry) to pin down exact expected indices/paths before writing
-these assertions.
+Fixture JSON at tests/fixtures/simple.ink.json was compiled from
+tests/fixtures/simple.ink using inklecate and hand-inspected to
+pin down exact expected indices/paths before writing these assertions.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path as FilePath
-
 from unittest import TestCase as SimpleTestCase
 
 from ink_engine.engine import (
@@ -25,7 +22,7 @@ from ink_engine.engine import (
     resolve_path,
 )
 
-FIXTURE_JSON = FilePath(__file__).parent / "fixtures" / "section1_simple.ink.json"
+FIXTURE_JSON = FilePath(__file__).parent / "fixtures" / "simple.ink.json"
 
 
 def _load_fixture() -> dict:
@@ -34,7 +31,7 @@ def _load_fixture() -> dict:
 
 
 class PathParseTests(SimpleTestCase):
-    """Section 1: Path.parse() against real Ink path syntax."""
+    """Path.parse() against real Ink path syntax."""
 
     def test_parses_absolute_dotted_path(self):
         """An absolute path splits into name and index components."""
@@ -59,7 +56,7 @@ class PathParseTests(SimpleTestCase):
 
 
 class LoadStoryRootTests(SimpleTestCase):
-    """Section 1: load_story_root() against real compiled JSON."""
+    """load_story_root() against real compiled JSON."""
 
     def test_raises_on_missing_root_key(self):
         """A story JSON with no 'root' key is rejected, not silently empty."""
@@ -87,7 +84,7 @@ class LoadStoryRootTests(SimpleTestCase):
         self.assertEqual(start.content[1], "\n")
 
     def test_loads_divert_token_as_typed_divert(self):
-        """A divert token is loaded as a typed Divert (Section 3), not left opaque."""
+        """A divert token is loaded as a typed Divert, not left opaque."""
         root = load_story_root(_load_fixture())
         start = root.named_content["start"]
         divert = start.content[4]
@@ -102,7 +99,7 @@ class LoadStoryRootTests(SimpleTestCase):
 
 
 class ResolvePathTests(SimpleTestCase):
-    """Section 1: resolve_path() navigation against the real fixture tree."""
+    """resolve_path() navigation against the real fixture tree."""
 
     def setUp(self):
         self.root = load_story_root(_load_fixture())
@@ -148,33 +145,29 @@ class ResolvePathTests(SimpleTestCase):
 
 
 class TerminatorOnlyNamedContainerTests(SimpleTestCase):
-    """Regression coverage for a real bug found 2026-08-16 while building
-    Step 3's save-state serialization: a container reachable *only*
-    through a terminator-dict key (e.g. a choice's own weave container,
-    "c-0") — with no positionally-placed slot in its parent's content and
-    no redundant "#n" repeating that same key — previously had no .name
-    set at all, since _load_container only ever set .name from a child's
-    own "#n" entry. Real compiled output never repeats a terminator-dict
-    key as the child's own "#n" (confirmed by grepping every
-    terminator-dict entry in theintercept.ink's compiled output), so such
-    a container was silently unnamed and unreachable by
-    _container_path()'s real-Ink-matching algorithm (Object.path in
-    ink-engine-runtime/Object.cs: named if the child has a valid name,
-    else positional index — never a parent named_content reverse lookup).
-    Fixed by porting JsonSerialisation.JArrayToContainer's
-    `namedSubContainer.name = keyVal.Key`: every terminator-dict-only
-    named child's own .name is now set from the dict key unconditionally,
-    matching the real engine exactly (section1_terminator_only_named_container.ink,
-    hand-authored specifically to isolate this shape: a choice's own
-    weave container, "c-0", holding two diverts to an "elsewhere" knot,
-    with no positional slot of its own)."""
+    """A container reachable *only* through a terminator-dict key (e.g. a
+    choice's own weave container, "c-0") — with no positionally-placed
+    slot in its parent's content and no redundant "#n" repeating that
+    same key — needs its .name set from the dict key itself
+    (`_load_container` ports JsonSerialisation.JArrayToContainer's
+    `namedSubContainer.name = keyVal.Key`), since compiled output never
+    repeats a terminator-dict key as the child's own "#n". Without this,
+    such a container is unnamed and unreachable by _container_path()'s
+    real-Ink-matching algorithm (Object.path in ink-engine-runtime/Object.cs:
+    named if the child has a valid name, else positional index — never a
+    parent named_content reverse lookup).
+
+    `terminator_only_named_container.ink` is hand-authored specifically
+    to isolate this shape: a choice's own weave container, "c-0",
+    holding two diverts to an "elsewhere" knot, with no positional slot
+    of its own."""
 
     def test_choice_weave_container_gets_named_from_terminator_key(self):
         """A ChoicePoint's own weave container (compiled as "c-0" in the
         parent's terminator dict, no positional slot, no redundant "#n")
         has its .name set to "c-0", matching real compiled output's own
         JsonSerialisation.JArrayToContainer behavior."""
-        with open(FilePath(__file__).parent / "fixtures" / "section1_terminator_only_named_container.ink.json", encoding="utf-8") as f:
+        with open(FilePath(__file__).parent / "fixtures" / "terminator_only_named_container.ink.json", encoding="utf-8") as f:
             data = json.load(f)
         root = load_story_root(data)
         state = InkRuntimeState(root)
@@ -184,12 +177,12 @@ class TerminatorOnlyNamedContainerTests(SimpleTestCase):
 
     def test_container_path_round_trips_through_such_a_container(self):
         """_container_path() produces a path string that resolve_path()
-        round-trips back to the exact same container — the actual
-        correctness property Step 3's save-state serialization depends
-        on. Before the fix, this container's missing .name made it
-        unreachable by name and absent from its parent's positional
-        content, so _container_path() had no valid component to use."""
-        with open(FilePath(__file__).parent / "fixtures" / "section1_terminator_only_named_container.ink.json", encoding="utf-8") as f:
+        round-trips back to the exact same container — the correctness
+        property save-state serialization depends on. This container is
+        reachable only via a terminator-dict key, with no positional slot
+        of its own, so _container_path() must still find a valid
+        component to use."""
+        with open(FilePath(__file__).parent / "fixtures" / "terminator_only_named_container.ink.json", encoding="utf-8") as f:
             data = json.load(f)
         root = load_story_root(data)
         state = InkRuntimeState(root)

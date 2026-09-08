@@ -1,20 +1,17 @@
-"""Section 2 tests: output-stream glue/newline assembly (ink_engine.engine).
+"""output-stream glue/newline assembly (ink_engine.engine).
 
 OutputStream is tested directly against controlled token sequences (unit
 level) plus one end-to-end check against real compiled JSON
-(tests/fixtures/section2_glue.ink / .ink.json), whose expected text was
-captured from the local inklecate build's -p play-mode transcript (see the
-plan's Step 2 Section 2 entry for the exact transcript and how the fixture
-was iterated to be playable at all — inklecate's -p never enters a story
-whose first line is a "== knot ==" header, which the original Section 1
-fixture silently had and Section 2 caught).
+(tests/fixtures/glue.ink / .ink.json), whose expected text was captured
+from a real inklecate build's -p play-mode transcript — inklecate's -p
+never enters a story whose first line is a "== knot ==" header, so the
+fixture had to be adjusted to be playable at all.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path as FilePath
-
 from unittest import TestCase as SimpleTestCase
 
 from ink_engine.engine import (
@@ -25,7 +22,7 @@ from ink_engine.engine import (
     load_story_root,
 )
 
-FIXTURE_JSON = FilePath(__file__).parent / "fixtures" / "section2_glue.ink.json"
+FIXTURE_JSON = FilePath(__file__).parent / "fixtures" / "glue.ink.json"
 
 
 def _load_fixture() -> dict:
@@ -43,7 +40,7 @@ def _push_all(stream: OutputStream, tokens: list[str]) -> None:
 
 
 class GlueTests(SimpleTestCase):
-    """Section 2: glue joins text and suppresses the newline it spans."""
+    """glue joins text and suppresses the newline it spans."""
 
     def test_glue_across_a_real_newline_joins_without_space(self):
         """Glue immediately before a newline removes that newline entirely."""
@@ -74,7 +71,7 @@ class GlueTests(SimpleTestCase):
 
 
 class NewlineDedupTests(SimpleTestCase):
-    """Section 2: newline suppression rules independent of glue."""
+    """newline suppression rules independent of glue."""
 
     def test_does_not_lead_with_a_newline(self):
         """A newline pushed before any real content is dropped."""
@@ -102,7 +99,7 @@ class NewlineDedupTests(SimpleTestCase):
 
 
 class HeadTailWhitespaceSplitTests(SimpleTestCase):
-    """Section 2: push_text() splits leading/trailing newline runs correctly."""
+    """push_text() splits leading/trailing newline runs correctly."""
 
     def test_splits_leading_newline_run_to_single_newline(self):
         """Multiple leading newlines in one token collapse to one on push."""
@@ -119,7 +116,7 @@ class HeadTailWhitespaceSplitTests(SimpleTestCase):
 
 
 class InlineWhitespaceCollapseTests(SimpleTestCase):
-    """Section 2: get_text() collapses runs of inline spaces/tabs."""
+    """get_text() collapses runs of inline spaces/tabs."""
 
     def test_collapses_double_space_from_two_glued_pieces(self):
         """Two adjacent pieces each contributing a space collapse to one."""
@@ -130,9 +127,9 @@ class InlineWhitespaceCollapseTests(SimpleTestCase):
 
     def test_drops_leading_indentation_after_a_newline(self):
         """Spaces immediately after a newline (line-start) are dropped, not
-        collapsed to one — verified against real inklecate -p output
-        (test.ink "First.\\n  Indented.\\n" plays as "First.\\nIndented.\\n",
-        2026-08-16): Ink source indentation is not significant whitespace.
+        collapsed to one — matches real inklecate -p output
+        ("First.\\n  Indented.\\n" plays as "First.\\nIndented.\\n"):
+        Ink source indentation is not significant whitespace.
         """
         stream = OutputStream()
         stream.push_text("First.")
@@ -142,10 +139,10 @@ class InlineWhitespaceCollapseTests(SimpleTestCase):
 
 
 class RealCompiledStoryTests(SimpleTestCase):
-    """Section 2: OutputStream against real inklecate-compiled JSON.
+    """OutputStream against real inklecate-compiled JSON.
 
     Expected text captured from the local inklecate build's -p transcript
-    for tests/fixtures/section2_glue.ink (per the plan's standing rule on
+    for tests/fixtures/glue.ink (per the plan's standing rule on
     validating against real data, not just hand-written unit cases).
     """
 
@@ -155,7 +152,7 @@ class RealCompiledStoryTests(SimpleTestCase):
         # The fixture has no named knots, so all playable content is the
         # single unnamed sub-container at content[0] (root.content[1:] are
         # story-level bookkeeping: the "done" control command and its
-        # None terminator — out of Section 2's scope, so we stop there).
+        # None terminator, not part of the playable content).
         story_content = root.content[0]
         self.assertIsInstance(story_content, Container)
 

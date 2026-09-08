@@ -20,7 +20,3 @@ or any particular host application's UI conventions.
   Ink `EXTERNAL` bindings, optionally with a private per-session state slice.
   `discover_plugins()` finds them; `resolve_bindings()` builds the real
   bindings dict for one game session.
-
-See `claude_docs/plans/ink_engine_standalone_extraction.md` in the QuickBBS
-repository for the design rationale and migration plan this library was
-extracted under.

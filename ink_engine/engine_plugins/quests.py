@@ -128,17 +128,17 @@ class QuestState:
         return cls(stages=stages, met_goals=goals_by_quest, failed=list(data.get("failed", [])))
 
 
-# Serialized-state operations, for the binding layer (2026-09-04, mirroring
+# Serialized-state operations, for the binding layer -- mirroring
 # `character_occupancy.py`/`scheduling.py`/`inventory.py`'s own established
-# `_in`-suffixed pattern). `QuestState.from_dict()` rebuilds all 3 fields
+# `_in`-suffixed pattern. `QuestState.from_dict()` rebuilds all 3 fields
 # on every call, though a plain stage/started/failed read only ever
-# touches one of them. Real corpus hot spots confirmed: ASFA's
-# `kurndorf_ritual` calls quest functions 25 times in one knot, `seance`
-# 20, `desiree_recite` 18, `sir_ronald_gates_hub` 16 -- 181 total
-# `quest_stage_now` call sites corpus-wide. `is_complete`/`quest_complete_now`
+# touches one of them. A single knot can easily call quest functions
+# dozens of times, and a large story can have hundreds of
+# `quest_stage_now` call sites corpus-wide, so avoiding a full state
+# rebuild per call matters in practice. `is_complete`/`quest_complete_now`
 # is deliberately NOT given an `_in` variant: it genuinely needs `stages`
 # AND `met_goals` together (recursively, across subquest `requires`), and
-# has only 7 corpus-wide call sites -- no real hot-path evidence, and the
+# is called far less often -- no real hot-path evidence, and the
 # full-state path is simpler and safer for logic this involved.
 
 

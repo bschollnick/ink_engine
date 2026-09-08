@@ -1,7 +1,7 @@
-"""Section 4 tests: variables + eval stack core (ink_engine.engine).
+"""variables + eval stack core (ink_engine.engine).
 
 InkRuntimeState is driven end-to-end against real compiled JSON
-(tests/fixtures/section4_*.ink), with every expected transcript captured
+(tests/fixtures/*.ink), with every expected transcript captured
 from the local inklecate build's -p play-mode transcript before any
 assertion was written (per the plan's standing validate-against-real-data
 rule). apply_native_function() is additionally unit-tested directly for
@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path as FilePath
-
 from unittest import TestCase as SimpleTestCase
 
 from ink_engine.engine import (
@@ -31,34 +30,34 @@ def _load(name: str) -> dict:
 
 
 class VariableAssignmentTests(SimpleTestCase):
-    """Section 4: VAR declarations, reassignment, arithmetic, and interpolation
-    (section4_variables.ink)."""
+    """VAR declarations, reassignment, arithmetic, and interpolation
+    (variables.ink)."""
 
     def test_var_reassignment_and_interpolation_matches_inklecate_transcript(self):
         """VAR declared at 0, reassigned via arithmetic, then interpolated and
         branched on with conditional text — matches the real transcript exactly."""
-        state = InkRuntimeState(load_story_root(_load("section4_variables.ink.json")))
+        state = InkRuntimeState(load_story_root(_load("variables.ink.json")))
         text = state.continue_story()
         self.assertEqual(text, "You have 5 points.\nYou're doing well!\n")
 
     def test_global_decl_initializes_before_first_continue(self):
         """The VAR's declared value is visible in state.globals right after construction."""
-        state = InkRuntimeState(load_story_root(_load("section4_variables.ink.json")))
+        state = InkRuntimeState(load_story_root(_load("variables.ink.json")))
         self.assertEqual(state.globals["score"], 0)
 
     def test_reassignment_updates_globals_dict(self):
         """After playing through the reassignment, globals reflects the new value."""
-        state = InkRuntimeState(load_story_root(_load("section4_variables.ink.json")))
+        state = InkRuntimeState(load_story_root(_load("variables.ink.json")))
         state.continue_story()
         self.assertEqual(state.globals["score"], 5)
 
 
 class ConditionalChoiceTests(SimpleTestCase):
-    """Section 4: conditional choice visibility ({condition} on a ChoicePoint)."""
+    """conditional choice visibility ({condition} on a ChoicePoint)."""
 
     def test_true_condition_shows_choice_and_matches_transcript(self):
         """A choice gated on a true VAR is shown and its target plays correctly."""
-        state = InkRuntimeState(load_story_root(_load("section4_conditional_choice.ink.json")))
+        state = InkRuntimeState(load_story_root(_load("conditional_choice.ink.json")))
         state.continue_story()
         self.assertEqual([c.text for c in state.current_choices], ["Enter"])
         state.choose(0)
@@ -67,17 +66,16 @@ class ConditionalChoiceTests(SimpleTestCase):
 
     def test_false_condition_hides_choice_and_matches_transcript(self):
         """A choice gated on a false VAR never appears, matching the real transcript."""
-        state = InkRuntimeState(load_story_root(_load("section4_conditional_choice_hidden.ink.json")))
+        state = InkRuntimeState(load_story_root(_load("conditional_choice_hidden.ink.json")))
         text = state.continue_story()
         self.assertEqual(text, "A door.\n")
         self.assertEqual(state.current_choices, [])
 
 
 class NativeFunctionTests(SimpleTestCase):
-    """Section 4: apply_native_function() operator coverage, unit-tested
+    """apply_native_function() operator coverage, unit-tested
     directly (ported from ink-engine-runtime/NativeFunctionCall.cs's Int/
-    Float/String operator tables — inkpy has no equivalent, confirmed
-    2026-08-16)."""
+    Float/String operator tables — inkpy has no equivalent)."""
 
     def test_int_arithmetic(self):
         """Int + - * / % all operate directly on Python ints."""

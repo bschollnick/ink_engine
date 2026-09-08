@@ -1,11 +1,9 @@
-"""claude_docs/plans/external_expansion_IF_engine.md Step 4: the closed,
-per-system config schema for a host's own StorySystemConfig-shaped store.
+"""The closed, per-system config schema for a host's own config store.
 
 Covers engine_config_schemas.py's own validators directly (pure functions,
-no DB needed). The Django-side enforcement (StorySystemConfig.save()
-always running full_clean(), the .clean() dispatch through
-discover_api_descriptors()) is QuickBBS-specific and stays in
-quickbbs/interactive_fiction/tests/test_engine_config_schemas.py.
+no host framework needed). A host application's own enforcement of when
+these validators run (e.g. on save, via a model's own clean() dispatch)
+is that host's own concern and is tested in that host's own test suite.
 """
 
 from __future__ import annotations
@@ -82,12 +80,12 @@ class ValidateLocationGraphTests(SimpleTestCase):
 
 # Bare minute-of-day integers below (not scheduling.py's named hour
 # constants like EIGHT_AM/SIX_PM) because this is real serialized JSON
-# config data -- the actual shape a StorySystemConfig.config field stores
-# -- which can't reference a Python constant. Each range is commented with
-# the real clock time it represents so the fixture stays readable anyway.
+# config data, which can't reference a Python constant. Each range is
+# commented with the real clock time it represents so the fixture stays
+# readable anyway.
 _VALID_CHARACTER_OCCUPANCY = {
     "characters": {
-        "doctorkay": {
+        "npc_id": {
             "schedule": [
                 {
                     "condition": {

@@ -1,12 +1,11 @@
 """`engine_plugins.characters` — per-character keyed storage, known-state,
-and the delegating accessors (`asfa_engine_revamp.md` Step 9a).
+and the delegating accessors.
 
 The property worth guarding hardest is what this module does NOT store: a
 character's location lives in the occupancy plugin, and
 `current_location_of()` must read through to it rather than keeping a
-copy. A regression there would reintroduce exactly the two-records-of-one-
-fact bug the whole plan exists to remove, and would not otherwise show up
-as a failure.
+copy. A regression there would reintroduce a two-records-of-one-fact bug
+and would not otherwise show up as a failure.
 
 Generic fixtures only — no story names.
 """
@@ -14,7 +13,6 @@ Generic fixtures only — no story names.
 from __future__ import annotations
 
 import json
-
 from unittest import TestCase as SimpleTestCase
 
 from ink_engine.engine_plugins.characters import (

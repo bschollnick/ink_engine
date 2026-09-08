@@ -1,13 +1,11 @@
-"""claude_docs/plans/external_expansion_IF_engine.md Step 7: SkillSystem
-(ink_engine.engine_plugins.skills).
+"""SkillSystem (ink_engine.engine_plugins.skills).
 
-Pure-function coverage — no DB needed. SimpleTestCase throughout.
+Pure-function coverage — no host framework needed. SimpleTestCase throughout.
 """
 
 from __future__ import annotations
 
 import json
-
 from unittest import TestCase as SimpleTestCase
 
 from ink_engine.engine_plugins.skills import (

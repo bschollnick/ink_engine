@@ -1,7 +1,6 @@
-"""claude_docs/plans/quest_system.md Step 2: the generic QuestSystem
-(ink_engine.engine_plugins.quests).
+"""The generic QuestSystem (ink_engine.engine_plugins.quests).
 
-Pure-function coverage — no DB needed. SimpleTestCase throughout, and
+Pure-function coverage — no host framework needed. SimpleTestCase throughout, and
 fixture ids only (`quest_a`, `goal_1`, `subquest_x`): the engine layer
 must never learn any one story's vocabulary, so these tests are written
 so they would read identically for any game.
@@ -10,7 +9,6 @@ so they would read identically for any game.
 from __future__ import annotations
 
 import json
-
 from unittest import TestCase as SimpleTestCase
 
 from ink_engine.engine_plugins.quests import (

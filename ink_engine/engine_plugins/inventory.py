@@ -315,16 +315,16 @@ class InventoryState:
         )
 
 
-# Serialized-state operations, for the binding layer (2026-09-04, mirroring
+# Serialized-state operations, for the binding layer -- mirroring
 # `character_occupancy.py`/`scheduling.py`'s own established `_in`-suffixed
-# pattern). `InventoryState.from_dict()` rebuilds all 7 fields — including a
+# pattern. `InventoryState.from_dict()` rebuilds all 7 fields — including a
 # nested comprehension for `worn` and a `ContainerSpec.from_dict()` call per
 # container — the most expensive reconstruction of the state systems this
 # pattern has been applied to, yet a plain presence/count/location read
-# only ever touches ONE field. Real corpus hot spots confirmed: ASFA's
-# `your_kitchen` calls `has_item_now` 14 times in one knot, `wild_ranges`
-# 11, several more knots 8-10 times; 212 total `has_item_now` call sites
-# corpus-wide.
+# only ever touches ONE field. A single knot can easily call
+# `has_item_now` a dozen or more times, and a large story can have
+# hundreds of call sites corpus-wide, so avoiding a full state rebuild
+# per call matters in practice.
 
 
 def item_location_in(item_locations: dict[str, str], item_id: str) -> str | None:

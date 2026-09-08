@@ -3,9 +3,7 @@ the `Plugin` objects each one exposes.
 
 No trust concept exists anywhere in this module -- every source given is
 scanned unconditionally; deciding WHICH sources are safe to pass is
-entirely the caller's responsibility (see
-claude_docs/plans/ink_engine_standalone_extraction.md in the QuickBBS
-repository for the full rationale). No distinction is made between
+entirely the caller's responsibility. No distinction is made between
 "generic" and "game-specific" sources either -- that split is purely a
 convention in how the caller assembles its own sources list.
 """

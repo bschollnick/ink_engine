@@ -1,27 +1,23 @@
-"""SchedulingSystem: a generic clock/timed-event framework
-(claude_docs/plans/external_expansion_IF_engine.md Step 5).
+"""SchedulingSystem: a generic clock/timed-event framework.
 
-A reusable engine service ANY story's own conversion builds its specific
-time-driven behavior on top of — never one specific game's own
-implementation (see the plan's "generic framework, not a game-specific
-implementation" design section). This module has zero knowledge of what a "character," a
-"flag," or a "location" means in any specific story; it only understands
+A reusable engine service ANY story builds its specific time-driven
+behavior on top of — never one specific game's own implementation. This
+module has zero knowledge of what a "character," a "flag," or a
+"location" means in any specific story; it only understands
 a clock and a queue of (due_time, effect) pairs, where an effect is one
 of a small, closed, non-executable vocabulary (`Effect.kind` below) —
 plain data the CALLER interprets and applies, never code this module runs
 itself.
 
-**Baseline unit is minutes, not an arbitrary "tick"** (explicit
-2026-08-23 decision): `SchedulingState.clock` and every function below
-that takes a `clock` argument treat it as a count of real minutes
-(1440/day), matching everyday clock/calendar arithmetic (like Python's
-own `datetime`) rather than any specific story's own internal tick
-resolution. A story with a coarser or finer native clock (e.g. a
-5-minutes-per-tick game clock) converts to/from minutes at its own
-boundary — see a converted game's own scheduling module for exactly that
-conversion — this
-module is never told about, or written in terms of, any such
-story-specific tick size.
+**Baseline unit is minutes, not an arbitrary "tick"**:
+`SchedulingState.clock` and every function below that takes a `clock`
+argument treat it as a count of real minutes (1440/day), matching
+everyday clock/calendar arithmetic (like Python's own `datetime`)
+rather than any specific story's own internal tick resolution. A story
+with a coarser or finer native clock (e.g. a 5-minutes-per-tick game
+clock) converts to/from minutes at its own boundary — this module is
+never told about, or written in terms of, any such story-specific tick
+size.
 
 **Common calendar/day-phase helpers, not story-specific business rules**:
 this module also owns the small set of generic, `datetime`-like
@@ -34,19 +30,16 @@ open-hours/business-rule logic (e.g. "is this particular shop open") —
 that's real story-specific data that belongs in the story's own
 scheduling module built on top of these primitives, never baked in here.
 
-**Why a closed effect vocabulary, not "run this callback"**: the original
-JS source's own equivalent (`time.js`'s `TimedEvent`/`startTimedEvent`)
-literally `eval()`s an arbitrary JavaScript string when a timer fires —
-exactly the kind of "run untrusted code" pattern this whole EXTERNAL/
-Story.is_engine_trusted design exists to avoid reintroducing. Confirmed
-directly against source: `movePersonfterTime()`/`setPersonFlagAfterTime()`/
-`setPlaceFlagAfterTime()` (`time.js`'s only 3 real call sites) are
-themselves already a small, closed, non-`eval` vocabulary — every timed
-event in the entire original game reduces to one of exactly 3 effect
-kinds. `Effect` below mirrors those 3 kinds as plain, JSON-safe data.
+**Why a closed effect vocabulary, not "run this callback"**: an
+arbitrary-callback design would need to run untrusted host-supplied code
+when a timer fires — exactly the kind of "run untrusted code" pattern a
+host's own trust-gating design exists to avoid. `Effect` below mirrors a
+small, closed set of effect kinds as plain, JSON-safe data instead, so
+a fired event is always inert data the caller applies, never code this
+module runs.
 
-**Why `advance()` only REPORTS fired effects rather than applying them**
-(explicit user decision, 2026-08-22): this module has no opinion about
+**Why `advance()` only REPORTS fired effects rather than applying them**:
+this module has no opinion about
 what a "character" or "flag" actually is in any given story's own state
 shape — applying a `MOVE_CHARACTER` effect would require this generic
 module to know how a specific story represents character location, which
@@ -54,13 +47,12 @@ is exactly the kind of story-specific knowledge that must not leak into a
 reusable framework. The caller (a story's own EXTERNAL binding) applies
 each reported effect to whatever state model it actually uses.
 
-**Per-session isolation** (the plan's hard, load-bearing requirement):
-every function here is a pure function of its own explicit arguments —
-no instance attributes, no module-level mutable state, no shared object
-holding per-game data. `SchedulingState`/`Effect` are plain, JSON-safe
-dataclasses meant to round-trip through a session's own serialized state
-(e.g. inside `CurrentGame.state`, alongside Ink's own VARs) exactly like
-every other piece of per-game data already does.
+**Per-session isolation**: every function here is a pure function of its
+own explicit arguments — no instance attributes, no module-level
+mutable state, no shared object holding per-game data.
+`SchedulingState`/`Effect` are plain, JSON-safe dataclasses meant to
+round-trip through a session's own serialized state alongside Ink's own
+VARs, exactly like every other piece of per-game data already does.
 """
 
 from __future__ import annotations
@@ -98,7 +90,7 @@ class Effect:
             back to the caller.
         payload: The effect's own real arguments (e.g.
             {"place_id": "hotel_room"} for MOVE_CHARACTER, {"flag":
-            "doctorkay_flag3_deal_made", "value": True} for
+            "met_the_stranger", "value": True} for
             SET_PERSON_FLAG/SET_PLACE_FLAG) — plain JSON-safe values only.
     """
 
@@ -195,15 +187,12 @@ def clock_in(data: dict[str, Any]) -> int:
     `_PendingEvent`/`Effect` dataclass (an `EffectKind` enum lookup plus a
     `dict(...)` copy per entry) purely to answer "what time is it" —
     real, measured cost that most read-only callers never needed, since
-    the clock is a plain int (2026-09-04, mirroring `character_occupancy.
-    py`'s own `_in`-suffixed fix for the same reconstruction-on-every-read
-    shape). `n_time_now()`/`is_day_now()`/`hours_charmed()` and every other
-    tick-consuming binding route through `current_tick()`
-    (`_games/asfa/scheduling.py`), which called this indirectly via the
-    full dataclass on every single call — confirmed real hot spots in
-    ASFA's own corpus (e.g. `avernus_club` calls `n_time_now()` 5 times in
-    one knot; `is_day_now()` alone has 104 call sites corpus-wide, each
-    one paying the full reconstruction under the old path).
+    the clock is a plain int, mirroring `character_occupancy.py`'s own
+    `_in`-suffixed fix for the same reconstruction-on-every-read shape.
+    `n_time_now()`/`is_day_now()`/`hours_charmed()` and every other
+    tick-consuming binding are exactly the kind of call a story can make
+    dozens or hundreds of times over its own corpus, each one otherwise
+    paying the full reconstruction just to read one int.
 
     Args:
         data: A serialized `SchedulingState` — this session's own clock
@@ -291,9 +280,9 @@ ONE_DAY = MINUTES_PER_DAY
 # Named minute-of-day constants for every whole hour, so a schedule rule
 # built with minute_in_range()/Condition.minute_in_range() reads as a real
 # clock time instead of a bare number a reader has to divide by 60 to
-# understand (explicit 2026-08-23 decision). Covers every whole hour;
-# a half-hour/quarter-hour boundary is built with ordinary arithmetic on
-# top of these, e.g. `EIGHT_AM + 15` for 8:15am, `SIX_PM + 30` for 6:30pm.
+# understand. Covers every whole hour; a half-hour/quarter-hour boundary
+# is built with ordinary arithmetic on top of these, e.g. `EIGHT_AM + 15`
+# for 8:15am, `SIX_PM + 30` for 6:30pm.
 MIDNIGHT = 0 * MINUTES_PER_HOUR
 ONE_AM = 1 * MINUTES_PER_HOUR
 TWO_AM = 2 * MINUTES_PER_HOUR
@@ -510,7 +499,7 @@ def _bind(state_dict: dict[str, Any], engine_state: dict[str, Any]) -> dict[str,
     """Build this session's clock bindings over its own SchedulingState.
 
     The clock becomes engine-owned state here rather than a value each
-    story threads through every time-dependent call (2026-08-29). A story
+    story threads through every time-dependent call. A story
     whose native time unit isn't minutes converts at its own boundary —
     see the module docstring — and keeps its own calendar semantics on
     top; this layer only owns "what time is it" and "time passed".

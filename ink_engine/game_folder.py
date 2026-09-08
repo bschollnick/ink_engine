@@ -1,21 +1,16 @@
 """Resolving a game folder's own compiled story file and reading a small,
 fixed set of single-field manifest values.
 
-claude_docs/plans/standalone_if_player.md Step 2 (QuickBBS repository) — the
-one piece of real, load-bearing validation this step's redesigned game-folder
-structure actually needs: a game is unplayable without a real, existing
-compiled `.inkj` (compiled `.ink.json`) file, and there is no way around
-that requirement in this pass (see the plan's own "Out of Scope" table —
-this engine has no Ink compiler of its own, and compiling one from source
-would need a real Ink compiler like `inklecate` present, which is a real,
-deliberately deferred future enhancement, not something this function does).
+A game is unplayable without a real, existing compiled `.inkj` (compiled
+`.ink.json`) file, and there is no way around that requirement here —
+this engine has no Ink compiler of its own, and compiling one from
+source would need a real Ink compiler like `inklecate` present, which
+this module deliberately does not attempt.
 
-Step 4 (standalone player shell) adds one more single-field read
-(`PLAY_LAYOUT`, for the 2-pane/3-pane layout choice) — `_read_manifest_
-string_field()` below is the shared helper both this module's own
-`find_main_story_file()` and Step 4's layout lookup use, deliberately NOT
-a general-purpose manifest parser (that would duplicate QuickBBS's own
-Django-coupled `ingestion.py` reader for no reason this library needs).
+`_read_manifest_string_field()` below is a shared helper for reading a
+single named field out of a game folder's `__init__.py` manifest,
+deliberately NOT a general-purpose manifest parser — a host application
+needing other manifest data is expected to bring its own reader.
 """
 
 from __future__ import annotations
@@ -27,20 +22,16 @@ from pathlib import Path
 #: source) is never accepted here — see this module's own docstring.
 COMPILED_STORY_SUFFIX = ".inkj"
 
-#: The manifest field naming which layout template a game wants
-#: (`"classic"` or `"three_column"` in QuickBBS's own `PLAY_LAYOUTS`) —
-#: read the same way as `MAIN_STORY_FILE`, via `_read_manifest_string_field()`.
+#: The manifest field naming which layout template a game wants — read
+#: the same way as `MAIN_STORY_FILE`, via `_read_manifest_string_field()`.
 #: Falling back to a default for an absent/unknown value is the CALLER's
 #: job (this module has no opinion on what layouts exist or which is
 #: default), matching how `find_main_story_file()` itself never invents a
-#: story file — see Step 4's own design note in the plan doc.
+#: story file.
 PLAY_LAYOUT_FIELD = "PLAY_LAYOUT"
 
-#: The manifest field naming which plugins a game wants active (a plain
-#: list of plugin names, e.g. `["scheduling", "occupancy"]`) — QuickBBS's
-#: own `Story.game_required_plugins` is populated from this exact field
-#: name (`ingestion.py`'s `_apply_game_manifest_fields()`); Step 4 reads
-#: it the same way for a standalone session's own `active_plugin_names`.
+#: The manifest field naming which plugins a game wants active — a plain
+#: list of plugin names, e.g. `["scheduling", "occupancy"]`.
 REQUIRED_PLUGINS_FIELD = "REQUIRED_PLUGINS"
 
 
@@ -57,10 +48,9 @@ def find_main_story_file(game_dir: Path) -> Path:
     more than one `.inkj` file does this fall back to reading
     `MAIN_STORY_FILE` from `__init__.py`'s own manifest (parsed via `ast`,
     never imported — a game folder is untrusted content, matching every
-    other manifest read in this project), to disambiguate which one is
-    authoritative — "any other .inkj file present is not a valid
-    fallback" is QuickBBS's own `ingestion.py` rule, applied identically
-    here.
+    other manifest read in this library), to disambiguate which one is
+    authoritative — any other `.inkj` file present is not a valid
+    fallback.
 
     Args:
         game_dir: The game folder's real filesystem path.
@@ -170,10 +160,9 @@ def _read_manifest_string_field(game_dir: Path, field_name: str) -> str | None:
     """Read one literal string field from `game_dir/__init__.py`, as data.
 
     Scoped to reading exactly one named field at a time — not a
-    general-purpose manifest reader (a game folder needing other manifest
-    data, e.g. QuickBBS's own ingestion, has its own reader; duplicating
-    that here for every possible field would be the opposite of "as small
-    as this library actually needs"). Shared by `find_main_story_file()`
+    general-purpose manifest reader (a host application needing other
+    manifest data is expected to bring its own reader). Shared by
+    `find_main_story_file()`
     (`MAIN_STORY_FILE`) and `read_play_layout()` (`PLAY_LAYOUT`) rather
     than each writing its own one-off parser.
 

@@ -1,10 +1,8 @@
-"""SkillSystem: a generic, roll-under skill-check framework
-(claude_docs/plans/external_expansion_IF_engine.md Step 7).
+"""SkillSystem: a generic, roll-under skill-check framework.
 
-A reusable engine service ANY story's own conversion builds its specific
-skill/attribute system on top of — never one specific game's own
-implementation (see the plan's "generic framework, not a game-specific
-implementation" design section). This module has zero knowledge of what "Strength" or
+A reusable engine service ANY story builds its specific skill/attribute
+system on top of — never one specific game's own implementation. This
+module has zero knowledge of what "Strength" or
 "Charisma" means, or what any one game's own skill list looks like — a
 skill is just a name (a plain string the game layer chooses) and a
 numeric level on whatever range the game layer declares for it (1-6,
@@ -19,10 +17,9 @@ effective target past 100 or below 0 — those are simply clamped at roll
 time (see `check()`'s own docstring), never rejected, since the game
 layer's own range validation (if any) is its own concern.
 
-**Own independent RNG, not Ink's** (explicit user decision, 2026-08-22:
-"Use the skillsystem's own RNG. Reduce the dependencies and the
-arguments."): `SkillState` carries its own seed/call-count, fully
-independent of `engine.py`'s `InkRuntimeState.story_seed`/
+**Own independent RNG, not Ink's**: `SkillState` carries its own
+seed/call-count, fully independent of `engine.py`'s
+`InkRuntimeState.story_seed`/
 `previous_random`. This keeps `SkillSystem` fully decoupled from the Ink
 interpreter's own RNG internals — zero import of `engine.py` anywhere in
 this module — at the cost of skill checks and Ink's own `RANDOM()` not
@@ -49,13 +46,10 @@ class SkillState:
     """A session's own skill levels plus this module's own independent RNG state.
 
     Args:
-        skill_levels: character_id -> {skill_name: level}. Renamed from
-            `levels` 2026-08-30: the container held more than levels for a
-            while (a game had stored charm state, story counters and even
-            a charmer's identity here for want of a per-character home),
-            and the plain name invited that. Those moved to character
-            attributes; what is left is genuinely skill levels, so the
-            name now says so.
+        skill_levels: character_id -> {skill_name: level}. Named for what
+            it actually holds -- skill levels only, not general
+            per-character state (which belongs in character attributes
+            instead, not here).
 
             The level is a
             NUMBER (not strictly an integer -- a game may use a level as a

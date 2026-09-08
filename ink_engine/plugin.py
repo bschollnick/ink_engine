@@ -1,8 +1,5 @@
 """The plugin contract: one dataclass, no trust concept, no host-UI
-awareness. See claude_docs/plans/ink_engine_standalone_extraction.md in the
-QuickBBS repository for the design rationale (the OLD system's
-EngineAPIDescriptor/PluginContext/synthetic-namespace machinery this
-replaces, and why each cut was made).
+awareness.
 """
 
 from __future__ import annotations
@@ -16,7 +13,7 @@ from typing import Any
 #: plugin's slice does `engine_state.get(other_plugin.state_key, {})`
 #: directly; there is no dynamic ownership-resolution mechanism, since the
 #: owning plugin's state_key is always known statically by whoever imports
-#: it (see the design doc's "also_reads was dead generality" finding).
+#: it.
 EngineState = dict[str, Any]
 
 
@@ -34,8 +31,8 @@ class Plugin:
     panels), or config storage -- deciding which sources are safe to load
     at all is entirely the host application's job, upstream of ever
     calling `discover_plugins()`. `validate_config` is a contract slot the
-    HOST calls when it owns config storage (e.g. QuickBBS's own
-    `StorySystemConfig.clean()`); ink_engine itself never calls it.
+    HOST calls when it owns config storage; ink_engine itself never
+    calls it.
 
     Attributes:
         name: A unique, stable identifier for this plugin (e.g.

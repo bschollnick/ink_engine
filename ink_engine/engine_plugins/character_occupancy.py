@@ -1,8 +1,7 @@
-"""CharacterOccupancy: who's at which location right now
-(claude_docs/plans/external_expansion_IF_engine.md Step 6).
+"""CharacterOccupancy: who's at which location right now.
 
-**This module depends on the map; the map does not depend on it**
-(clarified 2026-08-31). "Who is at which location" presupposes a set of
+**This module depends on the map; the map does not depend on it.**
+"Who is at which location" presupposes a set of
 locations, so a story using occupancy is expected to declare its places
 through `location_graph.py`, and placing a character somewhere the map
 never declared raises `UnknownLocationError` rather than being stored.
@@ -49,22 +48,15 @@ already use). `resolve_schedule()` takes a plain integer tick value, not a
 on, `engine_plugins.scheduling` at all; a story supplies whatever tick
 value it has, however it tracks its own clock.
 
-**How the two halves fit together** (design corrected 2026-08-29):
-`OccupancyState` is the live occupancy layer — the one record of where
-each character is, player and NPC alike — sitting above whatever map the
-story uses. A story's own scheduler/recompute step is what revises it:
-it resolves each schedule-driven character with `resolve_schedule()` and
-writes the answer back via `set_location()`. Reads then come from the
-store.
-
-Earlier revisions of this module documented the opposite arrangement,
-in which a schedule-driven character was deliberately kept OUT of the
-store and re-resolved on every read. That mirrored one converted game's
-original call-time `whereNow()` implementation, and was mistaken for a
-rule of this framework; it is not. Resolving on read is still perfectly
-possible — `resolve_schedule()` and `resolve_present_characters()` are
-public and a story may call them whenever it likes — but the store, not
-a re-resolution, is the intended answer to "where is X right now".
+**How the two halves fit together**: `OccupancyState` is the live
+occupancy layer — the one record of where each character is, player and
+NPC alike — sitting above whatever map the story uses. A story's own
+scheduler/recompute step is what revises it: it resolves each
+schedule-driven character with `resolve_schedule()` and writes the
+answer back via `set_location()`. Reads then come from the store, not a
+re-resolution — though resolving on read is still possible if a story
+wants it: `resolve_schedule()` and `resolve_present_characters()` are
+both public.
 
 Per-session isolation: every function here is a pure function of its own
 explicit arguments — no instance attributes, no shared/module-level
@@ -284,8 +276,8 @@ class Condition:
             state_key: The state slot to read, as its owning API declares
                 it (e.g. `"characters"`).
             path: The keys to walk within that slot, outermost first —
-                e.g. `("records", "doctorkay", "attributes",
-                "flag3_deal_made")`.
+                e.g. `("records", "npc_id", "attributes",
+                "met_the_stranger")`.
             missing: What an unresolved path is worth. This is not
                 cosmetic: a fact that has not happened yet is usually
                 indistinguishable from its zero value, and a story asking
@@ -781,20 +773,20 @@ def who_is_at(state: OccupancyState, location_id: str) -> list[str]:
     return [character_id for character_id, current_location in state.locations.items() if current_location == location_id]
 
 
-# Serialized-state operations, for the binding layer (2026-09-04, mirroring
-# `characters.py`'s own established `_in`-suffixed pattern exactly).
+# Serialized-state operations, for the binding layer -- mirroring
+# `characters.py`'s own established `_in`-suffixed pattern exactly.
 #
 # A binding holds this session's locations as their serialized dict and is
 # asked one question per call. `OccupancyState` has exactly one field
 # (`locations`), so `OccupancyState.from_dict(state_dict)` is `dict(data.get(
 # "locations", {}))` — cheap for one call, but every EXTERNAL binding below
-# used to pay it on EVERY call, and real corpus content calls these
+# used to pay it on EVERY call, and story content routinely calls these
 # repeatedly in one turn: a location hub scene with N choices each checking
 # a character's presence pays N reconstructions of the same unchanged dict
-# to answer N questions about it (confirmed 2026-09-04 auditing
-# ASFA's own mayorthomas.ink — `where_is_now("mayor_thomas")` appears 7
-# times in one `+`-choice list alone, all evaluated together). These read
-# the dict directly instead.
+# to answer N questions about it — a single `+`-choice list can easily
+# call `where_is_now()` for the same character several times over as each
+# choice's own condition is evaluated. These read the dict directly
+# instead.
 
 
 def where_is_in(locations: dict[str, str], character_id: str) -> str | None:
@@ -995,20 +987,11 @@ def recompute_occupancy(  # pylint: disable=too-many-arguments
         A new OccupancyState with every scheduled character's location
         refreshed — this function never mutates `state` in place.
     """
-    # Built as one dict, not via a `set_location()` call per character
-    # (2026-09-05): each such call used to do `dict(state.locations)` — a
-    # full copy of the WHOLE locations map — purely to write one entry, an
-    # O(n²) cost in the character count where O(n) suffices. Confirmed
-    # real: ASFA's own schedule tables name 63 + 16 characters here plus 7
-    # more in its own `_recompute_all` tail loop, called from
-    # `recompute_characters_here()` roughly once per turn (~146
-    # corpus-wide call sites) — ~86 full-map copies per turn against a map
-    # growing toward ~100 entries. `set_location()`'s own
-    # `UnknownLocationError` validation is not exercised by this loop
-    # either way: `recompute_occupancy()` never receives `known_locations`
-    # from any real caller (confirmed via a full-tree grep — every real
-    # call site here omits it, defaulting to `None`, which already skips
-    # the check inside `set_location()` itself), so nothing is lost by not
+    # Avoids dict(state.locations) per character (a full-map copy just to
+    # write one entry) -- O(n) instead of O(n^2) in cast size.
+    # set_location()'s own UnknownLocationError validation isn't
+    # exercised here since known_locations always defaults to None,
+    # which already skips that check -- so nothing is lost by not
     # calling through it.
     new_locations = dict(state.locations)
     for character_id, rules in schedules.items():

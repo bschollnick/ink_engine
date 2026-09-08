@@ -1,32 +1,30 @@
 """Closed, hand-coded validator FUNCTIONS for each real engine API's own
 config JSON shape.
 
-claude_docs/plans/external_expansion_IF_engine.md's explicit requirement:
-"A closed, validated schema per system (not 'arbitrary JSON interpreted
-flexibly,' and never anything that could feed into a Python eval/
-attribute-path lookup) is required so this doesn't become its own
-injection surface even for trusted stories." Story-author-controlled
-config is a real, separate risk from the EXTERNAL binding-trust question
-this plan's Step 2/3 already gates — a validated shape here is required
-regardless of whether the owning story is engine-trusted at all.
+A closed, validated schema per system — never "arbitrary JSON
+interpreted flexibly," and never anything that could feed into a Python
+eval/attribute-path lookup — is required so a story-author-controlled
+config value can never become an injection surface, even for a story a
+host application otherwise trusts. Story-author-controlled config is a
+real, separate risk from the EXTERNAL binding-trust question a host
+application's own trust gate already covers — a validated shape here is
+required regardless of whether the owning story is otherwise trusted.
 
 Hand-coded rather than a jsonschema-library dependency: this project has
 few enough real systems' schemas to validate right now that pulling in a
-new Poetry dependency is premature; jsonschema becomes the stronger
-choice once a system's schema arrives with real nested/conditional
-structure this hand-written approach would strain to express clearly.
+new dependency is premature; jsonschema becomes the stronger choice once
+a system's schema arrives with real nested/conditional structure this
+hand-written approach would strain to express clearly.
 
 Every validator here takes an already-json-decoded Python value (dict/
-list/str/int/float/bool/None only — the same universe `StorySystemConfig.
-config`'s own JSONField already restricts it to) and either returns
-cleanly or raises SystemConfigValidationError with a human-readable
-reason. None of them ever construct a Python object, import a name by
-string, or otherwise turn story-author data into code — every check here
-is a plain shape/type/value comparison.
+list/str/int/float/bool/None only) and either returns cleanly or raises
+SystemConfigValidationError with a human-readable reason. None of them
+ever construct a Python object, import a name by string, or otherwise
+turn story-author data into code — every check here is a plain
+shape/type/value comparison.
 
-**Dispatch by system_name is no longer done in this module** (removed
-2026-08-22, see the note near the bottom of this file) — each real plugin
-now points its own `Plugin.validate_config` directly at one of these
+Dispatch by system_name is NOT done in this module — each real plugin
+points its own `Plugin.validate_config` directly at one of these
 functions; `ink_engine.discovery.discover_plugins()` resolves which
 function runs for a given plugin dynamically, not via a hardcoded dict
 here.
@@ -38,7 +36,7 @@ from typing import Any
 
 
 class SystemConfigValidationError(ValueError):
-    """Raised when a StorySystemConfig's config JSON doesn't match its
+    """Raised when a plugin's config JSON doesn't match its
     system_name's closed schema."""
 
 
@@ -187,9 +185,7 @@ def _validate_terrain(terrain: Any, path: str) -> None:
     """
     name = _require_str(terrain, path)
     if name not in TERRAIN_MOVEMENT_COST:
-        raise SystemConfigValidationError(
-            f"{path} '{name}' is not a known terrain (expected one of {', '.join(sorted(TERRAIN_MOVEMENT_COST))})"
-        )
+        raise SystemConfigValidationError(f"{path} '{name}' is not a known terrain (expected one of {', '.join(sorted(TERRAIN_MOVEMENT_COST))})")
 
 
 def _validate_external_identifier(identifiers: Any, path: str) -> None:
@@ -264,9 +260,7 @@ def _validate_location_details(details: Any, path: str) -> None:
     if "visits" in details_dict and _require_int(details_dict["visits"], f"{path}.visits") < 0:
         raise SystemConfigValidationError(f"{path}.visits cannot be negative")
     if "visited" in details_dict:
-        raise SystemConfigValidationError(
-            f"{path}.visited is derived from {path}.visits and cannot be declared; set visits instead"
-        )
+        raise SystemConfigValidationError(f"{path}.visited is derived from {path}.visits and cannot be declared; set visits instead")
     if "terrain" in details_dict:
         _validate_terrain(details_dict["terrain"], f"{path}.terrain")
     if "external_identifier" in details_dict:
@@ -283,7 +277,6 @@ _ENGINE_DETAIL_KEYS = frozenset({"name", "description", "external_identifier", "
 
 
 def validate_location_graph(config: Any) -> None:
-
     """Validate a `location_graph` system config.
 
     Real shape, grounded in a converted game's own
@@ -513,17 +506,16 @@ def validate_character_occupancy(config: Any) -> None:
                 _validate_condition(condition, f"{rule_path}.condition")
 
 
-# NOTE (2026-08-22): the closed VALIDATORS dict + validate_system_config()
-# that previously lived here were removed as part of the plugin-discovery
-# redesign — a hardcoded dict of {system_name: validator} could never
-# represent a plugin discovered later via the scan-based plugin mechanism
-# without editing this file, which defeats the entire "third parties add
-# plugins without touching host source" goal. Each plugin now carries its
-# OWN validator directly on its Plugin.validate_config (see e.g.
-# ink_engine/engine_plugins/location_graph.py's own `PLUGIN =`
-# declaration) resolved dynamically via ink_engine.discovery.
-# discover_plugins() — see StorySystemConfig.clean() in QuickBBS's own
-# interactive_fiction/models.py for that host's real call site.
+# NOTE: there is deliberately no closed VALIDATORS dict or dispatch-by-
+# name function in this module — a hardcoded dict of {system_name:
+# validator} could never represent a plugin discovered later via the
+# scan-based plugin mechanism without editing this file, which defeats
+# the entire "third parties add plugins without touching host source"
+# goal. Each plugin instead carries its OWN validator directly on its
+# Plugin.validate_config (see e.g. ink_engine/engine_plugins/
+# location_graph.py's own `PLUGIN =` declaration), resolved dynamically
+# via ink_engine.discovery.discover_plugins() and called by whichever
+# host application owns config storage.
 # validate_location_graph()/validate_character_occupancy() below remain
 # as the real, reusable validator FUNCTIONS each plugin's own descriptor
-# points at; only the closed dispatch-by-name dict was removed.
+# points at.

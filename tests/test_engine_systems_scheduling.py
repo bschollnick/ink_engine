@@ -1,13 +1,11 @@
-"""claude_docs/plans/external_expansion_IF_engine.md Step 5:
-SchedulingSystem (ink_engine.engine_plugins.scheduling).
+"""SchedulingSystem (ink_engine.engine_plugins.scheduling).
 
-Pure-function coverage — no DB needed. SimpleTestCase throughout.
+Pure-function coverage — no host framework needed. SimpleTestCase throughout.
 """
 
 from __future__ import annotations
 
 import json
-
 from unittest import TestCase as SimpleTestCase
 
 from ink_engine.engine_plugins.scheduling import (
@@ -57,7 +55,7 @@ class ScheduleEffectTests(SimpleTestCase):
 class AdvanceTests(SimpleTestCase):
     """advance() fires exactly the effects that are due, and only reports
     them — it never applies anything to any character/flag/place state
-    itself (the explicit 2026-08-22 design decision)."""
+    itself; applying a fired effect is the caller's own job."""
 
     def test_advancing_past_the_due_time_fires_the_effect(self):
         """Advancing exactly to (or past) an effect's due_time fires it
@@ -153,8 +151,8 @@ class SchedulingStateSerializationTests(SimpleTestCase):
 
     def test_to_dict_result_is_json_safe(self):
         """A real, direct proof rather than an assumption — round-trips
-        through json.dumps/json.loads, matching how this would actually
-        be stored inside CurrentGame.state (a Django JSONField)."""
+        through json.dumps/json.loads, matching how a host application
+        would actually persist this state."""
         state = SchedulingState(clock=0)
         state = schedule_effect(state, Effect(EffectKind.MOVE_CHARACTER, "mia", {"place_id": "hotel_bar"}), 5)
         round_tripped = json.loads(json.dumps(state.to_dict()))

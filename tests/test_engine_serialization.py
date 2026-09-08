@@ -1,20 +1,18 @@
-"""Step 3 tests: InkRuntimeState.to_dict()/from_dict() serialization
+"""InkRuntimeState.to_dict()/from_dict() serialization tests
 (ink_engine.engine).
 
-Every test drives real compiled JSON (existing tests/fixtures/*.ink.json
-from Sections 1-10) through a snapshot -> real json.dumps/json.loads round
--trip -> from_dict() rebuild, then confirms the rebuilt state produces
-identical continuation output/choices to an unsnapshotted control run —
-the actual correctness property this serialization exists for (Step 3's
-save-slot/CurrentGame feature only works if a resumed game plays on
-exactly as if it had never been serialized at all).
+Every test drives real compiled JSON through a snapshot -> real
+json.dumps/json.loads round-trip -> from_dict() rebuild, then confirms
+the rebuilt state produces identical continuation output/choices to an
+unsnapshotted control run — the actual correctness property this
+serialization exists for: a resumed game must play on exactly as if it
+had never been serialized at all.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path as FilePath
-
 from unittest import TestCase as SimpleTestCase
 
 from ink_engine.engine import (
@@ -48,7 +46,7 @@ class BasicRoundTripTests(SimpleTestCase):
         """A state that has never taken a turn (only __init__'s global
         -decl bootstrap has run) round-trips with matching globals and
         pointer position."""
-        data = _load("section4_variables.ink.json")
+        data = _load("variables.ink.json")
         root = load_story_root(data)
         state = InkRuntimeState(root)
         state2 = _round_trip(state, load_story_root(data))
@@ -59,7 +57,7 @@ class BasicRoundTripTests(SimpleTestCase):
         """A state stopped at a choice point round-trips with matching
         choice text/count, and continuing both after choosing the same
         option produces identical text."""
-        data = _load("section3_choices.ink.json")
+        data = _load("choices.ink.json")
         root = load_story_root(data)
         state = InkRuntimeState(root)
         state.continue_story()
@@ -79,17 +77,17 @@ class SavedStateStaysBoundedTests(SimpleTestCase):
         `continue_story()` appends into one long-lived OutputStream and
         reads back only `tokens[start_length:]` -- the accumulated prefix
         is never used again, but it WAS serialized in full every turn, so
-        a saved state grew linearly forever. Measured on the real ASFA
-        story before this was fixed: 34KB at turn 0 rising to 114KB by
-        turn 600, ~111 bytes/turn with no ceiling, of which output_tokens
-        was 69%.
+        a saved state grew linearly forever. Measured on a real story
+        before this was fixed: 34KB at turn 0 rising to 114KB by turn
+        600, ~111 bytes/turn with no ceiling, of which output_tokens was
+        69%.
 
         The invariant, checked directly rather than via a growth curve: at
         any stopping point the serialized token list is exactly the tokens
         that turn produced, so it re-renders `last_turn_text` and nothing
         older.
         """
-        data = _load("section3_gather_loop.ink.json")
+        data = _load("gather_loop.ink.json")
         state = InkRuntimeState(load_story_root(data))
         for turn in range(3):
             text = state.continue_story()
@@ -111,7 +109,7 @@ class SavedStateStaysBoundedTests(SimpleTestCase):
         The guard for the invariant above: if the accumulated prefix ever
         DID matter, dropping it would show up here as divergent text.
         """
-        data = _load("section3_gather_loop.ink.json")
+        data = _load("gather_loop.ink.json")
         state = InkRuntimeState(load_story_root(data))
         for _ in range(6):
             state.continue_story()
@@ -134,7 +132,7 @@ class MidTunnelRoundTripTests(SimpleTestCase):
     def test_mid_tunnel_state_resumes_identically(self):
         """A snapshot taken with tunnel_stack non-empty resumes and
         finishes the story with the same output as the unsnapshotted run."""
-        data = _load("section5_nested_tunnel.ink.json")
+        data = _load("nested_tunnel.ink.json")
         root = load_story_root(data)
         state = InkRuntimeState(root)
         while not state.done and not state.tunnel_stack:
@@ -150,23 +148,22 @@ class MidTunnelRoundTripTests(SimpleTestCase):
 
 
 class MidFunctionCallRoundTripTests(SimpleTestCase):
-    """Regression coverage for a real bug found while building this
-    serialization: the first version of to_dict()/from_dict() omitted
-    _eval_run_depth (and the other transient mid-dispatch flags:
-    _pending_thread, _in_tag, _tag_buffer, _string_capture_stack)
-    entirely. A snapshot taken with call_stack non-empty — meaning a
-    function call is in progress, and the *outer* eval run that called it
-    is still open — resumed with _eval_run_depth reset to 0 (fresh
-    construction's default), which silently routed the eventual "out"
-    marker through the no-op CONTROL_COMMAND_MARKERS branch instead of
-    real EVAL_OUTPUT handling, producing no output at all instead of the
-    interpolated return value."""
+    """to_dict()/from_dict() must round-trip _eval_run_depth and the
+    other transient mid-dispatch flags (_pending_thread, _in_tag,
+    _tag_buffer, _string_capture_stack). A snapshot taken with
+    call_stack non-empty — meaning a function call is in progress, and
+    the *outer* eval run that called it is still open — must not resume
+    with _eval_run_depth reset to 0 (fresh construction's default): that
+    would silently route the eventual "out" marker through the no-op
+    CONTROL_COMMAND_MARKERS branch instead of real EVAL_OUTPUT handling,
+    producing no output at all instead of the interpolated return
+    value."""
 
     def test_mid_function_call_state_resumes_with_correct_output(self):
         """A snapshot taken with call_stack non-empty still produces the
         correct interpolated function-call result once resumed —
-        confirmed against section6_nested_func.ink's real output ("21")."""
-        data = _load("section6_nested_func.ink.json")
+        against nested_func.ink's real output ("21")."""
+        data = _load("nested_func.ink.json")
         root = load_story_root(data)
         state = InkRuntimeState(root)
         while not state.done and not state.call_stack:
@@ -207,7 +204,7 @@ class ResolvedDivertTargetRoundTripTests(SimpleTestCase):
     def test_resolved_divert_target_in_temps_round_trips(self):
         """A ResolvedDivertTarget stored in a temp variable resolves to
         the same container (by name) before and after round-tripping."""
-        data = _load("section10_bracket_choice.ink.json")
+        data = _load("bracket_choice.ink.json")
         root = load_story_root(data)
         state = InkRuntimeState(root)
         state.continue_story()
@@ -234,7 +231,7 @@ class MissingContainerDegradationTests(SimpleTestCase):
     def test_unresolvable_pointer_path_degrades_to_none(self):
         """A pointer path that fails to resolve produces a null-container
         pointer rather than raising."""
-        data = _load("section1_simple.ink.json")
+        data = _load("simple.ink.json")
         root = load_story_root(data)
         state = InkRuntimeState.from_dict(root, {"pointer": {"path": "does_not_exist", "index": 0}})
         self.assertIsNone(state.pointer.container if state.pointer else None)
@@ -242,7 +239,7 @@ class MissingContainerDegradationTests(SimpleTestCase):
     def test_unresolvable_choice_target_is_dropped(self):
         """A serialized choice whose target path fails to resolve is
         silently omitted from current_choices rather than raising."""
-        data = _load("section1_simple.ink.json")
+        data = _load("simple.ink.json")
         root = load_story_root(data)
         state = InkRuntimeState.from_dict(root, {"current_choices": [{"text": "Ghost choice", "target_path": "does_not_exist"}]})
         self.assertEqual(state.current_choices, [])

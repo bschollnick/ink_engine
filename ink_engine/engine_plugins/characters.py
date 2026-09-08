@@ -1,5 +1,5 @@
 """Characters: per-character keyed storage, and one place to ask about a
-character (`claude_docs/plans/asfa_engine_revamp.md` Step 9a).
+character.
 
 **What this module owns, and what it deliberately does not.** A converted
 game's characters accumulate a great deal of small per-character state —
@@ -61,8 +61,9 @@ class CharacterState:
             **Keyed by character first, deliberately.** The obvious
             alternative — one `attributes` map of character to values —
             stores the same data but describes it backwards: a path into
-            it reads "attributes, then doctorkay", when the fact being
-            named is doctorkay's. Character-major means a record is
+            it reads "attributes, then the character", when the fact
+            being named belongs to the character. Character-major means
+            a record is
             addressed as `(character, "attributes", name)`, which is the
             sentence the caller is actually saying, and it leaves room for
             a record to carry more than attributes later without
@@ -131,9 +132,7 @@ class CharacterState:
 # same shape, and `records` is that shape in both.
 
 
-def read_attribute_in(
-    records: dict[str, Any], entity_id: str, attribute: str, default: AttributeValue = False
-) -> AttributeValue:
+def read_attribute_in(records: dict[str, Any], entity_id: str, attribute: str, default: AttributeValue = False) -> AttributeValue:
     """Return one stored attribute, from serialized records.
 
     Args:
@@ -187,9 +186,9 @@ def is_known_in(state_dict: dict[str, Any], character_id: str) -> bool:
     Mirrors `location_graph.is_known_in()` exactly, for the same reason:
     a plain membership check needs only the `known` list, not every
     character's own `records` — which `CharacterState.from_dict()` would
-    otherwise rebuild in full just to answer this (2026-09-04, the same
-    `_in`-suffixed pattern already applied to `character_occupancy.py`/
-    `scheduling.py`/`inventory.py`/`quests.py`).
+    otherwise rebuild in full just to answer this, the same `_in`-suffixed
+    pattern already applied to `character_occupancy.py`/`scheduling.py`/
+    `inventory.py`/`quests.py`.
 
     Args:
         state_dict: This session's own serialized CharacterState.

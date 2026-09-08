@@ -1,7 +1,7 @@
-"""Section 7 tests: LISTs (ink_engine.engine).
+"""LISTs (ink_engine.engine).
 
 InkRuntimeState is driven end-to-end against real compiled JSON
-(tests/fixtures/section7_*.ink), with every expected transcript captured
+(tests/fixtures/*.ink), with every expected transcript captured
 from the local inklecate build's -p play-mode transcript before any
 assertion was written (per the plan's standing validate-against-real-data
 rule). apply_native_function() is additionally unit-tested directly for
@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path as FilePath
-
 from unittest import TestCase as SimpleTestCase
 
 from ink_engine.engine import (
@@ -38,13 +37,13 @@ def _run(name: str) -> InkRuntimeState:
 
 
 class BasicListValueTests(SimpleTestCase):
-    """Section 7: VAR initialized to a single-item LIST value, `+=`/`-=`
-    reassignment, and `?` has-item conditional text (section7_basic.ink)."""
+    """VAR initialized to a single-item LIST value, `+=`/`-=`
+    reassignment, and `?` has-item conditional text (basic.ink)."""
 
     def test_reassignment_and_has_item_conditions_match_transcript(self):
         """A LIST var's display form, `+=` growth, and `?`/else-branch
         conditional text all match the real transcript exactly."""
-        state = _run("section7_basic.ink.json")
+        state = _run("basic.ink.json")
         text = state.continue_story()
         self.assertEqual(
             text,
@@ -54,18 +53,18 @@ class BasicListValueTests(SimpleTestCase):
     def test_item_names_are_pre_registered_as_single_item_globals(self):
         """A bare list item name (e.g. "Coins") is readable as its own
         single-item LIST global before any story content runs."""
-        state = _run("section7_basic.ink.json")
+        state = _run("basic.ink.json")
         self.assertEqual(state.globals["Coins"], ListValue.single("Wallet", "Coins", 1))
 
 
 class ListUnaryOperatorTests(SimpleTestCase):
-    """Section 7: LIST_MIN/LIST_MAX/LIST_ALL/LIST_COUNT/LIST_VALUE/
-    LIST_INVERT and LIST comparisons (section7_ops.ink)."""
+    """LIST_MIN/LIST_MAX/LIST_ALL/LIST_COUNT/LIST_VALUE/
+    LIST_INVERT and LIST comparisons (ops.ink)."""
 
     def test_all_unary_ops_and_one_comparison_match_transcript(self):
         """Every unary LIST_* op and the == comparison match the real
         transcript exactly; the false > comparison produces no text."""
-        state = _run("section7_ops.ink.json")
+        state = _run("ops.ink.json")
         text = state.continue_story()
         self.assertEqual(
             text,
@@ -74,61 +73,56 @@ class ListUnaryOperatorTests(SimpleTestCase):
 
 
 class SwitchOnValueTests(SimpleTestCase):
-    """Section 7: `{x: - 1: ... - 4: ... - else: ...}` switch-on-value,
+    """`{x: - 1: ... - 4: ... - else: ...}` switch-on-value,
     which depends on the DUPLICATE_TOP ("du") control command
-    (section7_switch.ink)."""
+    (switch.ink)."""
 
     def test_matching_branch_is_selected(self):
         """The branch matching the switch value runs, matching the real
         transcript exactly."""
-        state = _run("section7_switch.ink.json")
+        state = _run("switch.ink.json")
         text = state.continue_story()
         self.assertEqual(text, "four\n")
 
 
 class RecursiveBinaryStorageTests(SimpleTestCase):
-    """Section 7: a recursive function combining a switch-on-value block
-    with LIST-adjacent bit-flag storage — regression coverage for two real
-    bugs found 2026-08-16 via smoke-testing listToNumber.ink.
+    """a recursive function combining a switch-on-value block
+    with LIST-adjacent bit-flag storage.
 
-    Bug 1: "du" (DUPLICATE_TOP) can be reached at eval-run depth > 0, not
-    just depth 0 (the switch container here sits inside an outer, still-
-    open eval bracket in real compiled output) — only handling it in
-    _handle_string_content's main-stream branch left the duplicate never
-    pushed, so every branch after the first tested against nothing.
-    Bug 2: the switch's own trailing bare "pop" (also reachable at
-    eval-run depth > 0) was previously only handled inside
-    _handle_eval_run_command for the void-function-call form, leaving a
-    stale duplicated value on eval_stack whenever no switch branch matched,
-    corrupting the next eval run to use the stack — this recursive story's
-    binaryValue=4/1 levels hit exactly this case.
+    "du" (DUPLICATE_TOP) can be reached at eval-run depth > 0, not just
+    depth 0, when the switch container sits inside an outer, still-open
+    eval bracket in real compiled output — it must be handled in
+    _handle_string_content's main-stream branch, not only there, or the
+    duplicate is never pushed and every branch after the first tests
+    against nothing. The switch's own trailing bare "pop" is also
+    reachable at eval-run depth > 0 and must be handled outside
+    _handle_eval_run_command's void-function-call form too, or a stale
+    duplicated value is left on eval_stack whenever no switch branch
+    matches, corrupting the next eval run to use the stack.
     """
 
     def test_correct_bits_are_set_across_recursive_calls(self):
         """10 = 8 + 2, so only bit2 and bit8 end up true, matching the
         real transcript exactly."""
-        state = _run("section7_binstore.ink.json")
+        state = _run("binstore.ink.json")
         text = state.continue_story()
         self.assertEqual(text, "Bits: false true false true\n")
 
 
 class BoolDisplayTests(SimpleTestCase):
-    """Regression coverage for a real bug found 2026-08-16 via
-    smoke-testing: {x} for a bool VAR must display "true"/"false"
-    (matching real inklecate), not Python's capitalized str(bool)
-    (section7_bool.ink) — a Section 4 display bug, not LIST-specific, but
-    only surfaced by Section 7's real-world bit-flag-storage testing."""
+    """{x} for a bool VAR must display "true"/"false" (matching real
+    inklecate), not Python's capitalized str(bool)."""
 
     def test_bool_displays_lowercase(self):
         """A bool VAR interpolated into text matches real Ink's lowercase
         "true", not Python's "True"."""
-        state = _run("section7_bool.ink.json")
+        state = _run("bool.ink.json")
         text = state.continue_story()
         self.assertEqual(text, "true\n")
 
 
 class ListNativeFunctionTests(SimpleTestCase):
-    """Section 7: apply_native_function() LIST operator coverage,
+    """apply_native_function() LIST operator coverage,
     unit-tested directly (ported from ink-engine-runtime/InkList.cs's
     AddListBinaryOp/AddListUnaryOp call sites)."""
 
@@ -197,6 +191,6 @@ class ListNativeFunctionTests(SimpleTestCase):
 
     def test_bool_operand_with_list_operand_raises(self):
         """A non-LIST operand paired with a LIST operand has no defined
-        operation in Section 7's real-world scope."""
+        operation."""
         with self.assertRaises(Exception):
             apply_native_function(">", [self.coins, 5])

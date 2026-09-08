@@ -1,5 +1,4 @@
-"""LocationGraph: a plain, occupancy-free map framework
-(claude_docs/plans/external_expansion_IF_engine.md Step 6).
+"""LocationGraph: a plain, occupancy-free map framework.
 
 This module knows only about places and the edges between them — it has
 NO concept of a character, an NPC, or the player being "at" anywhere.
@@ -7,14 +6,10 @@ That is deliberate: a game that only wants "just a map" (can the player
 go from A to B, is a place known/reachable) must never be forced to adopt
 occupancy tracking to use this module.
 
-**The dependency runs one way, and only one way** (clarified 2026-08-31).
-The map does not depend on occupancy; occupancy depends on the map,
-because "who is at which location" presupposes a set of locations.
-Earlier wording here described the independence as symmetric, which read
-as "occupancy must not consult the map" and led to occupancy
-reconstructing a location vocabulary of its own — the duplicated-state
-mistake this framework exists to prevent. A story placing a character
-somewhere this map never declared is an error, and
+**The dependency runs one way, and only one way.** The map does not
+depend on occupancy; occupancy depends on the map, because "who is at
+which location" presupposes a set of locations. A story placing a
+character somewhere this map never declared is an error, and
 `character_occupancy.set_location()` raises rather than storing it.
 
 So this module still imports nothing from `character_occupancy` and has
@@ -39,7 +34,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from ink_engine.engine_config_schemas import TERRAIN_MOVEMENT_COST, validate_location_graph
+from ink_engine.engine_config_schemas import (
+    TERRAIN_MOVEMENT_COST,
+    validate_location_graph,
+)
 from ink_engine.plugin import Plugin
 
 

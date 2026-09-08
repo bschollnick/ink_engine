@@ -1,9 +1,9 @@
-"""claude_docs/plans/standalone_if_player.md Step 2/3: the shared media-tag
-parser and the filesystem-backed resolver.
+"""The shared media-tag parser and the filesystem-backed resolver.
 
-A QuickBBS-side resolver (DB-indexed, not path-direct) is covered separately
-in QuickBBS's own test suite, since it necessarily imports Django — nothing
-here needs a database or Django at all.
+A host with its own database-indexed resolver (not path-direct) covers
+that resolver separately in its own test suite, since it necessarily
+imports that host's own framework — nothing here needs a database or
+any host framework at all.
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ class FilesystemMediaResolverTests(TestCase):
     split) -- the tag names a file's own real path relative to the game
     folder's own root, exactly as the game author wrote it, checked for
     existence. See media_resolver.py's own module docstring for why this
-    must NOT resemble QuickBBS's DB-indexed resolver."""
+    must NOT resemble a database-indexed resolver."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

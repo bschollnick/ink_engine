@@ -1,6 +1,5 @@
-"""claude_docs/plans/standalone_if_player.md Step 2: resolving a game
-folder's own compiled story file. Step 4: reading its own PLAY_LAYOUT
-manifest field.
+"""Resolving a game folder's own compiled story file, and reading its
+own PLAY_LAYOUT manifest field.
 """
 
 from __future__ import annotations
@@ -95,7 +94,7 @@ class FindMainStoryFileTests(TestCase):
 
 
 class ReadPlayLayoutTests(TestCase):
-    """Step 4's own single-field manifest read, sharing the same helper
+    """A single-field manifest read, sharing the same helper
     find_main_story_file() uses for MAIN_STORY_FILE."""
 
     def setUp(self):
@@ -147,9 +146,7 @@ class ReadPlayLayoutTests(TestCase):
 
 
 class ReadRequiredPluginsTests(TestCase):
-    """Step 4's own list-field manifest read -- REQUIRED_PLUGINS, the
-    same field name QuickBBS's own ingestion.py already populates
-    Story.game_required_plugins from."""
+    """The list-field manifest read for REQUIRED_PLUGINS."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

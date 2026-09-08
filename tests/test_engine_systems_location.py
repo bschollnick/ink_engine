@@ -1,14 +1,12 @@
-"""claude_docs/plans/external_expansion_IF_engine.md Step 6: the two
-independent LocationSystem layers (ink_engine.engine_plugins.
+"""The two independent LocationSystem layers (ink_engine.engine_plugins.
 location_graph, ink_engine.engine_plugins.character_occupancy).
 
-Pure-function coverage — no DB needed. SimpleTestCase throughout.
+Pure-function coverage — no host framework needed. SimpleTestCase throughout.
 """
 
 from __future__ import annotations
 
 import json
-
 from unittest import TestCase as SimpleTestCase
 
 import ink_engine.engine_plugins.character_occupancy as character_occupancy_module
@@ -141,9 +139,9 @@ class ReachableEdgesTests(SimpleTestCase):
     """reachable_edges() applies the real requires_known gating."""
 
     def test_edge_with_no_requires_known_is_always_reachable(self):
-        """Per the corrected default (2026-08-22): an edge with no
-        requires_known key doesn't need its destination already known —
-        walking there is often how it BECOMES known."""
+        """An edge with no requires_known key doesn't need its
+        destination already known — walking there is often how it
+        BECOMES known."""
         state = initial_state(_LOCATION_CONFIG)
         self.assertEqual(reachable_edges(_LOCATION_CONFIG, state, "outside_hospital"), ["hospital_foyer"])
 
@@ -375,9 +373,10 @@ class EngineStateConditionTests(SimpleTestCase):
         character nobody ever charmed — whose attribute was never written.
         Treating an unresolved path as None instead made every such
         condition false, which silently inverted schedules that gate on a
-        zero state. Caught by a real ASFA schedule (Ash's) rather than by
-        this test, which now pins it."""
-        self.assertEqual(self._resolve(Condition.engine_state("characters", ("records", "nobody", "attributes", "charm_level"), "==", 0), {}), "the_shop")
+        zero state. This test pins that behavior."""
+        self.assertEqual(
+            self._resolve(Condition.engine_state("characters", ("records", "nobody", "attributes", "charm_level"), "==", 0), {}), "the_shop"
+        )
 
     def test_the_absent_value_is_configurable(self):
         """Where absence genuinely differs from a stored value, a caller
@@ -439,7 +438,7 @@ class PresenceQueryTests(SimpleTestCase):
         self.assertFalse(is_at(self.state, "bob", "the_square"))
 
     def test_is_with_compares_two_characters_locations(self):
-        """"Is X here", where here means wherever the player is."""
+        """ "Is X here", where here means wherever the player is."""
         self.assertTrue(is_with(self.state, "alice", "player"))
         self.assertFalse(is_with(self.state, "bob", "player"))
 
@@ -583,8 +582,8 @@ class OccupancyStateTests(SimpleTestCase):
 
 
 class LayeredIndependenceTests(SimpleTestCase):
-    """The explicit 2026-08-22 layering requirement: location_graph and
-    character_occupancy must be usable completely independently."""
+    """location_graph and character_occupancy must be usable completely
+    independently."""
 
     def test_character_occupancy_never_imports_location_graph(self):
         """A structural proof, not just a docstring claim: the occupancy

@@ -1,19 +1,20 @@
 """The cost table: what an action costs, and whether it can be afforded.
 
-Built 2026-08-31. The motivating case is the reference game's transform
-spell, which source charges 10 mana for a character's first cast and 20
-after (`spells-transform.js:56-58`). Before this the conversion had that
-number in four unrelated shapes — a hardcoded Ink if-chain, a Python
-function, an engine dict, and a literal `>= 20` repeated across ~20 story
-files — and the transform case was missing from the if-chain entirely,
-which is how a whole spell came to be priced only by literals.
+Consolidates a resource-cost rule (e.g. "first use costs X, every use
+after costs Y") into one authoritative table, instead of the same
+number scattered across an ad hoc if-chain, a helper function, and
+literal comparisons repeated across many story files -- a shape where a
+missed case can leave one action priced only by a stray literal.
 """
 
 from __future__ import annotations
 
 from unittest import TestCase as SimpleTestCase
 
-from ink_engine.engine_config_schemas import SystemConfigValidationError, validate_cost_table
+from ink_engine.engine_config_schemas import (
+    SystemConfigValidationError,
+    validate_cost_table,
+)
 from ink_engine.engine_plugins.costs import (
     CostTableState,
     _bind,
