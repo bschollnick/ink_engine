@@ -98,6 +98,37 @@ def find_cover_image(game_dir: Path) -> str | None:
     return None
 
 
+#: Filename `find_prose_styles()` looks for, directly under `game_dir` —
+#: fixed convention, same as `find_cover_image()`.
+PROSE_STYLES_FILENAME = "styles.css"
+
+
+def find_prose_styles(game_dir: Path) -> str | None:
+    """Return a game folder's own prose-styling CSS, if it supplies one.
+
+    Looks for `styles.css` directly under `game_dir` — a fixed filename
+    convention, no manifest field. A story tags a span of prose with an
+    inline `<style=name>...</style>` marker (this project's own inline-tag
+    convention, not part of the Ink language); this file is where a game
+    defines what each `name` actually renders as (font, size, colour).
+    Entirely optional — a host applies its own baseline style names first,
+    and this file's rules load after, so a game can override any baseline
+    name or add its own without the host knowing about it in advance.
+
+    Args:
+        game_dir: The game folder's real filesystem path.
+
+    Returns:
+        The file's raw text content, or None if the game folder supplies
+        no such file. Reading and injecting that CSS into a page is the
+        host's own concern — `ink_engine` has no opinion on host UI.
+    """
+    candidate = game_dir / PROSE_STYLES_FILENAME
+    if candidate.is_file():
+        return candidate.read_text(encoding="utf-8")
+    return None
+
+
 def parse_media_tags(current_tags: list[str]) -> list[tuple[str, str]]:
     """Return `(kind, tag_name)` pairs for every media tag in `current_tags`.
 

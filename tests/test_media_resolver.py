@@ -16,6 +16,7 @@ from unittest import TestCase
 from ink_engine.media_resolver import (
     FilesystemMediaResolver,
     find_cover_image,
+    find_prose_styles,
     parse_media_tags,
 )
 
@@ -199,3 +200,20 @@ class FindCoverImageTests(TestCase):
         be picked up as if it were a valid cover."""
         self._write("cover.mp4")
         self.assertIsNone(find_cover_image(self.tmp))
+
+
+class FindProseStylesTests(TestCase):
+    """A game folder's own optional prose-styling CSS -- fixed filename
+    convention, no manifest field, no Ink tag."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_styles_css_at_the_game_root_is_returned_verbatim(self):
+        content = ".style-computer { font-family: monospace; }"
+        (self.tmp / "styles.css").write_text(content, encoding="utf-8")
+        self.assertEqual(find_prose_styles(self.tmp), content)
+
+    def test_no_styles_css_returns_none(self):
+        self.assertIsNone(find_prose_styles(self.tmp))
