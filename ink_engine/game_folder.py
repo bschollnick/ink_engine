@@ -1,5 +1,5 @@
-"""Resolving a game folder's own compiled story file and reading a small,
-fixed set of single-field manifest values.
+"""Resolving a game folder's own compiled story file and reading literal
+values out of a game folder's own `.py` files (manifest or otherwise).
 
 A game is unplayable without a real, existing compiled `.inkj` (compiled
 `.ink.json`) file, and there is no way around that requirement here —
@@ -7,17 +7,20 @@ this engine has no Ink compiler of its own, and compiling one from
 source would need a real Ink compiler like `inklecate` present, which
 this module deliberately does not attempt.
 
-`_read_manifest_string_field()` below is a shared helper for reading a
-single named field out of a game folder's `__init__.py` manifest,
-deliberately NOT a general-purpose manifest parser — a host application
-needing other manifest data is expected to bring its own reader.
+`read_module_literals()` is the shared primitive every reader in this
+module (and, via it, every host application's own manifest/mapping
+reader) builds on: every top-level literal assignment in one `.py` file,
+read as data via `ast` — never imported or exec'd, since a game folder
+lives in untrusted content. A host needing its own fixed field list or
+its own missing-field policy (raise vs. default) is expected to layer
+that on top of this primitive rather than hand-roll a second `ast` walk.
 """
 
 from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 #: The compiled-story file extension this engine plays. `.ink` (uncompiled
 #: source) is never accepted here — see this module's own docstring.
@@ -120,21 +123,99 @@ def read_required_plugins(game_dir: Path) -> list[str]:
 #: Returned by `_read_manifest_field()` when the field is absent, the
 #: manifest is missing/unparseable, or its value is not a plain literal
 #: -- distinct from a real `None`/`False`/`0` a manifest might legitimately
-#: assign, so a caller can tell "not found" apart from "found and is
-#: `None`".
+#: assign, so a caller CAN tell "not found" apart from "found and is
+#: `None`". Neither current caller in this module (`_read_manifest_string_field()`,
+#: `_read_manifest_string_list_field()`) makes that distinction today —
+#: both collapse it via a plain `isinstance()` check — so this sentinel
+#: is precision for a future single-field reader that needs it, not
+#: something presently exercised.
 _FIELD_NOT_FOUND = object()
+
+
+class ModuleLiterals(NamedTuple):
+    """The result of `read_module_literals()`.
+
+    Args:
+        literals: `{name: literal value}` for every top-level assignment
+            whose value is a Python literal.
+        skipped: Every top-level assignment target whose value was NOT a
+            plain literal (e.g. a function call, a name reference) — read
+            as data still means the file's structure is visible even
+            where a value can't be. Most callers only need `.literals`;
+            `.skipped` exists for a caller that wants to warn about (or
+            otherwise react to) a field it expected to be a literal.
+    """
+
+    literals: dict[str, Any]
+    skipped: frozenset[str]
+
+
+def read_module_literals(path: Path) -> ModuleLiterals:
+    """Read every top-level literal assignment from one `.py` file, as data.
+
+    The general primitive every reader in this module — and any host
+    application's own manifest/mapping reader — builds on, rather than
+    each hand-rolling its own `ast` walk. Handles both plain assignment
+    (`NAME = ...`) and annotated assignment (`NAME: Type = ...`); a bare
+    annotation with no value (`NAME: Type`) contributes nothing, since
+    there is no value to evaluate. A name assigned a non-literal
+    expression is omitted from `.literals` (see `.skipped`), never
+    raised — a host wanting hard-failure semantics for a missing or
+    invalid field checks `.skipped`, or the name's absence, itself.
+
+    Never imports or executes the file — `path` lives in untrusted
+    content, so it is parsed as data via `ast.literal_eval` only.
+
+    Args:
+        path: The `.py` file to read.
+
+    Returns:
+        A `ModuleLiterals(literals, skipped)`. Both empty if the file
+        doesn't exist, can't be parsed, or declares no assignments at all.
+    """
+    if not path.is_file():
+        return ModuleLiterals({}, frozenset())
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return ModuleLiterals({}, frozenset())
+
+    literals: dict[str, Any] = {}
+    skipped: set[str] = set()
+    for node in tree.body:
+        targets: list[ast.expr]
+        if isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+            value_node = node.value
+        elif isinstance(node, ast.Assign):
+            targets = list(node.targets)
+            value_node = node.value
+        else:
+            continue
+
+        # A bare annotation (`NAME: dict[str, str]`) declares a type but
+        # no value; there is nothing to evaluate, and nothing to skip —
+        # this is not a field a game author was trying to give a value.
+        if value_node is None:
+            continue
+
+        for target in targets:
+            name = getattr(target, "id", None)
+            if name is None:
+                continue
+            try:
+                literals[name] = ast.literal_eval(value_node)
+            except ValueError:
+                skipped.add(name)
+    return ModuleLiterals(literals, frozenset(skipped))
 
 
 def _read_manifest_field(game_dir: Path, field_name: str) -> Any:
     """Read one literal field's raw value from `game_dir/__init__.py`, as data.
 
-    Scoped to reading exactly one named field at a time — not a
-    general-purpose manifest reader (a host application needing other
-    manifest data is expected to bring its own reader). Shared by every
-    public single-field reader in this module (`find_main_story_file()`'s
-    own `MAIN_STORY_FILE` read, `read_play_layout()`, `read_required_plugins()`)
-    rather than each writing its own one-off `ast`-parsing loop; each
-    caller does its own type check on the result.
+    A thin lookup over `read_module_literals()`. Shared by every public
+    single-field reader in this module (`find_main_story_file()`'s own
+    `MAIN_STORY_FILE` read, `read_play_layout()`, `read_required_plugins()`).
 
     Args:
         game_dir: The game folder's real filesystem path.
@@ -146,24 +227,7 @@ def _read_manifest_field(game_dir: Path, field_name: str) -> Any:
         `__init__.py`, or `_FIELD_NOT_FOUND` if the file is missing,
         cannot be parsed, or assigns no such name to a literal value.
     """
-    init_path = game_dir / "__init__.py"
-    if not init_path.is_file():
-        return _FIELD_NOT_FOUND
-    try:
-        tree = ast.parse(init_path.read_text(encoding="utf-8"), filename=str(init_path))
-    except (SyntaxError, UnicodeDecodeError):
-        return _FIELD_NOT_FOUND
-
-    for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(isinstance(target, ast.Name) and target.id == field_name for target in node.targets):
-            continue
-        try:
-            return ast.literal_eval(node.value)
-        except ValueError:
-            return _FIELD_NOT_FOUND
-    return _FIELD_NOT_FOUND
+    return read_module_literals(game_dir / "__init__.py").literals.get(field_name, _FIELD_NOT_FOUND)
 
 
 def _read_manifest_string_field(game_dir: Path, field_name: str) -> str | None:

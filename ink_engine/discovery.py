@@ -18,6 +18,34 @@ from types import ModuleType
 
 from ink_engine.plugin import Plugin
 
+#: The engine's own shipped plugin package — the generic, story-agnostic
+#: mechanics available to every game, whichever one is loaded. Hosts pass
+#: this as a source rather than each computing the same directory path.
+ENGINE_PLUGIN_PACKAGE = "ink_engine.engine_plugins"
+
+
+def make_game_folder_importable(game_dir: Path) -> str:
+    """Make one game folder importable, and return its dotted name.
+
+    A game folder is already a real package on disk; it needs only its
+    parent on `sys.path` for ordinary import to find it. The insertion is
+    idempotent and per distinct parent, so many game folders sharing one
+    parent cost one entry.
+
+    This is packaging, not permission: whether `game_dir` is safe to
+    import is the host's decision, made before calling.
+
+    Args:
+        game_dir: The game folder's path (must contain `__init__.py`).
+
+    Returns:
+        The folder's bare name, ready to pass to `discover_plugins()`.
+    """
+    parent = str(game_dir.parent)
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
+    return game_dir.name
+
 
 def _plugins_from_module(module: ModuleType) -> list[Plugin]:
     """Return the `Plugin` objects a module exposes via a top-level
@@ -45,93 +73,62 @@ def _plugins_from_module(module: ModuleType) -> list[Plugin]:
     return found
 
 
-def _scan_directory(directory: Path) -> list[Plugin]:
-    """Scan a directory of independent `.py` files (a real Python
-    package already on `sys.path` -- e.g. `ink_engine`'s own
-    `engine_plugins/`), importing each by its ordinary dotted path.
+def _plugins_from_source(source: str) -> list[Plugin]:
+    """Import one dotted name and return every `Plugin` it exposes.
 
-    No `importlib.util.spec_from_file_location` anywhere here -- this
-    path is only ever used for files genuinely inside an already-
-    importable package, never for loading something outside the Python
-    import system by raw filesystem path (see module docstring; that
-    concern is pushed entirely to the caller, via module-mode sources).
+    A plain MODULE is simply scanned. A PACKAGE is scanned first, and if
+    its own `__init__.py` declares plugins that is taken as its COMPLETE
+    answer -- a game folder that re-exports its submodules' plugins as
+    one `PLUGINS` list has already said what it offers, and walking its
+    submodules as well would find each of them twice. Only a package
+    that declares nothing itself is walked one level deep, each `.py`
+    file inside it imported by its real dotted path and scanned. Modules
+    whose name begins with `_` are skipped as private.
 
     Args:
-        directory: A real package directory (must have an `__init__.py`
-            already importable via the normal Python import system).
+        source: An importable dotted name — either a package
+            (`"ink_engine.engine_plugins"`, `"mygame"`) or a single
+            module (`"mygame.plugins"`).
 
     Returns:
-        Every `Plugin` declared by any `.py` file directly inside it.
+        Every `Plugin` found, in import order.
     """
-    package_name = _package_name_for(directory)
+    module = importlib.import_module(source)
+    declared = _plugins_from_module(module)
+
+    search_paths = getattr(module, "__path__", None)
+    if search_paths is None or declared:
+        return declared
+
     found: list[Plugin] = []
-    for module_info in pkgutil.iter_modules([str(directory)]):
+    for module_info in pkgutil.iter_modules(list(search_paths)):
         if module_info.name.startswith("_"):
             continue
-        module = importlib.import_module(f"{package_name}.{module_info.name}")
-        found.extend(_plugins_from_module(module))
+        found.extend(_plugins_from_module(importlib.import_module(f"{source}.{module_info.name}")))
     return found
 
 
-def _package_name_for(directory: Path) -> str:
-    """Resolve a directory's own real, already-importable dotted package
-    name, by finding it in `sys.modules` via its `__init__.py`'s package.
-
-    Args:
-        directory: A directory expected to already be a real, imported
-            Python package (has an `__init__.py`, was imported via the
-            ordinary Python import system before `discover_plugins()` was
-            ever called with it).
-
-    Returns:
-        The dotted package name.
-
-    Raises:
-        ValueError: `directory` has no `__init__.py`, or is not a
-            package Python has already imported (never resolved by raw
-            filesystem inspection -- if it isn't already importable, it
-            was never a valid directory-mode source to begin with).
-    """
-    init_file = directory / "__init__.py"
-    if not init_file.exists():
-        raise ValueError(f"'{directory}' has no __init__.py -- not a real Python package, cannot be scanned as a directory source")
-
-    for name, module in sys.modules.items():
-        module_file = getattr(module, "__file__", None)
-        if module_file is not None and Path(module_file).resolve() == init_file.resolve():
-            return name
-    raise ValueError(f"'{directory}' is not an already-imported Python package -- import it before passing it to discover_plugins()")
-
-
-def discover_plugins(sources: list[Path | str]) -> dict[str, Plugin]:
+def discover_plugins(sources: list[str]) -> dict[str, Plugin]:
     """Scan every source and merge the `Plugin` objects each one exposes.
 
     Args:
-        sources: Each entry is either a `Path` to a directory of
-            independent `.py` files (a real, already-importable Python
-            package -- each file scanned for a top-level `PLUGIN: Plugin`
-            or `PLUGINS: list[Plugin]`), or a `str` naming a single
-            already-importable dotted module (imported via plain
-            `importlib.import_module`, then scanned the same way). No
-            source is ever treated specially based on its origin -- the
-            caller decides what to pass and in what order; results are
-            merged as given. Making anything importable at all (via
-            `sys.path`, a real install, or any other means) is entirely
-            the caller's responsibility -- this function never does more
-            than one `importlib.import_module()` call per module-mode
-            source, and never touches the filesystem directly for a
-            module-mode source at all.
+        sources: Importable dotted names, each a package or a single
+            module (see `_plugins_from_source` for how each is scanned).
+            Results merge in the order given. Making a name importable is
+            the caller's job: for a folder outside the import path, call
+            `make_game_folder_importable()` first and pass what it
+            returns.
 
     Returns:
         Every discovered `Plugin`, keyed by its own `name`.
 
     Raises:
         ValueError: two sources declare a `Plugin` with the same `name`.
+        ModuleNotFoundError: a source names something not importable.
     """
     plugins: dict[str, Plugin] = {}
     for source in sources:
-        found = _scan_directory(source) if isinstance(source, Path) else _plugins_from_module(importlib.import_module(source))
-        for plugin in found:
+        for plugin in _plugins_from_source(source):
             if plugin.name in plugins:
                 raise ValueError(f"Duplicate plugin name '{plugin.name}' (from source '{source}')")
             plugins[plugin.name] = plugin

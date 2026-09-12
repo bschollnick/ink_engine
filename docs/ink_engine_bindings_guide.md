@@ -8,11 +8,11 @@ document is specific to `ink_engine`'s own runtime and plugin machinery.
 **Verification, and how to read the labels below.** `ink_engine` 0.1.0,
 `inklecate` v1.2.1 (compiled format `inkVersion` 21 — the binary itself has
 no `--version` flag; see [`inkles-ink-standard`](inkles-ink-standard/)).
-Every claim about `ink_engine`'s own Python API (the `Plugin`/
-`discover_plugins()`/`resolve_bindings()` machinery, §3-4, and the dispatch
-mechanism's own internals, §1) was verified directly against
-`ink_engine/engine.py`, `ink_engine/binding.py`, and `ink_engine/discovery.py`
-as they exist today — inklecate has no concept of Python bindings, so there
+Every claim about `ink_engine`'s own Python API (the `StatefulPlugin`/
+`Plugin`/`discover_plugins()`/`resolve_bindings()` machinery, §3-4, and the
+dispatch mechanism's own internals, §1) was verified directly against
+`ink_engine/plugin_base.py`, `ink_engine/engine.py`, `ink_engine/binding.py`,
+and `ink_engine/discovery.py` as they exist today — inklecate has no concept of Python bindings, so there
 is nothing to cross-check those claims against. Every claim about real Ink
 language/runtime behavior — anywhere `ink_engine` deliberately reproduces
 what Ink itself does, including where that behavior is a genuine gotcha —
@@ -128,10 +128,136 @@ Ink functions and matters for a binding's return value too: a host binding
 should return a real value on every path, never rely on "falling through"
 the way an Ink function's own fallback can.
 
-## 3. The plugin/discovery system (current API)
+## 3. Writing a plugin
 
-`ink_engine.plugin.Plugin` (a frozen dataclass) is the contract a discoverable
-unit of EXTERNAL bindings satisfies:
+A plugin is a unit of EXTERNAL bindings, optionally owning one named slice
+of the running session's state. Most are written by subclassing
+`StatefulPlugin`; the flat `Plugin` dataclass underneath it is still the
+contract everything is resolved through, and is described in §3.4 for the
+stateless case and for anyone reading the machinery itself.
+
+### 3.1 `StatefulPlugin`: the instance is the definition, the slot is the state
+
+```python
+from ink_engine.plugin_base import StatefulPlugin, external, query
+
+
+class CostSlot(TypedDict):
+    costs: dict[str, dict[str, Any]]
+
+
+class CostTable(StatefulPlugin[CostSlot]):
+    name = "cost_table"
+    display_name = "Cost table"
+    state_key = "cost_table"
+    slot_type = CostSlot
+    fields = {"costs": dict}
+
+    @query
+    @external
+    def cost_of(self, slot: CostSlot, cost_key: str, default: float = 0) -> float:
+        """Return what an action costs."""
+        entry = slot.get("costs", {}).get(cost_key) or self._declared.get(cost_key)
+        return entry.get("amount", default) if entry else default
+
+    @external
+    def set_cost(self, slot: CostSlot, cost_key: str, resource: str, amount: float) -> None:
+        """Declare or change one cost during play."""
+        slot.setdefault("costs", {})[cost_key] = {"resource": resource, "amount": amount}
+
+
+COST_TABLE = CostTable()
+PLUGIN = COST_TABLE.plugin()
+```
+
+That is the whole shape. Four things about it are load-bearing:
+
+**The instance is a module-level definition, not per-session data.** One
+`CostTable()` object serves every concurrent session in the process. The
+per-session data is the slot, which is a plain JSON-safe dict living in
+`engine_state`, and **every method takes it as its first argument after
+`self`**. A plugin that stores session data on `self` is broken in a way
+tests with one session will not catch.
+
+**`@external` publishes a method as an Ink binding under its own name.**
+The method name *is* the Ink name; there is no second naming layer to keep
+in sync. A return annotation is mandatory, and `-> None` is meaningful:
+it makes the binding return `VOID`, because Ink has no void EXTERNAL and a
+writer that returned Python's `None` would otherwise surface as an Ink
+runtime error at the call site. Omitting the annotation entirely is a
+`TypeError` at class definition time rather than a silent wrong answer.
+
+**`@query` publishes a method to the host's own read API** (the panel/
+sidebar surface), independently of whether it is also an `@external`.
+Stacking both, as `cost_of` does, means Ink and the host call one
+implementation.
+
+**`fields` declares the slot's shape** as name → zero-argument factory, and
+`slot_type` is the `TypedDict` that shape must match. The two are checked
+against each other when the instance is constructed, so a field added to
+one and not the other fails at import, not in a save six months later.
+`init_state()` additionally round-trips the fresh slot through
+`json.dumps()`, which is what stops a definition object (a dataclass, an
+Enum, a compiled table) from leaking into state that has to serialize.
+
+### 3.2 Reading another plugin's state, and `needs_context`
+
+A method that needs more than its own slot takes the binding context
+instead:
+
+```python
+    @external(needs_context=True)
+    def place(self, context: BindingContext[OccupancySlot], character: str, place_id: str) -> None:
+        declared = context.slot_of("location_graph").get("declared", {})
+        ...
+```
+
+`BindingContext` carries `slot`, `engine_state` and `list_defs`, and
+`slot_of(state_key)` reads another plugin's slot with a `{}` default. **Use
+the default rather than indexing.** A cross-plugin read can legitimately
+find nothing: the other plugin may not be active in this session, or the
+save may predate it. Readers throughout the shipped plugins use
+`.get(..., default)` for exactly this reason, and a new plugin that indexes
+directly will KeyError on an old save.
+
+`list_defs` is the story's own compiled LIST tables, for a plugin that must
+answer in terms of real LIST members. It is passed as an argument rather
+than parked in `engine_state` so it cannot outlive the bind, be read late
+from a closure, or reach a host's persisted save.
+
+### 3.3 Definition vs. state, and extending a shipped plugin
+
+**Config is definition; the slot holds only what play changed.** A price
+list, a map's edges, a quest catalog — these belong on the instance and are
+read live. Only what a session actually changed goes in the slot. This is
+not a style preference: it is what lets a new version of a game reach an
+existing save. Re-price a spell or add a map edge, and every save in
+flight sees it, because the save never contained a copy.
+
+**A game extends an engine plugin by instantiating it with config, or by
+subclassing it — and then activates the result, not both.**
+
+```python
+ASFA_COSTS = CostTable(name="set_asfa_costs", config=COST_TABLE_CONFIG)
+
+class AsfaSkills(Skills):           # adds fields and methods of its own
+    name = "asfa_skills"
+    slot_type = AsfaSkillSlot
+```
+
+A subclass republishes inherited bindings under the engine's names and adds
+its own under whatever convention the game uses. That is how ASFA keeps its
+`*_now` names on its own bindings while the engine publishes unsuffixed
+ones: a game's vocabulary is the game's to set, and the engine's naming
+standard binds only what the engine itself publishes.
+
+Activating both the base plugin and a subclass of it is the one real
+hazard, because they share a `state_key`. §3.5 describes what happens.
+
+### 3.4 The flat `Plugin` contract, and stateless plugins
+
+`StatefulPlugin.plugin()` produces the frozen dataclass everything
+downstream actually resolves:
 
 ```python
 @dataclass(frozen=True)
@@ -141,51 +267,50 @@ class Plugin:
     bindings: dict[str, Callable[..., Any]] = field(default_factory=dict)
     validate_config: Callable[[Any], None] | None = None
     state_key: str | None = None
-    init_state: Callable[[], dict[str, Any]] | None = None
-    bind: Callable[[dict[str, Any], EngineState], dict[str, Callable]] | None = None
+    init_state: Callable[[Any], dict[str, Any]] | None = None
+    default_config: Any = None
+    bind: Callable[[dict, EngineState, ListDefs], dict[str, Callable]] | None = None
 ```
 
-A plugin with only `bindings` set is a pure-function plugin — stateless
-EXTERNAL calls with no per-session data (`location_graph.py`'s `_bind()` is
-a documented no-op for exactly this reason: it owns real state but exposes
-none of it as a direct Ink call, since it's only ever read by a
-*dependent* plugin's own `bind`, never called from Ink directly). A plugin
-that also sets `state_key`/`init_state`/`bind` additionally owns one named
-slice of the running session's `EngineState` (a plain
-`dict[str, Any]`, `ink_engine.plugin.EngineState`).
+A plugin with only `bindings` set is a **stateless** plugin: pure functions,
+no per-session data, no slot. Declare one directly as a `Plugin`, or hang
+one off a stateful plugin's `stateless_bindings` when the functions belong
+to the same subject (scheduling's day-phase helpers are stateless while its
+clock is not). `state_key is not None` is the real test for "does this
+plugin own state" — not the presence of `bind`, which every plugin has.
 
-`ink_engine.discovery.discover_plugins(sources)` scans a flat,
-host-supplied list of sources (each a `Path` to a directory of independent
-`.py` files, or a `str` naming an already-importable dotted module) and
-merges every `Plugin` object it finds (via a module-level `PLUGIN: Plugin`
-or `PLUGINS: list[Plugin]` attribute) into one `dict[str, Plugin]` keyed by
-name. **This function has no trust concept whatsoever** — every source
-given is scanned and imported unconditionally. Deciding which sources are
-even safe to pass here — a story folder's own extension module, say — is
-entirely the host application's job, upstream of this call. `ink_engine/
-engine_plugins/` ships both kinds of module — check each one's own
-`PLUGIN`/`PLUGINS` declaration before assuming it registers, since a module
-can exist and be fully tested without being wired into discovery at all:
-- **Self-registering as a `Plugin`** (declares `PLUGIN`, so
-  `discover_plugins()` picks it up automatically): `character_occupancy`,
-  `characters`, `cost_table` (in `costs.py`), `location_graph`,
-  `scheduling`, `skills`, `quests`.
-- **Plain importable modules, no `Plugin`/EXTERNAL surface of their own**
-  (a game's own bridge module imports these directly instead):
-  `containers`, `inventory`, `item_text`.
+`ink_engine.discovery.discover_plugins(sources)` scans a host-supplied list
+of sources (a `Path` to a directory of independent `.py` files, or a `str`
+naming an importable dotted module) and merges every `PLUGIN` /
+`PLUGINS` it finds into one dict keyed by name. **This function has no
+trust concept whatsoever** — every source given is scanned and imported
+unconditionally. Deciding which sources are even safe to pass is entirely
+the host's job, upstream of this call.
 
-`ink_engine.binding.resolve_bindings(plugins, active_names, engine_state)`
-takes that discovered-plugins dict, a host-chosen list of which names
-should actually contribute bindings to *this* session (already filtered by
-whatever trust/opt-in decision the host makes), and the session's own
-mutable `engine_state` dict — and returns the real `dict[str, Callable]`
-ready to pass as `InkRuntimeState`'s own `engine_bindings=`.
+### 3.5 Two-phase resolution: allocate, then bind
 
-**A plugin needing another plugin's state** reads
-`engine_state.get(other_plugin.state_key, {})` directly inside its own
-`bind()` — there is no dynamic ownership-resolution mechanism; the reading
-plugin simply imports the other plugin's own `STATE_KEY` constant (or
-duplicates the literal string) and reads it by that known key.
+`resolve_bindings(plugins, active_names, engine_state, configs=None)` runs
+in two passes, and the split is what makes activation order stop mattering.
+
+**Pass 1, `allocate_state()`** creates every missing slot before anything
+binds — so a plugin whose `bind()` reads a neighbour's slot finds it there
+regardless of which was activated first. Of the active plugins sharing one
+slot, those carrying a config (a host entry, else `default_config`) are its
+**seeders**:
+
+- exactly one seeder — it builds the slot: `validate_config(config)`, then
+  `init_state(config)`;
+- no seeder — the first tenant builds it from `init_state(None)`;
+- two seeders — `AmbiguousSlotConfigError`, because whichever won would be
+  an accident of ordering. This is the loud failure you get from activating
+  both a base plugin and its configured subclass; activate one.
+
+**A slot already present is left alone** — no validation, no re-seeding.
+That is the resumed-save path, and it is why config must never be the place
+a running session's data lives.
+
+**Pass 2** binds each active plugin and merges the results into the
+`dict[str, Callable]` that goes to `InkRuntimeState(engine_bindings=...)`.
 
 ## 4. Testing that a binding is really wired
 
@@ -206,6 +331,12 @@ its own proves very little. Two checks that do prove something:
   no ordinary assertion on the returned value alone can tell those apart
   when the fallback's own default happens to overlap with a legitimate
   real answer.
+- **Assert the slot stays JSON-safe and encapsulated.** `json.dumps()` the
+  slot after exercising the plugin's writers. A slot that will not
+  serialize is a save that will not persist, and the usual cause is a
+  definition object (a dataclass, an Enum) reaching state that should hold
+  only plain data. `init_state()` checks this for a *fresh* slot; only a
+  test covers what the writers put there later.
 
 ## 5. Runtime notes — for anyone working on `engine.py` itself
 
