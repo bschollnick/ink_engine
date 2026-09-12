@@ -1,46 +1,23 @@
 """Media-tag resolution: turning a turn's `# image: <tag>`/`# video: <tag>`
-Ink tags into displayable URLs/paths, shared by every host.
+Ink tags into displayable URLs or paths.
 
-A story's own `.ink` content names media by a plain tag — what that tag
-resolves TO is entirely host-specific. `parse_media_tags` is the one shared
-piece: turning a turn's raw tag list into `(kind, tag_name)` pairs is pure
-text processing with no host-specific knowledge in it at all, so it lives
-here once rather than being reimplemented per host.
+What a tag resolves TO is host-specific; splitting a turn's raw tag list
+into `(kind, tag_name)` pairs is not, so `parse_media_tags` lives here
+once and `MediaResolver` is the seam each host implements. A host picks
+its implementation by ordinary import — no registry, since a story is
+played by exactly one host at a time.
 
-Note that `image:`/`video:` prefixes are entirely this project's own
-convention, not part of the Ink language itself — the Ink spec's own tag
-mechanism (`RunningYourInk.md`'s "Marking up your ink content with tags")
-is untyped, arbitrary metadata a story author hands the game verbatim
-(`#{character}_greeting.jpg` is the spec's own suggested example), with no
-built-in notion of "image" or "video" or a directory convention of any
-kind. This module does not invent one either: the tag's own string content
-is a path the GAME AUTHOR chose, used exactly as written.
+The `image:`/`video:` prefixes are this project's convention, not Ink's:
+Ink tags are untyped metadata handed to the game verbatim, with no notion
+of media kind or directory layout. Nothing here invents one either — a
+tag's string is a path the game author chose, used as written.
 
-`MediaResolver` is the seam every host implements on its own side.
-Selecting WHICH resolver handles a story's tags is an ordinary Python
-import, by design — a host picks its own implementation (this module's
-`FilesystemMediaResolver`, a Django host's own DB-backed resolver, or any
-future third one) and instantiates it; there is no registry to maintain,
-because a story is always played by exactly one host at a time, and that
-host already knows which one it is.
-
-**Why the filesystem resolver below does not do a database-indexed
-lookup**: a host built around a media library that already maintains its
-own indirection (e.g. so a game folder doesn't have to duplicate a
-directory tree that already exists elsewhere) has a real reason for the
-tag to NOT be the path directly — but a plain standalone game folder
-carries none of that constraint: everything the game needs already
-ships inside its own folder, so the tag IS the path, directly and only.
-`FilesystemMediaResolver` below does a plain per-tag file-existence
-check under the game's own directory — no flat `media/` catch-all, no
-fixed per-kind subdirectory, no filename-stem matching, no override
-dictionary, no upfront directory scan. The game controls where its own
-files live; this resolver never polices that — it only ever reads the
-path the tag itself already names. A host with its own indexed media
-store answering the SAME tag vocabulary is a wholly separate
-implementation of the same `MediaResolver` seam; the two must never be
-confused with each other, and neither one's behavior leaks into the
-other's module.
+`FilesystemMediaResolver` therefore does a plain per-tag existence check
+under the game's own directory: no catch-all media folder, per-kind
+subdirectory, stem matching, or upfront scan. A host whose media library
+maintains its own indirection has a real reason for a tag not to be a
+path, but that is a separate implementation of the same seam, and neither
+one's behaviour belongs in the other.
 """
 
 from __future__ import annotations
