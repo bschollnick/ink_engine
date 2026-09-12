@@ -38,10 +38,11 @@ from __future__ import annotations
 
 import functools
 import math
-import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
+
+from ink_engine.rng import NetRandom, RandomEngine, time_seed
 
 
 class InkPathError(ValueError):
@@ -50,17 +51,13 @@ class InkPathError(ValueError):
 
 class UnboundExternalError(ValueError):
     """Raised when an EXTERNAL call has neither a bound Python callable
-    nor a resolvable Ink fallback, matching inklecate's own runtime
-    error ("Missing function binding for external... and no fallback
-    ink function found") rather than degrading to a silent 0.
+    nor a resolvable Ink fallback, matching inklecate's own runtime error.
     """
 
 
 class _Unresolved:  # pylint: disable=too-few-public-methods
     """Sentinel distinguishing "never looked up" from a cached `None` on
-    `_resolved_target_cache`. A resolution failure caches as `None` and
-    must not be retried, so it has to stay distinguishable from an
-    untouched cache.
+    `_resolved_target_cache`.
     """
 
 
@@ -71,16 +68,11 @@ def _container_path(container: "Container") -> str:
     """Reconstruct a container's absolute dotted path string.
 
     Ports Object.path (ink-engine-runtime/Object.cs)'s container-side
-    component: walks up the parent chain; each step is the child's own
-    "#n" name if it has one, otherwise its positional index in the
-    parent's content list. A child reachable only via a terminator-dict
-    key (no positional slot) still needs a "#n" — `_load_container` sets
-    it from that key, since compiled output never repeats the key as the
-    child's own name.
+    component: each step up the parent chain is the child's own "#n"
+    name, else its positional index.
 
-    Used by shuffle-index selection (shuffle results depend on this exact
-    string) and by state serialization, which addresses pointers/choices
-    as plain paths instead of live object references.
+    The exact string is load-bearing — shuffle-index selection and state
+    serialization both address content by it.
 
     Args:
         container: The container to compute a path string for.
@@ -105,120 +97,6 @@ def _container_path(container: "Container") -> str:
             raise InkPathError(f"Container {current!r} is not reachable from its own parent {parent!r} by name or position")
         current = parent
     return ".".join(reversed(components))
-
-
-def _wrap_int32(value: int) -> int:
-    """Wrap a Python int into C#'s 32-bit signed integer range.
-
-    Args:
-        value: Any integer, possibly outside int32 range after arithmetic.
-
-    Returns:
-        value reduced modulo 2**32 and reinterpreted as signed, matching
-        C#'s implicit int32 overflow wraparound. Python ints never
-        overflow, so every NetRandom arithmetic step C# performs as int32
-        must be wrapped explicitly here.
-    """
-    value &= 0xFFFFFFFF
-    if value >= 0x80000000:
-        value -= 0x100000000
-    return value
-
-
-class NetRandom:  # pylint: disable=too-few-public-methods
-    """A faithful Python port of the legacy .NET `System.Random(int seed)`
-    algorithm (the Knuth subtractive/lagged-Fibonacci generator).
-
-    Only the bare parameterless `.Next()` is implemented: Ink never calls
-    C#'s other `Next(...)` overloads, since RANDOM/shuffle/LIST_RANDOM all
-    do their own range-mapping on the raw int32 result.
-
-    .NET Core 3.0+ (including net6.0, which `inklecate` targets) preserves
-    this legacy algorithm for the explicit-seed constructor, even though
-    the parameterless `Random()` constructor switched to xoshiro128** in
-    modern .NET. The Int32.MinValue seed is special-cased to
-    Int32.MaxValue during seed-array initialization, because
-    `Math.Abs(int.MinValue)` throws in C# and the real algorithm
-    substitutes `int.MaxValue` for that one seed directly.
-
-    Args:
-        seed: The seed value. Any int32 is accepted, matching the
-            algorithm's own domain, though Ink's `storySeed` is always a
-            small nonnegative int.
-    """
-
-    _MBIG = 2147483647
-    _MSEED = 161803398
-
-    def __init__(self, seed: int) -> None:
-        seed_array = [0] * 56
-        subtraction = self._MBIG if seed == -2147483648 else abs(seed)
-        mj = _wrap_int32(self._MSEED - subtraction)
-        seed_array[55] = mj
-        mk = 1
-        ii = 0
-        for i in range(1, 55):
-            ii += 21
-            if ii >= 55:
-                ii -= 55
-            seed_array[ii] = mk
-            mk = _wrap_int32(mj - mk)
-            if mk < 0:
-                mk = _wrap_int32(mk + self._MBIG)
-            mj = seed_array[ii]
-        for _ in range(1, 5):
-            for i in range(1, 56):
-                seed_array[i] = _wrap_int32(seed_array[i] - seed_array[1 + (i + 30) % 55])
-                if seed_array[i] < 0:
-                    seed_array[i] = _wrap_int32(seed_array[i] + self._MBIG)
-        self._seed_array = seed_array
-        self._inext = 0
-        self._inextp = 21
-
-    def next(self) -> int:
-        """Return the next pseudo-random int32 in this generator's sequence.
-
-        Ports Random.InternalSample(): two rolling indices into the
-        56-element seed array, each call advancing both and folding the
-        difference back into the array.
-
-        Returns:
-            A value in [0, Int32.MaxValue), matching C#'s
-            `Random.Next()` (the parameterless overload) exactly for the
-            same seed.
-        """
-        inext = self._inext + 1
-        if inext >= 56:
-            inext = 1
-        inextp = self._inextp + 1
-        if inextp >= 56:
-            inextp = 1
-        ret_val = _wrap_int32(self._seed_array[inext] - self._seed_array[inextp])
-        if ret_val == self._MBIG:
-            ret_val -= 1
-        if ret_val < 0:
-            ret_val = _wrap_int32(ret_val + self._MBIG)
-        self._seed_array[inext] = ret_val
-        self._inext = inext
-        self._inextp = inextp
-        return ret_val
-
-
-def _time_seed() -> int:
-    """Return a nondeterministic int32 seed derived from the current time.
-
-    Ports the construction-time default in Story.ResetState
-    (ink-engine-runtime/StoryState.cs: `storySeed = new
-    Random(timeSeed).Next() % 100`), where timeSeed comes from the system
-    clock — a story has no fixed seed unless the author calls
-    `SEED_RANDOM()`. Uses time.time_ns() truncated to int32 rather than
-    C#'s own clock-seed formula: only nondeterminism matters here, and a
-    clock-based seed is not reproducible between inklecate runs either.
-
-    Returns:
-        A pseudo-random int32 value, different on (almost) every call.
-    """
-    return _wrap_int32(time.time_ns())
 
 
 @dataclass
@@ -309,25 +187,18 @@ class Divert:
     """An unconditional or conditional `->` jump to another path.
 
     Args:
-        target_path: Where to jump to. Ignored when is_variable_target is
-            True — target_path is a placeholder Path in that case (the
-            real destination is read from a variable at follow-time), kept
-            only so every Divert has a well-typed target_path field
-            without needing Optional.
+        target_path: Where to jump to. When is_variable_target is True
+            this is a placeholder holding a variable NAME instead, and
+            the real destination is read at follow-time.
         is_conditional: True if a truthy value must be popped off the eval
             stack first to decide whether to follow this divert.
-        pushes_tunnel: True for a `->t->` tunnel-push divert (compiled
-            from `-> knot ->`): pushes a return-address frame onto the
-            call stack before jumping, so a later `->->` (PopTunnel) can
-            resume right after this divert instead of ending the story.
-        is_variable_target: True for a `{"->": "varName", "var": true}`
-            variable-pointer divert (compiled from Ink's empty-bracket
-            choice syntax `* text[]` among other forms):
-            `target_path`'s string form is actually a variable *name*,
-            read at follow-time and expected to hold a DivertTargetValue
-            whose own target_path is the real destination — ports
-            Divert.hasVariableTarget/variableDivertName
-            (ink-engine-runtime/Divert.cs).
+        pushes_tunnel: True for a `->t->` tunnel-push divert: pushes a
+            return-address frame so a later `->->` resumes after this
+            divert instead of ending the story.
+        is_variable_target: True for `{"->": "varName", "var": true}`.
+            The named variable holds a DivertTargetValue whose own
+            target_path is the real destination. Ports
+            Divert.hasVariableTarget (ink-engine-runtime/Divert.cs).
     """
 
     target_path: Path
@@ -454,16 +325,11 @@ class ResolvedDivertTarget:
 
 
 class Void:  # pylint: disable=too-few-public-methods
-    """A marker type: isinstance checks are its whole interface.
+    """The implicit return of a function falling off its own body without
+    an explicit "~ret" (ink-engine-runtime/Story.cs).
 
-    The implicit return value of a function that falls off the end of its
-    own body without an explicit "~ret" (ink-engine-runtime/Story.cs).
-    Must be distinct from the integer 0: a bare `0` would print as the
-    literal text "0" when EVAL_OUTPUT encounters a void function used as
-    a print expression (e.g. `{UPPERCASE(...)}` where UPPERCASE's
-    fallback body has no `~ret`), where inklecate prints nothing. A
-    `~ bump()` statement is unaffected either way, its result being
-    discarded by a trailing VOID_POP before reaching EVAL_OUTPUT.
+    Must stay distinct from the integer 0: EVAL_OUTPUT prints a bare `0`
+    as the literal text "0", where inklecate prints nothing.
     """
 
 
@@ -491,27 +357,14 @@ class FunctionCall:
     `{"x()": name, "exArgs": n}` call to an EXTERNAL-declared function.
 
     Args:
-        target_path: The function's target path — an absolute top-level
-            name for an ordinary call (e.g. "add_points"), or a relative
-            one like ".^.^.^" for a recursive self-call from inside a
-            function's own body. Resolved via _resolve_target like any
-            Divert/ChoicePoint target, not by a bare
-            self.root.named_content lookup. An "x()" target is always a
-            bare top-level name: an EXTERNAL binds to its same-named ink
-            fallback, never to a self/sibling-relative call.
-        is_external: True for "x()". Dispatch is identical to an ordinary
-            "f()" call, since the compiler erases the distinction at
-            runtime; the flag exists so a host application's validation
-            can check that every EXTERNAL's fallback resolves, without
-            also flagging an ordinary "f()" call to a typo'd path as an
-            unbound EXTERNAL.
+        target_path: The function's target path, absolute or relative
+            (see `_call_function`, which resolves it).
+        is_external: True for "x()". Dispatch is identical either way;
+            the flag exists so validation can check EXTERNAL fallbacks
+            without flagging a typo'd ordinary call as unbound.
         external_arg_count: The declared arity from "exArgs" on an "x()"
-            call, or None for an "f()" call (which never carries the key).
-            Ink-fallback dispatch ignores it — arity there is described by
-            what is already on eval_stack — but the Python-callable branch
-            needs it: a bound callable has no Ink-side `temp=` header to
-            consume eval_stack, so the interpreter must know how many
-            values to pop before invoking it.
+            call, else None. Only the Python-callable branch needs it
+            (see `_call_function`).
     """
 
     target_path: Path
@@ -526,16 +379,8 @@ class FunctionCall:
 def _list_value_entries_as_dict(entries: tuple[tuple[tuple[str, str], int], ...]) -> dict[tuple[str, str], int]:
     """Build the {(origin_name, item_name): int_value} dict for a ListValue's entries.
 
-    Cached on the entries tuple itself: ListValue is frozen/hashable, and
-    the same value is often tested repeatedly in one turn (several choice
-    conditions against the same LIST), so this avoids rebuilding an
-    identical dict on every `?`/`==`/`!=`/`&&`/`||` call.
-
-    Args:
-        entries: A ListValue's entries tuple.
-
-    Returns:
-        {(origin_name, item_name): int_value}.
+    Cacheable because ListValue is frozen/hashable, and one value is
+    often tested repeatedly within a turn.
     """
     return dict(entries)
 
@@ -747,10 +592,8 @@ def load_list_defs(story_json: dict[str, Any]) -> dict[str, dict[str, int]]:
 def retrieve_python_list(list_defs: dict[str, dict[str, int]], list_name: str) -> dict[str, int]:
     """Return one declared LIST's own item table, as plain Python.
 
-    An EXTERNAL binding building a `ListValue` in bulk (see
-    `store_python_list`) needs that LIST's declared item names and their
-    integer values. Scoped to one LIST, since a binding only ever builds
-    one LIST-typed value at a time.
+    Supplies `store_python_list` with the item table it needs to build a
+    `ListValue`.
 
     Args:
         list_defs: A `load_list_defs()` result — every LIST the story
@@ -768,26 +611,20 @@ def retrieve_python_list(list_defs: dict[str, dict[str, int]], list_name: str) -
 def store_python_list(list_name: str, item_names: Iterable[str], item_values: dict[str, int]) -> ListValue:
     """Build a real `ListValue` from a plain Python collection of item names.
 
-    The write-side counterpart to `retrieve_python_list`: turns a set of
-    item names computed in bulk in ordinary Python into the native value
-    Ink's LIST operators (`?`/`+`/`-`/comparisons — see `_list_binary_op`)
-    understand, rather than a comma-joined string `.ink` content would
-    have to parse (only `+`/`==`/`!=` are defined on strings — see
-    `_apply_string_native_function`). This engine departs from the Ink
-    spec here: an EXTERNAL binding's Python return value is pushed onto
-    the eval stack with no coercion (`_call_function`), so a `ListValue`
-    built this way works everywhere an Ink-built LIST value would.
+    The write-side counterpart to `retrieve_python_list`. An EXTERNAL
+    binding's return value is pushed onto the eval stack uncoerced, so
+    the result works anywhere an Ink-built LIST value would — including
+    the LIST operators (`?`/`+`/`-`/comparisons), which a comma-joined
+    string would not support.
 
     Args:
         list_name: The LIST these items belong to, e.g. "AllCharacters" —
             becomes the built value's own `origin_names`.
-        item_names: The item names to include. Any name not present in
-            `item_values` is skipped rather than raising, since a caller
-            building this from live session data (e.g. "who is present
-            right now") may legitimately name a character the story's own
-            LIST declaration does not carry.
-        item_values: That LIST's own item table — a `retrieve_python_list`
-            result — supplying each included item's real integer value.
+        item_names: The item names to include. A name absent from
+            `item_values` is skipped rather than raising — live session
+            data may name something the LIST declaration does not carry.
+        item_values: That LIST's item table, a `retrieve_python_list`
+            result.
 
     Returns:
         A `ListValue` with one entry per name in `item_names` that
@@ -800,17 +637,11 @@ def store_python_list(list_name: str, item_names: Iterable[str], item_values: di
 def find_unbound_externals(root: Container) -> list[str]:
     """Find every EXTERNAL-declared function with no resolvable ink fallback.
 
-    Compiled Ink JSON erases the EXTERNAL/ordinary-function distinction
-    except at the call site: `EXTERNAL name(...)` leaves no trace, but a
-    `{"x()": name, ...}` call still needs a same-named
-    `=== function name(...) ===` somewhere in the tree — the ink fallback
-    used whenever no host function is bound for that name. A host
-    application validating an uploaded story can use this to check every
-    EXTERNAL has one. Walks every Container reached from root (positional
-    content and named-only/terminator-dict children alike, matching
-    _container_by_id_index()'s traversal), collecting every
-    FunctionCall.is_external target name, then checks each resolves to a
-    real Container via resolve_path.
+    Compiled Ink JSON erases the EXTERNAL declaration itself; only the
+    call site survives. Each still needs a same-named
+    `=== function name(...) ===` in the tree — the fallback used when no
+    host function is bound. A host validating an uploaded story can use
+    this to check every EXTERNAL has one.
 
     Args:
         root: The story's root Container (from load_story_root()).
@@ -1049,13 +880,9 @@ NEWLINE = "\n"
 
 
 def _is_whitespace_only(text: str) -> bool:
-    """Return whether text is non-empty and made only of spaces/tabs.
+    """Return whether `text` is non-empty and made only of spaces/tabs.
 
-    Args:
-        text: A leaf text token (any "^" marker already stripped).
-
-    Returns:
-        True if text consists entirely of " "/"\\t".
+    `text` is a leaf text token, any "^" marker already stripped.
     """
     return bool(text) and all(c in (" ", "\t") for c in text)
 
@@ -1147,10 +974,6 @@ def _split_head_tail_whitespace(text: str) -> list[str] | None:
 class OutputStream:
     """Assembles visible turn text from leaf tokens using Ink's real
     glue/newline-suppression rules.
-
-    Function-call-frame whitespace trimming is deliberately not
-    implemented; only glue-triggered trimming and story-level newline
-    dedup / no-leading-newline are.
     """
 
     def __init__(self) -> None:
@@ -1173,17 +996,15 @@ class OutputStream:
     def from_tokens(cls, tokens: list[str]) -> "OutputStream":
         """Build a stream over an existing token list.
 
-        Wholesale reassignment is the one sanctioned way `tokens` shrinks
-        from outside `push()` (see `__init__`'s cache note), so it gets a
-        named constructor rather than being a convention each caller
-        reproduces.
+        The sanctioned way `tokens` shrinks from outside `push()`; see
+        `__init__`'s cache note.
 
         Args:
             tokens: The tokens the new stream owns. Taken as given, not
                 copied -- pass a copy where the caller keeps its own.
 
         Returns:
-            The stream, with its glue cache correctly unset.
+            The stream, with its glue cache unset.
         """
         stream = cls()
         stream.tokens = tokens
@@ -1256,21 +1077,15 @@ class OutputStream:
     def _latest_glue_index(self) -> int:
         """Find the index of the most recent still-active glue token.
 
-        Ports the backward scan in PushToOutputStreamIndividual: walks
-        back from the end of the stream and returns the index of the
-        first glue token encountered. This stream never carries
-        ControlCommand tokens, so unlike the C# source it never has a
-        BeginString boundary to stop at.
+        Ports the backward scan in PushToOutputStreamIndividual. This
+        stream carries no ControlCommand tokens, so unlike the C# source
+        there is no BeginString boundary to stop at.
 
-        Cached incrementally. `self.tokens` only ever grows by appending
-        within this class's own methods; nothing removes from the middle.
-        So once the answer is known for a given length, a longer `tokens`
-        needs only its newly appended suffix checked — if that has no
-        glue, the previous answer still holds, nothing before it having
-        changed. A `tokens` shorter than the cached length (possible only
-        via external `.tokens = list(...)` reassignment, since this
-        class's own pop()/del always update the cache alongside) means a
-        stale cache and triggers a full rescan.
+        Cached incrementally, which holds only because `self.tokens`
+        grows by appending and is never spliced in the middle: a longer
+        list needs just its new suffix scanned. A list shorter than the
+        cached length means an external `.tokens = [...]` reassignment
+        left the cache stale, and forces a full rescan.
 
         Returns:
             The index of the most recent glue token, or -1 if the stream
@@ -1346,16 +1161,11 @@ class OutputStream:
 
         Ports Runtime.State.CleanOutputWhitespace: a display-time pass
         over the joined text collapsing any run of inline spaces/tabs to a
-        single space, unless it sits at the start of a line. This runs
-        after the push-time glue/newline logic, and is what keeps two
-        glued pieces each carrying an adjacent space (e.g. "One " <> "
-        Two ") from leaving a double space at the join, which real Ink
-        output never shows.
+        single space, unless it sits at the start of a line.
 
         Returns:
-            The fully assembled and whitespace-cleaned visible text, with
-            glue markers omitted (a glue token that survived to this point
-            had nothing to suppress and contributes no text of its own).
+            The assembled, whitespace-cleaned visible text, glue markers
+            omitted.
         """
         joined = "".join(token for token in self.tokens if token != GLUE)
 
@@ -1772,10 +1582,9 @@ def _list_unary_op(name: str, value: ListValue, list_defs: dict[str, dict[str, i
 def _apply_list_native_function(name: str, args: list[Any], list_defs: dict[str, dict[str, int]]) -> Any:
     """Apply one LIST-typed native function.
 
-    A LIST operand takes priority in dispatch, checked before
-    _coerce_native_function_operands' bool/int/float/str coercion, matching
-    NativeFunctionCall's CallType resolution, which tests for List operands
-    before falling through to Int/Float/String.
+    A LIST operand takes dispatch priority over
+    `_coerce_native_function_operands`' numeric/string coercion, matching
+    NativeFunctionCall's CallType resolution.
 
     Args:
         name: The operator symbol.
@@ -1925,18 +1734,14 @@ class Pointer:
 class CallFrame:
     """One `== function ==` call-stack frame.
 
-    Only functions use this. Tunnels use the simpler `tunnel_stack`: a
-    tunnel has no parameters or return value, just a return address, so it
-    needs no per-frame temp scoping.
+    Only functions use this; tunnels use the simpler `tunnel_stack`.
 
     Args:
         return_pointer: Where to resume the caller once this frame pops
             (via FUNCTION_RETURN or falling off the end of the function's
             container).
-        temps: This call's own local `temp=` scope, so nested functions
-            each get an independent parameter without clobbering the
-            caller's. Separate from `InkRuntimeState.temps`, the flat
-            scope backing the outermost (no active call) level.
+        temps: This call's own local `temp=` scope, separate from
+            `InkRuntimeState.temps`, which backs the outermost level.
     """
 
     return_pointer: Pointer
@@ -1965,19 +1770,13 @@ _SCALAR_STATE_FIELDS: tuple[tuple[str, str, Callable[[Any], Any], Any], ...] = (
 )
 
 
+# Mirrors the real engine's StoryState, which has the same dozens of
+# fields; not removable while this class owns the whole interpreter.
 class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
     """Tracks one story's playthrough position, output, and choices.
 
-    Over the default instance-attribute threshold by design, mirroring the
-    real Ink engine's StoryState and its dozens of fields (eval stack, call
-    stack, variables, visit/turn counts, RNG state).
-
-    Owns pointer advancement, divert following, choice collection and
-    once-only/sticky pruning by visit count, global/temp variables, the
-    eval stack, the arithmetic/comparison/logic/string operator set (see
-    apply_native_function()), and running the compiled "global decl"
-    container once at construction to initialize VAR declarations (ports
-    Story.ResetGlobals).
+    Runs the compiled "global decl" container once at construction to
+    initialize VAR declarations (ports Story.ResetGlobals).
 
     Args:
         root: The story's root Container (from load_story_root()).
@@ -1986,12 +1785,14 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             stories with no LIST declarations.
         engine_bindings: Real Python callables to dispatch EXTERNAL calls
             to, keyed by the exact function name declared in the story.
-            None/empty by default: this interpreter has no notion of
-            "trusted", so whether to pass real bindings, and to which
-            stories, is the host application's decision. Every bound
-            callable must be stateless (see _call_function). The dict is
-            only ever read by function-name lookup at call time, never
-            mutated here.
+            None/empty by default; whether to pass real bindings is the
+            host application's decision. Every bound callable must be
+            stateless (see _call_function).
+        random_engine: A factory taking a seed and returning a
+            `RandomEngine`, called fresh each time a seeded sequence is
+            needed. Defaults to `NetRandom`, which reproduces the .NET
+            generator inklecate runs — override only to match a
+            different story format's reference implementation.
     """
 
     def __init__(
@@ -1999,10 +1800,12 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         root: Container,
         list_defs: dict[str, dict[str, int]] | None = None,
         engine_bindings: dict[str, Callable[..., Any]] | None = None,
+        random_engine: Callable[[int], RandomEngine] = NetRandom,
     ) -> None:
         self.root = root
         self.list_defs = list_defs or {}
         self.engine_bindings = engine_bindings or {}
+        self.random_engine = random_engine
         self.pointer: Pointer | None = Pointer.start_of(root)
         self.previous_pointer: Pointer | None = None
         self.output = OutputStream()
@@ -2039,7 +1842,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         self.call_stack: list[CallFrame] = []
         self._pending_thread = False
         self.turn_count = -1
-        self.story_seed = NetRandom(_time_seed()).next() % 100
+        self.story_seed = self.random_engine(time_seed()).next() % 100
         self.previous_random = 0
         self.last_turn_text = ""
         self._register_list_item_globals()
@@ -2049,28 +1852,18 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         """Pre-register every LIST item name as a single-item-value global.
 
         Ports the observable effect of ListDefinitionsOrigin's item
-        lookup: a bare item name (e.g. `Notes` in `w += Notes`) compiles
-        to an ordinary `{"VAR?": "Notes"}` VariableReference, not a
-        special list-item token, so the item must already be a resolvable
-        global before any story content runs — before _run_global_decl()
-        executes the compiled "global decl" container. Real Ink treats two
-        LISTs sharing an item name as a compile-time ambiguity error
-        (AddItem throws); here a later origin's item silently wins instead
-        of raising.
+        lookup: a bare item name compiles to an ordinary VariableReference,
+        so it must be a resolvable global before any story content runs.
+
+        Real Ink treats two LISTs sharing an item name as a compile-time
+        ambiguity error; here a later origin's item silently wins.
         """
         for list_name, items in self.list_defs.items():
             for item_name, value in items.items():
                 self.globals[item_name] = ListValue.single(list_name, item_name, int(value))
 
     def _visit_count(self, container: Container) -> int:
-        """Return how many times container has been stepped into.
-
-        Args:
-            container: The container to look up.
-
-        Returns:
-            The recorded visit count, or 0 if never visited.
-        """
+        """Return how many times `container` has been stepped into, 0 if never."""
         return self.visit_counts.get(id(container), 0)
 
     def _record_visit(self, container: Container, at_start: bool = True) -> None:
@@ -2104,13 +1897,9 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         """Run the compiled "global decl" container once, if present.
 
         Ports Story.ResetGlobals: VAR declarations compile into a
-        container named "global decl" holding an eval-run per declaration
-        ("ev <value> {"VAR=": name} /ev ... end"), which must run once
-        before play starts so `self.globals` holds each VAR's initial
-        value. Points self.pointer at that container, steps it to
-        completion (it always ends in a bare "end" ControlCommand), then
-        restores self.pointer and self.done so this does not look to the
-        caller like the story already ended.
+        container named "global decl", which must run once before play
+        starts so `self.globals` holds each VAR's initial value.
+        self.pointer and self.done are restored afterwards.
         """
         global_decl = self.root.named_content.get("global decl")
         if not isinstance(global_decl, Container):
@@ -2125,19 +1914,10 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         self.done = False
 
     def _pop_eval_stack(self, default: Any = 0) -> Any:
-        """Pop one value off eval_stack, tolerating an empty stack.
+        """Pop one value off eval_stack, returning `default` if it is empty.
 
-        A well-formed compiled story leaves exactly the values later
-        tokens expect to pop, but a token recognized without being fully
-        implemented can fail to push one. Tolerating the empty case keeps
-        such content from crashing the whole interpreter.
-
-        Args:
-            default: The value to return instead of crashing when
-                eval_stack is empty.
-
-        Returns:
-            The popped value, or default if eval_stack was empty.
+        A recognized-but-unimplemented token can fail to push the value a
+        later token pops; tolerating that keeps it from crashing the turn.
         """
         return self.eval_stack.pop() if self.eval_stack else default
 
@@ -2157,11 +1937,8 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
     def _current_temps(self) -> dict[str, Any]:
         """Return the temp-variable scope for the innermost active call frame.
 
-        Each function call gets its own `temp=` scope (CallFrame.temps),
-        matching compiled output where nested calls each get an
-        independent copy of a same-named parameter. Tunnels push no
-        CallFrame, so a tunnel body shares the outermost flat scope, as in
-        real Ink, where a tunnel introduces no new VariablesState scope.
+        Tunnels push no CallFrame, so a tunnel body shares the outermost
+        flat scope -- real Ink likewise gives a tunnel no new scope.
 
         Returns:
             self.call_stack[-1].temps if a function call is active,
@@ -2210,14 +1987,10 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
     def _resolve_target(holder: Container, root: Container, path: Path) -> Any | None:
         """Resolve a Divert/ChoicePoint target path to the content it addresses.
 
-        Ports Object.ResolvePath: an absolute path resolves from the story
-        root, a relative one from holder (the container directly holding
-        the Divert/ChoicePoint). A leading "^" component on a relative
-        path is not walked as a step up to holder.parent — it only marks
-        the path as relative to holder and is discarded before the
-        remaining components resolve. So `.^.c-0` on a choice point
-        addresses named content within the choice point's own holder, not
-        within holder's parent.
+        Ports Object.ResolvePath: absolute paths resolve from root,
+        relative ones from holder. A leading "^" is NOT a step up to
+        `holder.parent` — it only marks the path relative and is
+        discarded, so `.^.c-0` addresses content within holder itself.
 
         Args:
             holder: The container that directly holds the Divert/
@@ -2241,30 +2014,17 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
     ) -> Any | None:
         """Resolve `owner.target_path` (== `path`), memoized on `owner` itself.
 
-        The cached counterpart to `_resolve_target()`. The answer can
-        never change: `owner`'s position in the compiled tree (`holder`)
-        and its `target_path` are fixed once the story loads, and the tree
-        is never mutated after `load_story_root()` builds it. Without the
-        cache, a divert inside a frequently re-entered knot re-walks the
-        same path from `holder`/`root` on every visit.
-
-        A resolution failure is cached alongside a success: a broken
-        target stays broken for the life of the loaded tree.
-
-        Not used for `Divert.is_variable_target=True`, whose destination
-        comes from a variable at follow-time, nor for the
-        `parent_path`-derived lookup in `_follow_divert`'s is_index
-        handling — that is a different path than `owner.target_path`, so
-        `owner`'s cache would answer the wrong question, and that call
-        site uses the uncached `_resolve_target()`.
+        Only valid where the answer is fixed for the life of the loaded
+        tree. A variable-target divert, or a path derived from
+        `owner.target_path` rather than equal to it, must use the
+        uncached `_resolve_target()` — `owner`'s cache would answer a
+        different question.
 
         Args:
             owner: The object whose own `target_path` is being resolved.
-                `path` must be `owner.target_path` itself, not a path
-                derived from it.
             holder: The container directly holding `owner` (see
                 `_resolve_target()`).
-            path: `owner.target_path`.
+            path: `owner.target_path` itself, not a path derived from it.
 
         Returns:
             The resolved content, or None if resolution fails — either
@@ -2280,23 +2040,15 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
     def _visit_changed_containers_due_to_divert(self) -> None:
         """Record visits for ancestor containers newly entered by a jump.
 
-        Ports VisitChangedContainersDueToDivert. After a divert or choice
-        sets self.pointer to a new position, the step-by-step
-        _descend_into_containers walk records visits only for containers
-        nested below it, never the ones above that were also freshly
-        entered (the named knot container itself, when diverting straight
-        to a leaf several levels inside it). This walks up the new
-        pointer's parent chain, recording a visit for each ancestor that
-        was not already an ancestor of the previous pointer, so containers
-        still "inside" from before the jump are not double-counted.
+        Ports VisitChangedContainersDueToDivert. `_descend_into_containers`
+        records only containers below the new pointer, so this walks up its
+        parent chain, skipping any ancestor the previous pointer already
+        had (which would otherwise be double-counted).
 
-        at_start tracking: an ancestor counts as entered-at-start only if
-        the child pointing into it is that ancestor's own content[0] and
-        every ancestor closer to the leaf was also entered at start (ports
-        the allChildrenEnteredAtStart latch). Diverting to index N>0
-        inside knot K means K was not entered at its start, though K is
-        still newly entered and still gets its plain visit count bumped.
-        This matters only for a container flagged counting_at_start_only.
+        An ancestor counts as entered-at-start only if the child pointing
+        into it is that ancestor's `content[0]` and every ancestor closer
+        to the leaf was too (ports the allChildrenEnteredAtStart latch),
+        which matters only for a `counting_at_start_only` container.
         """
         pointer = self.pointer
         if pointer is None or pointer.container is None:
@@ -2331,9 +2083,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
 
         Ports Divert.target_pointer's is_index special case. Without it, a
         divert whose target path ends in an index rather than a name
-        resolves to a null pointer — such targets are common, e.g. the
-        compiled "resume after this conditional-text block" address
-        following every `{cond: a|b}` construct.
+        resolves to a null pointer.
 
         Args:
             divert: The divert being followed.
@@ -2418,19 +2168,15 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
 
         Ports StartThread: a thread runs immediately and synchronously,
         stepping its own independent Pointer from the divert's target
-        until it falls off the end (silently discarded, no effect on the
-        main flow) or reaches its own choice points, which are appended to
-        self.current_choices like the main flow's. Because a thread runs
-        the moment "thread" is encountered, its choices land before the
-        main flow's. Choosing a threaded choice resumes purely within that
-        thread, the main flow's pending choices and position being
-        abandoned — what choose()/Choice(target=Container) already does
-        unconditionally, Choice carrying no memory of which flow produced
-        it.
+        until it falls off the end (silently discarded) or reaches its own
+        choice points, which are appended to self.current_choices. Running
+        at the "thread" marker means its choices land BEFORE the main
+        flow's, and choosing one abandons the main flow's pending choices
+        and position.
 
         A bare DONE_COMMANDS inside the thread ends only the thread's
-        sub-walk; self.done is never touched, matching real Ink's
-        per-thread completion, so the main flow's "-> DONE" still runs.
+        sub-walk; self.done is never touched, so the main flow's
+        "-> DONE" still runs.
 
         Args:
             divert: The thread's own target divert (the one immediately
@@ -2468,13 +2214,12 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         Ports the PopTunnel branch of
         Story._perform_logic_and_flow_control: pops one value off
         eval_stack, then resumes at the most recently pushed tunnel return
-        address. The compiler always emits "ev void /ev" immediately
-        before a plain `->->` to leave room for the `->-> someExpr`
-        override-target form; that override is not implemented, but the
-        plain form's void must still be popped so it does not corrupt the
-        next expression. An empty tunnel_stack (a `->->` outside any
-        tunnel) is a story error in real Ink; here it ends the story
-        rather than raising, as DONE_COMMANDS does for unexpected ends.
+        address. The popped value is the void the compiler emits before
+        every plain `->->` (room for the unimplemented `->-> someExpr`
+        override form).
+
+        An empty tunnel_stack ends the story rather than raising, as
+        DONE_COMMANDS does for unexpected ends.
         """
         self._pop_eval_stack()
         if not self.tunnel_stack:
@@ -2485,38 +2230,20 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
     def _call_function(self, call: FunctionCall, holder: Container) -> None:
         """Push a CallFrame and jump into a `{"f()": path}` function call.
 
-        Ports the Function branch of CallStack.Push: arguments are already
-        on eval_stack, pushed by the caller before this token, and the
-        function body's leading `temp=` assignments pop them into its
-        fresh CallFrame scope, so the interpreter never needs the
-        function's arity.
+        Ports the Function branch of CallStack.Push. Arguments are
+        already on eval_stack; the body's leading `temp=` assignments pop
+        them, so Ink-side arity is never needed here.
 
-        Relative targets: an ordinary top-level call target is absolute
-        (e.g. "add_points"), but a function calling itself or a sibling
-        compiles to a relative one (".^.^.^" for direct recursion),
-        resolved via _resolve_target like a Divert/ChoicePoint target,
-        never by a bare self.root.named_content lookup.
+        A target may be relative (".^.^.^" for direct recursion), so it
+        resolves via `_resolve_target`, not a bare `root.named_content`
+        lookup.
 
-        EXTERNAL dispatch: when `call.is_external` and `engine_bindings`
-        holds a Python callable under this target name, it is invoked
-        directly instead of resolving into the story's Ink fallback —
-        `call.external_arg_count` values are popped off eval_stack (the
-        real arity is needed here, a Python callable having no Ink-side
-        `temp=` header to consume the stack), passed positionally in push
-        order, and the return value pushed. This interpreter has no trust
-        concept of its own: whether to pass real bindings in at all is the
-        host application's decision, and a story given none falls through
-        to the Ink-fallback path. Every bound callable must be stateless —
-        it receives only the popped argument values, never this
-        InkRuntimeState or any shared state, and returns one value,
-        mirroring an ordinary Ink function's args-in/one-value-out shape.
-
-        An EXTERNAL call resolving to neither a Python callable nor an Ink
-        fallback raises `UnboundExternalError`, matching real Ink, which
-        compiles such a story successfully but raises "Missing function
-        binding for external... and no fallback ink function found" when
-        it is called. A non-EXTERNAL unresolved call instead degrades to
-        pushing 0.
+        EXTERNAL dispatch: a Python callable in `engine_bindings` under
+        the target name wins over the Ink fallback. It needs real arity —
+        `call.external_arg_count` values are popped and passed
+        positionally in push order. Bound callables must be stateless:
+        argument values in, one value out. A non-EXTERNAL unresolved call
+        degrades to pushing 0.
 
         Args:
             call: The function call being processed.
@@ -2608,13 +2335,10 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
     def _advance_pointer(self, pointer: Pointer) -> Pointer | None:
         """Advance the live self.pointer, popping a function frame if needed.
 
-        A function body falling off the end of its own container without
-        an explicit "~ret" (a void function has none) hits the same "no
-        positional sibling, no parent left" case _advance_past() treats as
-        end-of-story. With a CallFrame active, that case instead means the
-        call is over, matching real Ink's implicit Void return. This
-        wrapper is the one place distinguishing the two: genuine
-        end-of-story only when call_stack is empty too.
+        The one place that tells end-of-story from an implicit Void
+        return: both reach `_advance_past()`'s "no sibling, no parent"
+        case, but with a CallFrame active it means the call is over. The
+        story has genuinely ended only when call_stack is empty too.
 
         Args:
             pointer: The current pointer to advance from.
@@ -2662,12 +2386,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         compiler emits pushes in — condition value first (pushed last, so
         on top), then choice-only text, then start text, matching the C#
         source's hasChoiceOnlyContent-before-hasStartContent field order.
-        The two flags are independent, not mutually exclusive: a choice
-        may have start text only, choice-only text only, both, or neither.
-        The pops happen whether or not the choice is shown, since the
-        compiled token stream already pushed these values before the
-        ChoicePoint was reached; leaving them would corrupt the next
-        expression.
+        The pops happen whether or not the choice is shown.
 
         Args:
             choice_point: The choice point being processed.
@@ -2950,9 +2669,10 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         "lrnd" (LIST_RANDOM).
 
         Ports the Random/SeedRandom/SequenceShuffleIndex/ListRandom
-        branches of Story._perform_logic_and_flow_control, using NetRandom
-        (the ported .NET System.Random) so results match real inklecate
-        output for the same story_seed.
+        branches of Story._perform_logic_and_flow_control. Draws from
+        `self.random_engine`, which by default reproduces the .NET
+        generator so results match real inklecate output for the same
+        story_seed.
 
         Args:
             name: One of RNG_COMMANDS.
@@ -2980,7 +2700,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
                 self.eval_stack.append(min_value)
                 return
             result_seed = self.story_seed + self.previous_random
-            next_random = NetRandom(result_seed).next()
+            next_random = self.random_engine(result_seed).next()
             self.eval_stack.append((next_random % random_range) + min_value)
             self.previous_random = next_random
             return
@@ -3027,7 +2747,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             path_str = ""
         sequence_hash = sum(ord(c) for c in path_str)
         random_seed = sequence_hash + loop_index + self.story_seed
-        rng = NetRandom(random_seed)
+        rng = self.random_engine(random_seed)
         unpicked = list(range(num_elements))
         chosen_index = unpicked[0]
         for i in range(iteration_index + 1):
@@ -3054,7 +2774,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             self.eval_stack.append(ListValue())
             return
         result_seed = self.story_seed + self.previous_random
-        next_random = NetRandom(result_seed).next()
+        next_random = self.random_engine(result_seed).next()
         chosen_key, chosen_value = value.entries[next_random % len(value.entries)]
         self.eval_stack.append(ListValue(entries=((chosen_key, chosen_value),), origin_names=(chosen_key[0],)))
         self.previous_random = next_random
@@ -3062,14 +2782,12 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
     def _apply_operator_defensively(self, name: str) -> None:
         """Pop operands for one native-function operator and push its result.
 
-        Degrades to a no-op rather than crashing when the operands are
-        absent or do not coerce cleanly: an empty-stack "MIN" and a None
-        operand from an unassigned variable both reach this path on real
-        content.
+        A no-op when the operands are absent or do not coerce cleanly,
+        which real content does reach (an empty-stack "MIN", a None from
+        an unassigned variable).
 
         Args:
-            name: The operator symbol (already present in
-                NATIVE_FUNCTION_ARITY by the caller's own check).
+            name: The operator symbol.
         """
         arity = NATIVE_FUNCTION_ARITY[name]
         if len(self.eval_stack) < arity:
@@ -3457,14 +3175,12 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
                 eval_stack or store in a variable.
 
         Returns:
-            int/float/str unchanged, being JSON-safe already; a tagged
-            dict for bool/ListValue/ResolvedDivertTarget/Void. bool is
-            checked before int, Python's bool being an int subclass, and
-            is tagged so it round-trips as a bool rather than 0/1. Void
-            carries no data but still needs its tag: a snapshot taken
-            between a void call returning and its EVAL_OUTPUT/VOID_POP
-            consuming the value must not degrade Void to None, which
-            _deserialize_value would rebuild as a printable value.
+            int/float/str unchanged; a tagged dict for
+            bool/ListValue/ResolvedDivertTarget/Void. bool is checked
+            before int, Python's bool being an int subclass, and tagged so
+            it round-trips as a bool rather than 0/1. Void is tagged too:
+            it must not degrade to None, which would rebuild as a
+            printable value.
         """
         if isinstance(value, bool):
             return {"$type": "bool", "value": value}
@@ -3533,12 +3249,9 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
     def _container_by_id_index(self) -> dict[int, Container]:
         """Build an id(Container) -> Container index for the whole tree.
 
-        visit_counts/visit_turns are keyed by id(container), an in-process
-        identity meaningless across a save/load boundary, so
-        _id_keyed_dict_to_path_keyed() needs this walk to find each key's
-        Container and compute its path string. Rebuilt fresh each call
-        rather than cached: to_dict() is its only caller, at most once per
-        turn.
+        visit_counts/visit_turns are keyed by id(container), which is
+        meaningless across a save/load boundary, so serialization needs
+        this to recover each key's path string.
 
         Returns:
             {id(container): container} for every Container reachable
@@ -3607,16 +3320,14 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
     def to_dict(self) -> dict[str, Any]:
         """Serialize this state to a plain, JSON-safe dict.
 
-        Every Container/Pointer reference becomes a path string via
-        _container_path()/resolve_path(), so the result holds only
-        dicts/lists/str/int/float/bool/None and round-trips through
-        `json.dumps`/`json.loads` with no custom encoder.
+        Every Container/Pointer reference becomes a path string, so the
+        result round-trips through `json.dumps`/`json.loads` with no
+        custom encoder.
 
         Transient mid-dispatch flags (_eval_run_depth, _pending_thread,
         _in_tag, _tag_buffer, _string_capture_stack) are included: a
         stopping point can be captured mid-eval-run, and resuming without
-        them routes the pending marker down the wrong branch and loses its
-        output.
+        them routes the pending marker down the wrong branch.
 
         Returns:
             The serialized state.
@@ -3664,20 +3375,14 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
 
         Args:
             root: The story's root Container (from load_story_root()),
-                which must be the same compiled story data the state was
+                which must be the same compiled story the state was
                 serialized against. A path that no longer resolves is
-                dropped silently rather than raising; repairing a changed
-                story belongs to a save-compatibility path upstream.
+                dropped silently rather than raising.
             data: A to_dict() result.
             list_defs: The story's LIST definitions, as for the
-                constructor. Passed through so __init__'s bootstrap
-                (_register_list_item_globals(), _run_global_decl()) runs
-                exactly as for a fresh construction, before this method
-                overwrites the fields holding save data.
-            engine_bindings: As for the constructor. A resumed game must
-                get the same bindings a fresh game for that story would;
-                the caller re-derives them on every load, and which
-                functions are bound is not part of saved state.
+                constructor.
+            engine_bindings: As for the constructor. Bindings are not part
+                of saved state; the caller re-derives them on every load.
 
         Returns:
             A new InkRuntimeState with every field from data restored.

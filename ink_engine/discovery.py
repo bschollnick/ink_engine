@@ -1,11 +1,8 @@
 """Plugin discovery: scan a flat, host-supplied list of sources and merge
 the `Plugin` objects each one exposes.
 
-No trust concept exists anywhere in this module -- every source given is
-scanned unconditionally; deciding WHICH sources are safe to pass is
-entirely the caller's responsibility. No distinction is made between
-"generic" and "game-specific" sources either -- that split is purely a
-convention in how the caller assembles its own sources list.
+**Every source given is scanned unconditionally.** Deciding WHICH
+sources are safe to pass is the caller's responsibility.
 """
 
 from __future__ import annotations

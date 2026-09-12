@@ -3,13 +3,12 @@
 A game folder may ship a `sidebar.py` exposing `panel_context()`,
 `panel_action()` and `panel_command()`; a host renders whatever data they
 return beside the story text. This module is the shared calling
-convention, so every host invokes them identically.
+convention.
 
-A hook supplies data, never markup -- what a host renders from it is its
-own business. This module never imports a game's code: it calls a module
-the host already imported, having made its own trust decision upstream.
-Every hook is optional, and one that raises is logged and treated as
-absent, so a decorative panel cannot take down the story.
+A hook supplies data, never markup. This module never imports a game's
+code: it calls a module the host already imported, having made its own
+trust decision upstream. Every hook is optional, and one that raises is
+logged and treated as absent.
 """
 
 from __future__ import annotations

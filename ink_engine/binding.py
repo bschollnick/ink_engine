@@ -100,11 +100,9 @@ def resolve_bindings(
 ) -> dict[str, Callable[..., Any]]:
     """Build the real EXTERNAL bindings for one game session.
 
-    Two phases. `allocate_state()` first creates every slot the active
-    plugins own that the session lacks, so allocation never depends on
-    the order names are given in. Then, for each active name in order,
-    that plugin's stateless `bindings` are merged and, if it is stateful,
-    `bind(own_state, engine_state, list_defs)` is called.
+    Two phases: `allocate_state()` creates every slot the active plugins
+    own, so allocation never depends on the order names are given in;
+    then each active plugin's bindings are merged in order.
 
     Args:
         plugins: Every discoverable plugin, by name.
@@ -123,8 +121,7 @@ def resolve_bindings(
         The bindings dict for this session.
 
     Raises:
-        KeyError: `active_names` holds a plugin discovery never found --
-            a host misconfiguration, reported rather than skipped.
+        KeyError: `active_names` holds a plugin discovery never found.
         AmbiguousSlotConfigError: See `allocate_state()`.
         SystemConfigValidationError: A config failed its plugin's
             validator.
@@ -156,12 +153,9 @@ def check_required_plugins(
 ) -> None:
     """Check a game's manifest against the plugins actually in use.
 
-    The manifest is the single declaration of what a game needs, so
-    anything in use that it does not name is a real defect: the two have
-    drifted, and whichever host reads the manifest will bind less than the
-    game expects. That failure is silent -- an unbound EXTERNAL falls
-    through to its ink stub and answers plausibly -- so it is raised here
-    instead.
+    Anything in use the manifest does not name is a real defect, and the
+    failure is silent: an unbound EXTERNAL falls through to its ink stub
+    and answers plausibly. Hence raising here.
 
     Three ways a plugin can be in use without being declared, all checked:
 
@@ -193,8 +187,9 @@ def check_required_plugins(
         problems.append(f"{name!r} is exported by the game but the manifest does not list it")
 
     if root is not None:
-        from ink_engine.engine import (
-            external_call_names,  # pylint: disable=import-outside-toplevel  (engine imports this module's siblings)
+        # Deferred: engine imports this module's siblings.
+        from ink_engine.engine import (  # pylint: disable=import-outside-toplevel
+            external_call_names,
         )
 
         called = external_call_names(root)
@@ -233,6 +228,7 @@ def _binding_names(plugin: Plugin) -> set[str]:
         return names
     try:
         names |= set(plugin.bind(plugin.init_state(None), {}, {}))
-    except Exception:  # pylint: disable=broad-except  (a plugin needing real state must not break the check)
+    # A plugin needing real state must not break the check.
+    except Exception:  # pylint: disable=broad-except
         pass
     return names

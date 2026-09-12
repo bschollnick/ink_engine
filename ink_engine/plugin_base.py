@@ -4,9 +4,8 @@ A plugin is an instance of a `StatefulPlugin` subclass. Two things live on
 it, kept apart by where they are stored:
 
 - **State** is the plain JSON dict the engine allocates under `state_key`
-  (the "slot"). It is never wrapped in another object. Every reader and
-  writer takes the slot as its first argument and works on it directly, so
-  there is nothing to serialize and nothing to rebuild.
+  (the "slot"), never wrapped in another object. Every reader and writer
+  takes the slot as its first argument and works on it directly.
 - **Definition** is everything the instance holds as attributes: config, a
   rule table, registries of story functions. It is built once at import,
   shared by every session, and never enters the slot. Construction checks
@@ -19,15 +18,12 @@ published in `Plugin.queries` under the `(slot, *args)` contract; marked
 `@external` it is also the Ink EXTERNAL of the same name. A binding that
 must see the whole session (another plugin's slot, the LIST tables) is
 marked `@external(needs_context=True)` and takes a `BindingContext` in
-place of the slot. `bind()` closes each marked method over the session
-with `functools.partial`, so the closure dict is derived rather than
-written.
+place of the slot.
 
 Typing: a subclass declares its slot's shape as a `TypedDict` in
 `slot_type` and the matching empty-value factories in `fields`. The two
-are checked against each other at construction, so a field name typo fails
-at import, and a method annotated `slot: <that TypedDict>` gets its field
-names checked statically.
+are checked against each other at construction, so a field name typo
+fails at import.
 """
 
 from __future__ import annotations
@@ -151,14 +147,10 @@ class BindingContext(Generic[SlotT]):
 
 
 def _call_returning_void(method: Callable[..., Any], *args: Any) -> Any:
-    """Call a writer and hand Ink the void value in place of its None.
+    """Call a writer and hand Ink `VOID` in place of its None.
 
-    Args:
-        method: The `@external` method annotated `-> None`.
-        *args: The bound instance, the slot or context, then Ink's arguments.
-
-    Returns:
-        `VOID`.
+    `args` is the bound instance, the slot or context, then Ink's own
+    arguments.
     """
     method(*args)
     return VOID

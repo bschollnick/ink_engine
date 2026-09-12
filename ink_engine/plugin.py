@@ -57,50 +57,34 @@ class Plugin:
         validate_config: Optional validator for whatever config shape a
             host attaches to this plugin. Called by the host, never here.
         state_key: Where this plugin's state lives in `EngineState`, or
-            None when stateless.
-
-            It need not equal `name`, and two plugins may share one key
-            deliberately -- a game's plugin extending a generic one
-            operates on the same store. So `EngineState` keys are not a
-            list of active plugin names; deriving one from the other
-            activates the wrong plugin. Plugins sharing a key merge in
-            `active_names` order, so a later one's bindings win a
-            collision: that is how a game overrides a generic binding.
+            None when stateless. It need not equal `name`, and two
+            plugins may deliberately share one key -- so `EngineState`
+            keys are NOT a list of active plugin names, and deriving one
+            from the other activates the wrong plugin. Plugins sharing a
+            key merge in `active_names` order, so a later one's bindings
+            win a collision.
         init_state: `(config) -> dict`, building this plugin's fresh state
             on first use, or None when stateless. Set with `state_key`,
             never alone. `config` is the host's config for this plugin,
-            `default_config` when the host attaches none, or None; a
-            plugin that seeds nothing ignores it.
-
-            A plugin may own state without binding anything: one whose
-            data exists for a dependent plugin to read has state_key and
-            init_state but no `bind`. Requiring a no-op `bind` for that
-            case only obscured which plugins really answer Ink calls.
+            `default_config` when the host attaches none, or None. A
+            plugin may own state without binding anything: state_key and
+            init_state with no `bind` is valid.
         default_config: What `init_state` is given when the host attaches
-            no config. A plugin whose fresh slot needs seeding declares it
-            here so that, when it shares a slot with another plugin, the
-            allocation step knows which of them builds the slot.
+            no config. Declaring it is how the allocation step knows
+            which of two plugins sharing a slot builds it.
         bind: `(own_state, engine_state, list_defs) -> dict[str, Callable]`,
             building the stateful bindings; None when stateless. Always
-            this exact shape, used or not, so nothing dispatches on what a
-            plugin declares and a wrong signature fails at bind time. Read
-            another plugin's state with
-            `engine_state.get(other_state_key, {})`.
-
-            `list_defs` is the story's compiled LIST tables. It is an
+            this exact shape, used or not, so a wrong signature fails at
+            bind time. Read another plugin's state with
+            `engine_state.get(other_state_key, {})`. `list_defs` is an
             argument rather than an `engine_state` entry so it has no
-            lifetime beyond the call: it cannot be read late from a
-            closure, and cannot reach a host's saved data.
+            lifetime beyond the call.
         queries: Questions this plugin can answer about its own state,
             by name. Each takes this plugin's own slot followed by the
-            question's arguments, and answers from the plugin's accessor
-            rather than from any caller-supplied path.
-
-            This is what lets declarative data -- a schedule rule, say --
-            ask about a plugin without naming how it stores anything. A
-            plugin that publishes no queries simply cannot be asked, which
-            is the right default for one whose state is nobody else's
-            business.
+            question's arguments. This is what lets declarative data --
+            a schedule rule, say -- ask about a plugin without naming how
+            it stores anything. A plugin that publishes none cannot be
+            asked.
 
     Raises:
         ValueError: `state_key` and `init_state` are not set together, or

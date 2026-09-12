@@ -1,23 +1,13 @@
 """Media-tag resolution: turning a turn's `# image: <tag>`/`# video: <tag>`
 Ink tags into displayable URLs or paths.
 
-What a tag resolves TO is host-specific; splitting a turn's raw tag list
-into `(kind, tag_name)` pairs is not, so `parse_media_tags` lives here
-once and `MediaResolver` is the seam each host implements. A host picks
-its implementation by ordinary import — no registry, since a story is
-played by exactly one host at a time.
+What a tag resolves TO is host-specific: `parse_media_tags` splits a
+turn's raw tags into `(kind, tag_name)` pairs, and `MediaResolver` is the
+seam each host implements.
 
 The `image:`/`video:` prefixes are this project's convention, not Ink's:
 Ink tags are untyped metadata handed to the game verbatim, with no notion
-of media kind or directory layout. Nothing here invents one either — a
-tag's string is a path the game author chose, used as written.
-
-`FilesystemMediaResolver` therefore does a plain per-tag existence check
-under the game's own directory: no catch-all media folder, per-kind
-subdirectory, stem matching, or upfront scan. A host whose media library
-maintains its own indirection has a real reason for a tag not to be a
-path, but that is a separate implementation of the same seam, and neither
-one's behaviour belongs in the other.
+of media kind or directory layout.
 """
 
 from __future__ import annotations
@@ -53,19 +43,14 @@ def find_cover_image(game_dir: Path) -> str | None:
     convention — no manifest field, no Ink tag.
 
     Looks for `cover.<ext>` (any of `COVER_EXTENSION_FALLBACKS`) directly
-    under `game_dir`, then under `game_dir/images/` — the same
-    does-it-exist philosophy `FilesystemMediaResolver` uses, structural
-    rather than story-driven, since a cover is a fact about the game
-    folder itself, not something an Ink tag ever names.
+    under `game_dir`, then under `game_dir/images/`.
 
     Args:
         game_dir: The game folder's real filesystem path.
 
     Returns:
         The resolved absolute path to `cover.<ext>`, or None if no such
-        file exists in either location — deciding what to show instead
-        (a generic placeholder icon) is the caller's own concern, not
-        this function's; `ink_engine` has no opinion on host UI.
+        file exists in either location.
     """
     for search_dir in COVER_SEARCH_DIRS:
         for extension in COVER_EXTENSION_FALLBACKS:
@@ -179,26 +164,14 @@ def _group_by_kind(requests: list[tuple[str, str]]) -> dict[str, list[str]]:
 
 
 class FilesystemMediaResolver:  # pylint: disable=too-few-public-methods
-    """Resolves media tags directly against a real game folder's own files
-    — the standalone player's implementation, needing no database, no
-    upfront directory scan, and no lookup table of any kind.
+    """Resolves media tags directly against a real game folder's own files.
 
-    A tag names a file's own path relative to the game folder's own root,
-    exactly as the game author wrote it: `image: church/church_front.jpg`
-    resolves to `<game_dir>/church/church_front.jpg`, checked for real
-    existence on disk, nothing more. Where a game organizes its own files
-    is entirely the game's own choice, expressed by what path it writes
-    into its own tags — this resolver imposes NO directory convention of
-    its own (no `images/`/`video/` split, no other fixed subdirectory) and
-    does not care which media kind a tag was (`image:` vs `video:`) beyond
-    using it to group the output. A tag with no extension of its own tries
-    each of `EXTENSION_FALLBACKS` in order until one exists.
-
-    No filename-stem matching, no casefold scan, no override dictionary —
-    the tag already names its own file's exact real path. This is
-    deliberate: see this module's own docstring for why a standalone game
-    folder needs none of the indirection a database-indexed resolver
-    exists for.
+    A tag names a file's path relative to the game folder's root, exactly
+    as the author wrote it: `image: church/church_front.jpg` resolves to
+    `<game_dir>/church/church_front.jpg`, checked for real existence on
+    disk. This resolver imposes NO directory convention of its own, and
+    does no stem matching or casefold scanning. A tag with no extension
+    tries each of `EXTENSION_FALLBACKS` in order until one exists.
     """
 
     def __init__(self, game_dir: Path) -> None:
