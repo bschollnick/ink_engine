@@ -1,210 +1,62 @@
-"""SkillSystem: a generic, roll-under skill-check framework.
+"""A generic, roll-under skill-check framework.
 
-A reusable engine service ANY story builds its specific skill/attribute
-system on top of — never one specific game's own implementation. This
-module has zero knowledge of what "Strength" or
-"Charisma" means, or what any one game's own skill list looks like — a
-skill is just a name (a plain string the game layer chooses) and a
-numeric level on whatever range the game layer declares for it (1-6,
-1-20, 1-100, or anything else); this module normalizes every check
-internally to a percentile (0-100) roll, so the game layer's own display
-range is purely presentational and never touches the actual roll math.
+A skill is just a name the game layer chooses and a numeric level on
+whatever range it declares (1-6, 1-20, 1-100). Every check normalises
+internally to a percentile roll, so the game's display range is
+presentational and never touches the roll math. Nothing here knows what
+"Strength" means or what any game's skill list looks like.
 
-**Roll-under mechanic**: a check succeeds when a 1-100 roll is less than
-or equal to (level + bonus). This module has no opinion about what a
-caller does with a level outside a sane range, or a bonus that pushes the
-effective target past 100 or below 0 — those are simply clamped at roll
-time (see `check()`'s own docstring), never rejected, since the game
-layer's own range validation (if any) is its own concern.
+**Roll-under**: a check succeeds when a 1-100 roll is at or below
+(level + bonus). Levels and bonuses outside a sane range are clamped at
+roll time rather than rejected; range validation is the game's own
+concern.
 
-**Own independent RNG, not Ink's**: `SkillState` carries its own
-seed/call-count, fully independent of `engine.py`'s
-`InkRuntimeState.story_seed`/
-`previous_random`. This keeps `SkillSystem` fully decoupled from the Ink
-interpreter's own RNG internals — zero import of `engine.py` anywhere in
-this module — at the cost of skill checks and Ink's own `RANDOM()` not
-sharing one combined random stream. A skill check is a pure function of
-(skill state, RNG state) -> (result, new RNG state), fully deterministic
-and replayable from its own serialized state alone.
-
-Per-session isolation: every function here is a pure function of its own
-explicit arguments — no instance attributes, no shared/module-level
-state. `SkillState` is a plain, JSON-safe dataclass meant to round-trip
-through a session's own serialized state, exactly like `SchedulingState`/
-`LocationGraphState`/`OccupancyState`.
+**Its own RNG, not Ink's.** The slot carries its own seed, so this module
+imports nothing from the interpreter. The cost is that skill checks and
+Ink's `RANDOM()` draw from separate streams; the gain is that a check is a
+pure function of (skill state, RNG state), deterministic and replayable
+from serialized state alone.
 """
 
 from __future__ import annotations
 
 import random
-from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
+from typing import TypedDict
 
-from ink_engine.plugin import Plugin
+from ink_engine.plugin_base import StatefulPlugin, external, query
+
+#: Where this plugin's state lives in a session's `EngineState`.
+STATE_KEY = "skills"
 
 
-@dataclass
-class SkillState:
+class SkillSlot(TypedDict):
     """A session's own skill levels plus this module's own independent RNG state.
 
-    Args:
+    Attributes:
         skill_levels: character_id -> {skill_name: level}. Named for what
-            it actually holds -- skill levels only, not general
-            per-character state (which belongs in character attributes
-            instead, not here).
-
-            The level is a
-            NUMBER (not strictly an integer -- a game may use a level as a
-            multi-stage story counter with sub-stages like 2.1) on
-            whatever numeric range the game layer chose for that skill —
-            this module never reads or validates that range itself, only
-            `check()`'s own caller-supplied `max_level` normalizes a
-            given level into the percentile roll.
-        rng_seed: This module's own RNG seed — fully independent of Ink's
-            `story_seed`, per the explicit design decision above.
+            it holds -- skill levels only, not general per-character state
+            (which belongs in character attributes instead). The level is
+            a NUMBER, not strictly an integer: a game may use a level as a
+            multi-stage story counter with sub-stages like 2.1, on
+            whatever numeric range the game layer chose for that skill.
+        rng_seed: This module's own RNG seed -- fully independent of Ink's
+            `story_seed`.
+        last_roll: The raw 1-100 roll from the most recent `check()`, 0
+            before any has run.
+        last_effective_target: The roll-under target that roll was
+            compared against, 0 before any check has run.
     """
 
-    skill_levels: dict[str, dict[str, float]] = field(default_factory=dict)
-    rng_seed: int = 0
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to a plain, JSON-safe dict.
-
-        Returns:
-            A dict safe to store inside a session's own serialized state.
-        """
-        return {"skill_levels": {character_id: dict(skills) for character_id, skills in self.skill_levels.items()}, "rng_seed": self.rng_seed}
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SkillState":
-        """Rebuild from a to_dict() result.
-
-        Args:
-            data: A to_dict() result.
-
-        Returns:
-            The rebuilt SkillState.
-        """
-        skill_levels = {character_id: dict(skills) for character_id, skills in data.get("skill_levels", {}).items()}
-        return cls(skill_levels=skill_levels, rng_seed=int(data.get("rng_seed", 0)))
-
-
-# Serialized-state operations, for the binding layer -- mirroring
-# character_occupancy.py/scheduling.py's own established `_in`-suffixed
-# pattern. Rebuilding a SkillState to answer one level lookup copies
-# every character's every skill; these read the serialized
-# `skill_levels` dict directly instead.
-
-
-def get_level_in(skill_levels: dict[str, dict[str, float]], character_id: str, skill_name: str, default: float = 0) -> float:
-    """Return a character's current level in a skill, from a serialized skill_levels dict.
-
-    Args:
-        skill_levels: The serialized `SkillState.skill_levels` mapping.
-        character_id: The character to look up.
-        skill_name: The skill to look up.
-        default: The level to return if unset.
-
-    Returns:
-        The character's current level, or `default` if unset.
-    """
-    return skill_levels.get(character_id, {}).get(skill_name, default)
-
-
-def set_level_in(skill_levels: dict[str, dict[str, float]], character_id: str, skill_name: str, level: float) -> None:
-    """Set a character's level in a skill, in a serialized skill_levels dict.
-
-    Mutates `skill_levels` in place: the binding layer's dict IS the
-    session's live state, so a write here is already persisted when the
-    turn ends.
-
-    Args:
-        skill_levels: The serialized `SkillState.skill_levels` mapping.
-        character_id: The character to update.
-        skill_name: The skill to set.
-        level: The exact level to set.
-    """
-    skill_levels.setdefault(character_id, {})[skill_name] = level
-
-
-def get_level(state: SkillState, character_id: str, skill_name: str, default: float = 0) -> float:
-    """Return a character's current level in a skill.
-
-    Args:
-        state: The session's current SkillState.
-        character_id: The character to look up.
-        skill_name: The skill to look up — any string the game layer chose.
-        default: The level to return if the character has no recorded
-            level for this skill yet.
-
-    Returns:
-        The character's current level, or `default` if unset.
-    """
-    return get_level_in(state.skill_levels, character_id, skill_name, default)
-
-
-def get_all_levels(state: SkillState, character_id: str) -> dict[str, float]:
-    """Return every skill level currently recorded for a character.
-
-    The real "get current stats for a player/NPC" query.
-
-    Args:
-        state: The session's current SkillState.
-        character_id: The character to look up.
-
-    Returns:
-        A plain, independent copy of that character's skill_name -> level
-        mapping (empty if the character has no recorded skills at all).
-    """
-    return dict(state.skill_levels.get(character_id, {}))
-
-
-def set_level(state: SkillState, character_id: str, skill_name: str, level: float) -> SkillState:
-    """Set a character's level in a skill to an exact value.
-
-    Args:
-        state: The session's current SkillState.
-        character_id: The character to update.
-        skill_name: The skill to set.
-        level: The exact level to set (on whatever range the game layer
-            uses for this skill — not validated or clamped here). Numeric
-            rather than strictly integral: a game may use a level as a
-            multi-stage story counter with sub-stages (e.g. 2.1, 2.2), and
-            narrowing this to `int` would silently collapse those.
-
-    Returns:
-        A new SkillState with the change applied — this function never
-        mutates `state` in place, matching the stateless/per-session-
-        isolation discipline every function in this module follows.
-    """
-    new_tracked_values = {character_id: dict(skills) for character_id, skills in state.skill_levels.items()}
-    new_tracked_values.setdefault(character_id, {})[skill_name] = level
-    return SkillState(skill_levels=new_tracked_values, rng_seed=state.rng_seed)
-
-
-def adjust_level(state: SkillState, character_id: str, skill_name: str, delta: float) -> SkillState:
-    """Add (or, with a negative delta, subtract) an amount to a character's
-    current level in a skill.
-
-    Args:
-        state: The session's current SkillState.
-        character_id: The character to update.
-        skill_name: The skill to adjust.
-        delta: The amount to add — pass a negative value to subtract.
-
-    Returns:
-        A new SkillState with the change applied. A skill with no prior
-        recorded level is treated as starting at 0 before applying delta,
-        matching `get_level()`'s own default.
-    """
-    current = get_level(state, character_id, skill_name, default=0)
-    return set_level(state, character_id, skill_name, current + delta)
+    skill_levels: dict[str, dict[str, float]]
+    rng_seed: int
+    last_roll: int
+    last_effective_target: int
 
 
 @dataclass(frozen=True)
 class CheckResult:
-    """The outcome of one skill check — the real "get the result of a
+    """The outcome of one skill check -- the real "get the result of a
     skill test" the game layer queries.
 
     Args:
@@ -212,9 +64,9 @@ class CheckResult:
         roll: The raw 1-100 roll made for this check.
         effective_target: The actual roll-under target used, after
             normalizing `level` onto a 1-100 scale and applying `bonus`,
-            clamped to [0, 100] — this is what `roll` was actually
-            compared against, useful for the game layer to report "you
-            needed X or under, you rolled Y."
+            clamped to [0, 100] -- what `roll` was compared against,
+            useful for the game layer to report "you needed X or under,
+            you rolled Y."
     """
 
     success: bool
@@ -222,127 +74,155 @@ class CheckResult:
     effective_target: int
 
 
-def check(state: SkillState, level: int, max_level: int, bonus: int = 0) -> tuple[CheckResult, SkillState]:
-    """Perform one roll-under skill check.
+class Skills(StatefulPlugin[SkillSlot]):
+    """Skill levels per character, and roll-under checks against them."""
 
-    The level is normalized onto a 0-100 percentile scale via
-    `round(level / max_level * 100)` before `bonus` is applied — the game
-    layer's own numeric range (1-6, 1-20, 1-100, whatever a specific
-    skill uses) is purely presentational; this module only ever rolls
-    1-100 internally. `bonus` is added directly to the already-normalized
-    percentile target (a +1/+2/+3-style bonus is a flat percentile bump,
-    not itself normalized against `max_level`) — an effective target
-    outside [0, 100] is clamped rather than rejected, matching this
-    module's own "never reject a caller-supplied number, just make the
-    math sane" convention.
+    name = "skills"
+    display_name = "Skills"
+    state_key = STATE_KEY
+    slot_type = SkillSlot
+    fields = {"skill_levels": dict, "rng_seed": int, "last_roll": int, "last_effective_target": int}
 
-    Args:
-        state: The session's current SkillState (its own RNG state is
-            what actually advances here).
-        level: The character's current level in whatever skill is being
-            tested, on a 0-`max_level` scale.
-        max_level: The top of that skill's own declared range (e.g. 20
-            for a 1-20 skill, 6 for a 1-6 skill) — used only to normalize
-            `level` onto the internal 0-100 percentile scale.
-        bonus: An optional flat percentile bonus (or, negative, a
-            penalty) applied after normalization.
+    @query
+    @external
+    def skill_level(self, slot: SkillSlot, character_id: str, skill_name: str, default: float = 0) -> float:
+        """Return a character's current level in a skill.
 
-    Returns:
-        A tuple of (the CheckResult, a new SkillState with the RNG
-        advanced) — this function never mutates `state` in place.
-    """
-    percentile_level = round((level / max_level) * 100) if max_level else 0
-    effective_target = max(0, min(100, percentile_level + bonus))
-    rng = random.Random(state.rng_seed)
-    roll = rng.randint(1, 100)
-    next_seed = rng.randint(0, 2**31 - 1)
-    result = CheckResult(success=roll <= effective_target, roll=roll, effective_target=effective_target)
-    return result, SkillState(skill_levels=state.skill_levels, rng_seed=next_seed)
+        Args:
+            slot: This session's slot.
+            character_id: The character to look up.
+            skill_name: The skill to look up -- any string the game layer
+                chose.
+            default: The level to return if the character has no recorded
+                level for this skill yet.
 
+        Returns:
+            The current level, or `default`.
+        """
+        return slot.get("skill_levels", {}).get(character_id, {}).get(skill_name, default)
 
-def _init_skill_state() -> dict[str, Any]:
-    """Return a brand-new session's own fresh SkillState, serialized.
+    @external
+    def set_skill_level(self, slot: SkillSlot, character_id: str, skill_name: str, level: float) -> None:
+        """Set a character's level in a skill to an exact value.
 
-    Returns:
-        `SkillState().to_dict()` -- no levels recorded, RNG seed 0.
-    """
-    return SkillState().to_dict()
+        Args:
+            slot: This session's slot.
+            character_id: The character to update.
+            skill_name: The skill to set.
+            level: The exact level to set (on whatever range the game
+                layer uses for this skill -- not validated or clamped
+                here).
+        """
+        slot.setdefault("skill_levels", {}).setdefault(character_id, {})[skill_name] = level
 
+    @external
+    def adjust_skill_level(self, slot: SkillSlot, character_id: str, skill_name: str, delta: float) -> float:
+        """Add (or, with a negative delta, subtract) an amount to a level.
 
-def _bind(state_dict: dict[str, Any], engine_state: dict[str, Any]) -> dict[str, Callable[..., Any]]:
-    """Build this session's skill bindings.
+        A skill with no prior recorded level is treated as starting at 0
+        before applying delta, matching `skill_level()`'s own default.
 
-    Args:
-        state_dict: This session's own serialized `SkillState`, read
-            fresh on every call and overwritten in place by any write.
-        engine_state: The full session state. Unused -- this plugin
-            reads and writes only its own slot -- but `Plugin.bind`'s
-            contract is always this exact two-argument shape.
+        Args:
+            slot: This session's slot.
+            character_id: The character to update.
+            skill_name: The skill to adjust.
+            delta: The amount to add -- pass a negative value to subtract.
 
-    Returns:
-        The bindings dict for the Ink function names a story calls.
-    """
-
-    def skill_level_now(character_id: str, skill_name: str) -> float:
-        """EXTERNAL skill_level_now(character_id, skill_name) -- the
-        character's current level, or 0 when never set."""
-        return get_level_in(state_dict.setdefault("skill_levels", {}), character_id, skill_name)
-
-    def set_skill_level_now(character_id: str, skill_name: str, level: float) -> int:
-        """EXTERNAL set_skill_level_now(character_id, skill_name, level)
-        -- set an exact level. Returns 1 (Ink has no void EXTERNAL
-        return)."""
-        set_level_in(state_dict.setdefault("skill_levels", {}), character_id, skill_name, level)
-        return 1
-
-    def adjust_skill_level_now(character_id: str, skill_name: str, delta: float) -> float:
-        """EXTERNAL adjust_skill_level_now(character_id, skill_name,
-        delta) -- add (or, negative, subtract) delta from the current
-        level. Returns the new level."""
-        skill_levels = state_dict.setdefault("skill_levels", {})
-        new_level = get_level_in(skill_levels, character_id, skill_name) + delta
-        set_level_in(skill_levels, character_id, skill_name, new_level)
+        Returns:
+            The new level.
+        """
+        new_level = self.skill_level(slot, character_id, skill_name) + delta
+        self.set_skill_level(slot, character_id, skill_name, new_level)
         return new_level
 
-    def skill_check_now(level: int, max_level: int, bonus: int = 0) -> bool:
-        """EXTERNAL skill_check_now(level, max_level, bonus) -- one
-        roll-under check, advancing this system's own RNG. Returns
-        whether it succeeded; `last_skill_roll_now()`/
-        `last_skill_target_now()` report the actual numbers rolled, for
-        a story that wants to narrate them."""
-        current = SkillState.from_dict(state_dict)
-        result, updated = check(current, level, max_level, bonus)
-        state_dict.clear()
-        state_dict.update(updated.to_dict())
-        state_dict["last_roll"] = result.roll
-        state_dict["last_effective_target"] = result.effective_target
-        return result.success
+    def all_levels(self, slot: SkillSlot, character_id: str) -> dict[str, float]:
+        """Return every skill level currently recorded for a character.
 
-    def last_skill_roll_now() -> int:
-        """EXTERNAL last_skill_roll_now() -- the raw 1-100 roll from the
-        most recent skill_check_now() call. 0 before any check has run."""
-        return int(state_dict.get("last_roll", 0))
+        The real "get current stats for a player/NPC" query.
 
-    def last_skill_target_now() -> int:
-        """EXTERNAL last_skill_target_now() -- the effective roll-under
-        target from the most recent skill_check_now() call. 0 before any
-        check has run."""
-        return int(state_dict.get("last_effective_target", 0))
+        Args:
+            slot: This session's slot.
+            character_id: The character to look up.
 
-    return {
-        "skill_level_now": skill_level_now,
-        "set_skill_level_now": set_skill_level_now,
-        "adjust_skill_level_now": adjust_skill_level_now,
-        "skill_check_now": skill_check_now,
-        "last_skill_roll_now": last_skill_roll_now,
-        "last_skill_target_now": last_skill_target_now,
-    }
+        Returns:
+            An independent copy of that character's skill_name -> level
+            mapping (empty if the character has no recorded skills).
+        """
+        return dict(slot.get("skill_levels", {}).get(character_id, {}))
+
+    def check(self, slot: SkillSlot, level: float, max_level: int, bonus: int = 0) -> CheckResult:
+        """Perform one roll-under skill check, advancing this plugin's own RNG.
+
+        The level is normalized onto a 0-100 percentile scale via
+        `round(level / max_level * 100)` before `bonus` is applied -- the
+        game layer's own numeric range (1-6, 1-20, 1-100) is purely
+        presentational; this module only ever rolls 1-100 internally.
+        `bonus` is added directly to the already-normalized percentile
+        target; an effective target outside [0, 100] is clamped rather
+        than rejected. The roll and target are recorded in the slot for a
+        story that wants to narrate them.
+
+        Args:
+            slot: This session's slot, whose RNG state advances.
+            level: The character's current level in whatever skill is
+                being tested, on a 0-`max_level` scale.
+            max_level: The top of that skill's own declared range -- used
+                only to normalize `level` onto the internal 0-100 scale.
+            bonus: An optional flat percentile bonus (or, negative, a
+                penalty) applied after normalization.
+
+        Returns:
+            The check's outcome.
+        """
+        percentile_level = round((level / max_level) * 100) if max_level else 0
+        effective_target = max(0, min(100, percentile_level + bonus))
+        rng = random.Random(slot.get("rng_seed", 0))
+        roll = rng.randint(1, 100)
+        slot["rng_seed"] = rng.randint(0, 2**31 - 1)
+        slot["last_roll"] = roll
+        slot["last_effective_target"] = effective_target
+        return CheckResult(success=roll <= effective_target, roll=roll, effective_target=effective_target)
+
+    @external
+    def skill_check(self, slot: SkillSlot, level: float, max_level: int, bonus: int = 0) -> bool:
+        """EXTERNAL `skill_check(level, max_level, bonus)`: `check()` for Ink.
+
+        Args:
+            slot: This session's slot.
+            level: The level being tested.
+            max_level: The top of that skill's range.
+            bonus: A flat percentile bonus or penalty.
+
+        Returns:
+            Whether the check succeeded; `last_skill_roll()` and
+            `last_skill_target()` report the numbers rolled.
+        """
+        return self.check(slot, level, max_level, bonus).success
+
+    @external
+    def last_skill_roll(self, slot: SkillSlot) -> int:
+        """Return the raw 1-100 roll from the most recent check, 0 before any.
+
+        Args:
+            slot: This session's slot.
+
+        Returns:
+            The roll.
+        """
+        return slot.get("last_roll", 0)
+
+    @external
+    def last_skill_target(self, slot: SkillSlot) -> int:
+        """Return the effective roll-under target of the most recent check, 0 before any.
+
+        Args:
+            slot: This session's slot.
+
+        Returns:
+            The target.
+        """
+        return slot.get("last_effective_target", 0)
 
 
-PLUGIN = Plugin(
-    name="skills",
-    display_name="Skills",
-    state_key="skills",
-    init_state=_init_skill_state,
-    bind=_bind,
-)
+SKILLS = Skills()
+PLUGIN = SKILLS.plugin()

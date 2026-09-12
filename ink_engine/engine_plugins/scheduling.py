@@ -1,76 +1,62 @@
 """SchedulingSystem: a generic clock/timed-event framework.
 
-A reusable engine service ANY story builds its specific time-driven
-behavior on top of — never one specific game's own implementation. This
-module has zero knowledge of what a "character," a "flag," or a
-"location" means in any specific story; it only understands
-a clock and a queue of (due_time, effect) pairs, where an effect is one
-of a small, closed, non-executable vocabulary (`Effect.kind` below) —
-plain data the CALLER interprets and applies, never code this module runs
-itself.
+A reusable engine service a story builds its time-driven behaviour on.
+This module has zero knowledge of what a "character", a "flag" or a
+"location" means in any story; it understands only a clock and a queue of
+(due_time, effect) pairs, where an effect is one of a small, closed,
+non-executable vocabulary (`EffectKind` below) -- plain data the CALLER
+interprets and applies.
 
-**Baseline unit is minutes, not an arbitrary "tick"**:
-`SchedulingState.clock` and every function below that takes a `clock`
-argument treat it as a count of real minutes (1440/day), matching
-everyday clock/calendar arithmetic (like Python's own `datetime`)
-rather than any specific story's own internal tick resolution. A story
-with a coarser or finer native clock (e.g. a 5-minutes-per-tick game
-clock) converts to/from minutes at its own boundary — this module is
-never told about, or written in terms of, any such story-specific tick
-size.
+**Baseline unit is minutes, not an arbitrary "tick"**: the slot's `clock`
+and every `clock` argument below is a count of real minutes (1440/day),
+matching everyday clock/calendar arithmetic. A story with a coarser or
+finer native clock converts at its own boundary; this module is never
+written in terms of a story-specific tick size.
 
-**Common calendar/day-phase helpers, not story-specific business rules**:
-this module also owns the small set of generic, `datetime`-like
-primitives every story naturally needs (`is_weekday`, `hour_of_day`,
-`is_morning`/`is_afternoon`/`is_evening`/`is_night`/`is_day`) — with
-common-sense default boundaries, overridable per-story via
-`DayPhaseBoundaries` (e.g. a vampire-themed story where "day" runs
-20:00-8:00). What this module does NOT own is any story's own specific
-open-hours/business-rule logic (e.g. "is this particular shop open") —
-that's real story-specific data that belongs in the story's own
-scheduling module built on top of these primitives, never baked in here.
+**Generic calendar/day-phase helpers, not story business rules**: this
+module owns the `datetime`-like primitives every story needs
+(`is_weekday`, `hour_of_day`, `is_morning`/`is_afternoon`/`is_evening`/
+`is_night`/`is_day`), with default boundaries overridable per-story via
+`DayPhaseBoundaries`. Open-hours rules like "is this shop open" are story
+data and belong in a story's own scheduling module built on these.
 
 **Why a closed effect vocabulary, not "run this callback"**: an
-arbitrary-callback design would need to run untrusted host-supplied code
-when a timer fires — exactly the kind of "run untrusted code" pattern a
-host's own trust-gating design exists to avoid. `Effect` below mirrors a
-small, closed set of effect kinds as plain, JSON-safe data instead, so
-a fired event is always inert data the caller applies, never code this
-module runs.
+arbitrary-callback design would run host-supplied code when a timer
+fires. `Effect` is plain, JSON-safe data instead, so a fired event is
+always inert.
 
-**Why `advance()` only REPORTS fired effects rather than applying them**:
-this module has no opinion about
-what a "character" or "flag" actually is in any given story's own state
-shape — applying a `MOVE_CHARACTER` effect would require this generic
-module to know how a specific story represents character location, which
-is exactly the kind of story-specific knowledge that must not leak into a
-reusable framework. The caller (a story's own EXTERNAL binding) applies
-each reported effect to whatever state model it actually uses.
+**Why `advance()` only REPORTS fired effects**: applying a
+`MOVE_CHARACTER` effect would require knowing how a story represents
+character location, which must not leak into a reusable framework. The
+caller applies each reported effect to whatever state model it uses.
 
-**Per-session isolation**: every function here is a pure function of its
-own explicit arguments — no instance attributes, no module-level
-mutable state, no shared object holding per-game data.
-`SchedulingState`/`Effect` are plain, JSON-safe dataclasses meant to
-round-trip through a session's own serialized state alongside Ink's own
-VARs, exactly like every other piece of per-game data already does.
+**The Enum never enters the slot.** `Effect` and `EffectKind` are the
+API's value types; the slot holds each pending event as a plain record
+with the kind's string value, converted at the one writer and the one
+reader that touch it. A record whose kind is unknown raises when it
+fires, not when the save loads.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, TypedDict
 
-from ink_engine.plugin import Plugin
+from ink_engine.plugin import EngineState
+from ink_engine.plugin_base import StatefulPlugin, external, query
+
+#: Where this plugin's state lives in a session's `EngineState`. Published
+#: so a dependent plugin reads the clock by constant rather than by a
+#: copied string literal.
+STATE_KEY = "scheduling"
 
 
 class EffectKind(Enum):
-    """The only 3 real timed-event effects in the original source
-    (`time.js`'s `movePersonfterTime`/`setPersonFlagAfterTime`/
-    `setPlaceFlagAfterTime`) — a closed, non-`eval` vocabulary. Extend
-    this only by adding another named, closed kind here, never by
-    accepting an arbitrary string/code payload."""
+    """The 3 timed-event effects in the original source (`time.js`'s
+    `movePersonfterTime`/`setPersonFlagAfterTime`/`setPlaceFlagAfterTime`)
+    -- a closed, non-`eval` vocabulary. Extend only by adding another named
+    kind here, never by accepting an arbitrary string/code payload."""
 
     MOVE_CHARACTER = "move_character"
     SET_PERSON_FLAG = "set_person_flag"
@@ -79,19 +65,18 @@ class EffectKind(Enum):
 
 @dataclass(frozen=True)
 class Effect:
-    """One timed event's effect, as plain, JSON-safe data — never code.
+    """One timed event's effect, as plain, JSON-safe data -- never code.
 
     Args:
         kind: Which of the 3 closed effect kinds this is.
-        target: The subject of the effect — a character id for
-            MOVE_CHARACTER/SET_PERSON_FLAG, a place id for
-            SET_PLACE_FLAG. Deliberately just a plain string; this module
-            never looks it up against anything, it only ever reports it
-            back to the caller.
-        payload: The effect's own real arguments (e.g.
-            {"place_id": "hotel_room"} for MOVE_CHARACTER, {"flag":
-            "met_the_stranger", "value": True} for
-            SET_PERSON_FLAG/SET_PLACE_FLAG) — plain JSON-safe values only.
+        target: The subject of the effect -- a character id for
+            MOVE_CHARACTER/SET_PERSON_FLAG, a place id for SET_PLACE_FLAG.
+            A plain string; this module never looks it up, it only reports
+            it back to the caller.
+        payload: The effect's arguments (e.g. {"place_id": "hotel_room"}
+            for MOVE_CHARACTER, {"flag": "met_the_stranger", "value":
+            True} for SET_PERSON_FLAG/SET_PLACE_FLAG) -- plain JSON-safe
+            values only.
     """
 
     kind: EffectKind
@@ -99,190 +84,97 @@ class Effect:
     payload: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
-class _PendingEvent:
-    """One entry in a SchedulingState's own timed-event queue — internal
-    to this module; callers only ever see Effect objects returned from
-    advance(), never this directly."""
+class EffectRecord(TypedDict):
+    """An `Effect` as the slot holds it: the kind by its string value."""
+
+    kind: str
+    target: str
+    payload: dict[str, Any]
+
+
+class PendingRecord(TypedDict):
+    """One entry in the timed-event queue."""
 
     due_time: int
-    effect: Effect
+    effect: EffectRecord
 
 
-@dataclass
-class SchedulingState:
-    """A session's own clock + pending timed-event queue.
+class SchedulingSlot(TypedDict):
+    """A session's clock and pending timed-event queue.
 
-    Deliberately holds no other per-game data (no character positions, no
-    story flags) — those live in whatever state shape the caller already
-    uses (e.g. Ink's own globals dict). This is JSON-safe and meant to be
-    stored as one plain value inside a session's own serialized state,
-    exactly like InkRuntimeState's own to_dict()/from_dict() shape.
+    Holds no other per-game data (no character positions, no story flags)
+    -- those live in whatever state shape the caller uses.
 
-    Args:
+    Attributes:
         clock: The current time, in whole minutes since an arbitrary
-            session-defined epoch (see this module's own docstring for
-            why minutes, not a story-specific tick, is the baseline
-            unit). This module treats it as an opaque, ever-increasing
-            integer, except where the generic calendar/day-phase helpers
-            below interpret it.
-        pending: The real timed-event queue, each entry a (due_time,
-            effect) pair — a direct, non-`eval` port of source's own
-            `vTimedEvent` array of `TimedEvent(evt, time)` objects.
+            session-defined epoch. Treated as an opaque, ever-increasing
+            integer, except where the calendar/day-phase helpers interpret
+            it.
+        pending: The timed-event queue, each entry a (due_time, effect)
+            record -- a non-`eval` port of source's `vTimedEvent` array of
+            `TimedEvent(evt, time)` objects.
     """
 
-    clock: int = 0
-    pending: list[_PendingEvent] = field(default_factory=list)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to a plain, JSON-safe dict.
-
-        Returns:
-            A dict safe to store inside a session's own serialized state
-            (e.g. alongside InkRuntimeState.to_dict()'s own fields).
-        """
-        return {
-            "clock": self.clock,
-            "pending": [
-                {
-                    "due_time": event.due_time,
-                    "effect": {
-                        "kind": event.effect.kind.value,
-                        "target": event.effect.target,
-                        "payload": event.effect.payload,
-                    },
-                }
-                for event in self.pending
-            ],
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SchedulingState":
-        """Rebuild from a to_dict() result.
-
-        Args:
-            data: A to_dict() result.
-
-        Returns:
-            The rebuilt SchedulingState.
-        """
-        pending = [
-            _PendingEvent(
-                due_time=int(event["due_time"]),
-                effect=Effect(
-                    kind=EffectKind(event["effect"]["kind"]),
-                    target=str(event["effect"]["target"]),
-                    payload=dict(event["effect"].get("payload", {})),
-                ),
-            )
-            for event in data.get("pending", [])
-        ]
-        return cls(clock=int(data.get("clock", 0)), pending=pending)
+    clock: int
+    pending: list[PendingRecord]
 
 
-def clock_in(data: dict[str, Any]) -> int:
-    """Return just the clock value, from a serialized SchedulingState.
-
-    `SchedulingState.from_dict()` rebuilds every pending event into a real
-    `_PendingEvent`/`Effect` dataclass (an `EffectKind` enum lookup plus a
-    `dict(...)` copy per entry) purely to answer "what time is it" —
-    real, measured cost that most read-only callers never needed, since
-    the clock is a plain int, mirroring `character_occupancy.py`'s own
-    `_in`-suffixed fix for the same reconstruction-on-every-read shape.
-    `n_time_now()`/`is_day_now()`/`hours_charmed()` and every other
-    tick-consuming binding are exactly the kind of call a story can make
-    dozens or hundreds of times over its own corpus, each one otherwise
-    paying the full reconstruction just to read one int.
+def _record(effect: Effect) -> EffectRecord:
+    """Take an effect apart into the record the slot holds.
 
     Args:
-        data: A serialized `SchedulingState` — this session's own clock
-            slot.
+        effect: The effect.
 
     Returns:
-        The clock value, defaulting to 0 exactly as `from_dict()` does.
+        Its JSON-safe record.
     """
-    return int(data.get("clock", 0))
+    return {"kind": effect.kind.value, "target": effect.target, "payload": dict(effect.payload)}
 
 
-def schedule_effect(state: SchedulingState, effect: Effect, minutes_from_now: int) -> SchedulingState:
-    """Queue an effect to fire `minutes_from_now` minutes after the
-    current clock.
-
-    A direct, non-`eval` port of source's own `startTimedEvent(evt, cnt)`
-    (`time.js`) — `minutes_from_now` mirrors `cnt` exactly (an offset
-    from the current clock, not an absolute time), converted to minutes
-    at the caller's own boundary if its native clock uses a different
-    unit.
+def _effect(record: EffectRecord) -> Effect:
+    """Rebuild an effect from the record the slot holds.
 
     Args:
-        state: The session's current SchedulingState.
-        effect: The closed-vocabulary effect to fire once due.
-        minutes_from_now: How many minutes from `state.clock` until this
-            effect becomes due.
+        record: The record.
 
     Returns:
-        A new SchedulingState with the effect added to `pending` — this
-        function never mutates `state` in place, matching the stateless/
-        per-session-isolation discipline every function in this module
-        follows.
+        The effect.
+
+    Raises:
+        ValueError: The record's kind is not one this vocabulary knows.
     """
-    new_pending = [*state.pending, _PendingEvent(due_time=state.clock + minutes_from_now, effect=effect)]
-    return SchedulingState(clock=state.clock, pending=new_pending)
+    return Effect(kind=EffectKind(record["kind"]), target=str(record["target"]), payload=dict(record.get("payload", {})))
 
 
-def advance(state: SchedulingState, minutes: int) -> tuple[SchedulingState, list[Effect]]:
-    """Advance the clock by `minutes` and report every effect now due.
+def clock_of(engine_state: EngineState) -> int:
+    """Return the current clock, from a full session state.
 
-    A direct, non-`eval` port of source's own `passTime()` → `nTime +=
-    ...` → `checkTimedEvents()` sequence (`time.js`) — every due event
-    fires (once, then is removed from the queue), same as source's own
-    `TimedEvent.checkEvent()`/`vTimedEvent.splice()`. Per the explicit
-    "SchedulingSystem only reports effects" design decision, this
-    function does NOT apply any effect to any character/flag/place state
-    itself — the caller is responsible for interpreting and applying each
-    returned Effect to whatever state model it actually uses.
+    For a plugin that needs the time but does not own it: reads this
+    plugin's own slot without the caller naming how the clock is stored,
+    and answers 0 when no clock is running.
 
     Args:
-        state: The session's current SchedulingState.
-        minutes: How many minutes to advance the clock by (a real
-            turn/action taken — the caller decides how many minutes that
-            corresponds to, converting from its own native clock unit if
-            needed).
+        engine_state: The full session state, not this plugin's slot.
 
     Returns:
-        A tuple of (the new SchedulingState, the list of Effects that
-        became due this advance, in the order they were originally
-        scheduled). The new state's `pending` list has every fired effect
-        already removed; anything not yet due stays queued.
+        The clock value, or 0 when this plugin holds no state.
     """
-    new_clock = state.clock + minutes
-    fired: list[Effect] = []
-    still_pending: list[_PendingEvent] = []
-    for event in state.pending:
-        if event.due_time <= new_clock:
-            fired.append(event.effect)
-        else:
-            still_pending.append(event)
-    return SchedulingState(clock=new_clock, pending=still_pending), fired
+    return int(engine_state.get(STATE_KEY, {}).get("clock", 0))
 
 
 MINUTES_PER_HOUR = 60
 MINUTES_PER_DAY = 1440
 
-# Named minute deltas for jump_clock() below — a common "advance/rewind by
-# a round unit" convenience every story's own cheat menu or debug tooling
-# is likely to want; a story with its own asymmetric or unusually-sized
-# jump amounts (e.g. a game's own real cheat-menu constants) defines those
-# itself rather than using these.
+# Named minute deltas for jump_clock() below — the round-unit
+# advance/rewind a cheat menu or debug tool wants. A story with its own
+# jump amounts defines those itself.
 ONE_HOUR = MINUTES_PER_HOUR
 ONE_DAY = MINUTES_PER_DAY
 
 # Named minute-of-day constants for every whole hour, so a schedule rule
-# built with minute_in_range()/Condition.minute_in_range() reads as a real
-# clock time instead of a bare number a reader has to divide by 60 to
-# understand. Covers every whole hour; a half-hour/quarter-hour boundary
-# is built with ordinary arithmetic on top of these, e.g. `EIGHT_AM + 15`
-# for 8:15am, `SIX_PM + 30` for 6:30pm.
+# built with Condition.minute_in_range() reads as a clock time instead of
+# a number a reader has to divide by 60. Sub-hour boundaries are ordinary
+# arithmetic on top of these, e.g. `EIGHT_AM + 15` for 8:15am.
 MIDNIGHT = 0 * MINUTES_PER_HOUR
 ONE_AM = 1 * MINUTES_PER_HOUR
 TWO_AM = 2 * MINUTES_PER_HOUR
@@ -307,29 +199,6 @@ EIGHT_PM = 20 * MINUTES_PER_HOUR
 NINE_PM = 21 * MINUTES_PER_HOUR
 TEN_PM = 22 * MINUTES_PER_HOUR
 ELEVEN_PM = 23 * MINUTES_PER_HOUR
-
-
-def jump_clock(state: SchedulingState, delta: int) -> SchedulingState:
-    """Jump the clock by `delta` minutes in one step, firing nothing.
-
-    A hard jump/rewind, not simulated time passing — this function never
-    fires or checks any pending timed event in either direction. A caller
-    wanting due events to fire after a forward jump should call
-    `advance()` separately. Useful for a cheat menu or debug tool wanting
-    to forcibly set the game to a prior or later moment without replaying
-    every intervening turn.
-
-    Args:
-        state: The session's current SchedulingState.
-        delta: The signed minute delta to apply (positive to jump
-            forward, negative to jump backward).
-
-    Returns:
-        A new SchedulingState with `clock` adjusted by `delta` and
-        `pending` copied over completely unchanged — this function never
-        mutates `state` in place.
-    """
-    return SchedulingState(clock=state.clock + delta, pending=list(state.pending))
 
 
 def minute_of_day(clock: int) -> int:
@@ -384,11 +253,9 @@ def is_weekday(clock: int) -> bool:
 class DayPhaseBoundaries:
     """The minute-of-day cutoffs the generic day-phase helpers below use.
 
-    Common-sense defaults are provided, but a story with its own notion
-    of when "morning"/"night"/etc. begin (e.g. a vampire-themed story
-    where night runs 20:00-8:00) builds its own instance and passes it
-    explicitly — this module never hardcodes a single story's own
-    convention as if it were universal.
+    Defaults are provided, but a story with its own notion of when
+    "morning"/"night" begin (a vampire story where night runs 20:00-8:00)
+    builds its own instance and passes it explicitly.
 
     Args:
         morning_start: Minute-of-day morning begins (default 6:00).
@@ -412,8 +279,7 @@ def is_morning(clock: int, boundaries: DayPhaseBoundaries = DEFAULT_DAY_PHASES) 
 
     Args:
         clock: The current absolute clock value, in minutes.
-        boundaries: The day-phase cutoffs to use (default: common-sense
-            6:00-12:00 morning).
+        boundaries: The day-phase cutoffs to use (default 6:00-12:00 morning).
 
     Returns:
         True if the minute-of-day is in `[morning_start, afternoon_start)`.
@@ -427,8 +293,7 @@ def is_afternoon(clock: int, boundaries: DayPhaseBoundaries = DEFAULT_DAY_PHASES
 
     Args:
         clock: The current absolute clock value, in minutes.
-        boundaries: The day-phase cutoffs to use (default: common-sense
-            12:00-17:00 afternoon).
+        boundaries: The day-phase cutoffs to use (default 12:00-17:00 afternoon).
 
     Returns:
         True if the minute-of-day is in `[afternoon_start, evening_start)`.
@@ -442,8 +307,7 @@ def is_evening(clock: int, boundaries: DayPhaseBoundaries = DEFAULT_DAY_PHASES) 
 
     Args:
         clock: The current absolute clock value, in minutes.
-        boundaries: The day-phase cutoffs to use (default: common-sense
-            17:00-21:00 evening).
+        boundaries: The day-phase cutoffs to use (default 17:00-21:00 evening).
 
     Returns:
         True if the minute-of-day is in `[evening_start, night_start)`.
@@ -455,14 +319,12 @@ def is_evening(clock: int, boundaries: DayPhaseBoundaries = DEFAULT_DAY_PHASES) 
 def is_night(clock: int, boundaries: DayPhaseBoundaries = DEFAULT_DAY_PHASES) -> bool:
     """Return whether `clock` falls within the night phase.
 
-    Handles wraparound past midnight (e.g. a vampire-themed story's own
-    night_start=20:00, morning_start=8:00: night covers 20:00-24:00 AND
-    0:00-8:00).
+    Handles wraparound past midnight: with night_start=20:00 and
+    morning_start=8:00, night covers 20:00-24:00 AND 0:00-8:00.
 
     Args:
         clock: The current absolute clock value, in minutes.
-        boundaries: The day-phase cutoffs to use (default: common-sense
-            21:00-6:00 night).
+        boundaries: The day-phase cutoffs to use (default 21:00-6:00 night).
 
     Returns:
         True if the minute-of-day falls outside
@@ -477,8 +339,7 @@ def is_day(clock: int, boundaries: DayPhaseBoundaries = DEFAULT_DAY_PHASES) -> b
 
     Args:
         clock: The current absolute clock value, in minutes.
-        boundaries: The day-phase cutoffs to use (default: common-sense
-            6:00-21:00 day).
+        boundaries: The day-phase cutoffs to use (default 6:00-21:00 day).
 
     Returns:
         True whenever `is_night()` is False for the same clock/boundaries.
@@ -486,90 +347,159 @@ def is_day(clock: int, boundaries: DayPhaseBoundaries = DEFAULT_DAY_PHASES) -> b
     return not is_night(clock, boundaries)
 
 
-def _init_scheduling_state() -> dict[str, Any]:
-    """Return a brand-new game's own fresh SchedulingState, serialized.
+class Scheduling(StatefulPlugin[SchedulingSlot]):
+    """The engine-owned clock and its timed-event queue.
 
-    Returns:
-        `SchedulingState().to_dict()` — clock at 0, no pending events.
-    """
-    return SchedulingState().to_dict()
-
-
-def _bind(state_dict: dict[str, Any], engine_state: dict[str, Any]) -> dict[str, Callable[..., Any]]:
-    """Build this session's clock bindings over its own SchedulingState.
-
-    The clock becomes engine-owned state here rather than a value each
-    story threads through every time-dependent call. A story
-    whose native time unit isn't minutes converts at its own boundary —
-    see the module docstring — and keeps its own calendar semantics on
-    top; this layer only owns "what time is it" and "time passed".
-
-    Args:
-        state_dict: This session's own `SchedulingState.to_dict()` result,
-            read fresh on every call and overwritten in place by
-            `advance_clock_now`.
-        engine_state: The full session state. Unused -- this plugin reads
-            and writes only its own slot -- but `Plugin.bind`'s contract
-            is always this exact two-argument shape.
-
-    Returns:
-        The bindings dict for the Ink function names a story calls.
+    The clock is engine-owned state rather than a value each story threads
+    through every time-dependent call. A story whose native time unit is
+    not minutes converts at its own boundary and keeps its own calendar
+    semantics on top; this plugin owns only "what time is it" and "time
+    passed". The day-phase helpers above are published as stateless
+    bindings, each taking the clock value Ink passes.
     """
 
-    def clock_now() -> int:
-        """EXTERNAL clock_now() — the current absolute clock, in minutes."""
-        return clock_in(state_dict)
-
-    def advance_clock_now(minutes: int) -> int:
-        """EXTERNAL advance_clock_now(minutes) — move the clock forward and
-        drop any timed events that came due.
-
-        Effects that fire are reported by `advance()` for a caller that
-        applies them; this binding exists so a story can advance time from
-        its own turn loop, so it discards them rather than inventing an
-        application policy the engine deliberately does not own. Returns
-        the new clock value."""
-        updated, _fired = advance(SchedulingState.from_dict(state_dict), minutes)
-        state_dict.clear()
-        state_dict.update(updated.to_dict())
-        return updated.clock
-
-    def set_clock_now(clock: int) -> int:
-        """EXTERNAL set_clock_now(clock) — set the clock outright, firing
-        nothing. For a story restoring a saved time or applying its own
-        jump/rewind. Returns the new clock value."""
-        current = SchedulingState.from_dict(state_dict)
-        state_dict.clear()
-        state_dict.update(SchedulingState(clock=clock, pending=list(current.pending)).to_dict())
-        return clock
-
-    return {
-        "clock_now": clock_now,
-        "advance_clock_now": advance_clock_now,
-        "set_clock_now": set_clock_now,
+    name = "scheduling"
+    display_name = "Scheduling"
+    state_key = STATE_KEY
+    slot_type = SchedulingSlot
+    fields = {"clock": int, "pending": list}
+    stateless_bindings = {
+        "is_day": is_day,
+        "is_morning": is_morning,
+        "is_afternoon": is_afternoon,
+        "is_evening": is_evening,
+        "is_night": is_night,
+        "hour_of_day": hour_of_day,
+        "day_of_week": day_of_week,
+        "is_weekday": is_weekday,
     }
 
+    @query
+    @external
+    def clock(self, slot: SchedulingSlot) -> int:
+        """Return the current absolute clock, in minutes.
 
-# The plugin-discovery contract (ink_engine/discovery.py) — no config
-# schema of its own yet. `SchedulingState` is bound as real per-session
-# state, so a story reads the clock from the engine instead of threading
-# its own time value through every call. This plugin has BOTH kinds of
-# binding: `bindings` (stateless day/night helpers) and `bind` (the
-# stateful clock) -- resolve_bindings() merges both, unconditionally.
-PLUGIN = Plugin(
-    name="scheduling",
-    display_name="Scheduling",
-    state_key="scheduling",
-    init_state=_init_scheduling_state,
-    bind=_bind,
-    bindings={
-        "is_day_now": is_day,
-        "is_morning_now": is_morning,
-        "is_afternoon_now": is_afternoon,
-        "is_evening_now": is_evening,
-        "is_night_now": is_night,
-        "hour_of_day_now": hour_of_day,
-        "day_of_week_now": day_of_week,
-        "is_weekday_now": is_weekday,
-    },
-)
+        Args:
+            slot: This session's slot.
+
+        Returns:
+            The clock value, 0 for a session that has not advanced.
+        """
+        return int(slot.get("clock", 0))
+
+    def schedule_effect(self, slot: SchedulingSlot, effect: Effect, minutes_from_now: int) -> None:
+        """Queue an effect to fire `minutes_from_now` minutes after the current clock.
+
+        A non-`eval` port of source's `startTimedEvent(evt, cnt)`
+        (`time.js`) -- `minutes_from_now` mirrors `cnt`, an offset from
+        the current clock rather than an absolute time.
+
+        Args:
+            slot: This session's slot.
+            effect: The closed-vocabulary effect to fire once due.
+            minutes_from_now: How many minutes from the clock until this
+                effect becomes due.
+        """
+        slot.setdefault("pending", []).append({"due_time": self.clock(slot) + minutes_from_now, "effect": _record(effect)})
+
+    def pending_effects(self, slot: SchedulingSlot) -> list[tuple[int, Effect]]:
+        """Return every queued effect with its due time, in queue order.
+
+        Args:
+            slot: This session's slot.
+
+        Returns:
+            `(due_time, effect)` pairs.
+        """
+        return [(int(record["due_time"]), _effect(record["effect"])) for record in slot.get("pending", [])]
+
+    def advance(self, slot: SchedulingSlot, minutes: int) -> list[Effect]:
+        """Advance the clock by `minutes` and report every effect now due.
+
+        A non-`eval` port of source's `passTime()` -> `nTime += ...` ->
+        `checkTimedEvents()` sequence (`time.js`) -- every due event fires
+        once, then is removed from the queue. This does NOT apply any
+        effect to any character/flag/place state; the caller interprets
+        and applies each returned Effect against whatever state model it
+        uses.
+
+        Args:
+            slot: This session's slot.
+            minutes: How many minutes to advance the clock by -- the
+                caller decides how many minutes a turn or action
+                corresponds to.
+
+        Returns:
+            The effects that became due this advance, in the order they
+            were scheduled. Anything not yet due stays queued.
+        """
+        new_clock = self.clock(slot) + minutes
+        fired: list[Effect] = []
+        still_pending: list[PendingRecord] = []
+        for record in slot.get("pending", []):
+            if int(record["due_time"]) <= new_clock:
+                fired.append(_effect(record["effect"]))
+            else:
+                still_pending.append(record)
+        slot["clock"] = new_clock
+        slot["pending"] = still_pending
+        return fired
+
+    @external
+    def advance_clock(self, slot: SchedulingSlot, minutes: int) -> int:
+        """EXTERNAL `advance_clock(minutes)`: move the clock forward.
+
+        `advance()` reports fired effects for a caller that applies them.
+        This binding lets a story advance time from its turn loop, so it
+        discards them rather than inventing an application policy the
+        engine does not own.
+
+        Args:
+            slot: This session's slot.
+            minutes: How many minutes pass.
+
+        Returns:
+            The new clock value.
+        """
+        self.advance(slot, minutes)
+        return self.clock(slot)
+
+    @external
+    def set_clock(self, slot: SchedulingSlot, clock: int) -> int:
+        """Set the clock outright, firing nothing.
+
+        For a story restoring a saved time or applying its own jump or
+        rewind; the queue is kept as it is.
+
+        Args:
+            slot: This session's slot.
+            clock: The new absolute clock value.
+
+        Returns:
+            The new clock value.
+        """
+        slot["clock"] = clock
+        return clock
+
+    def jump_clock(self, slot: SchedulingSlot, delta: int) -> int:
+        """Jump the clock by `delta` minutes in one step, firing nothing.
+
+        A hard jump/rewind, not simulated time passing: no pending timed
+        event is fired or checked in either direction. A caller wanting
+        due events to fire after a forward jump calls `advance()`
+        separately. For a cheat menu or debug tool setting the game to
+        another moment without replaying every intervening turn.
+
+        Args:
+            slot: This session's slot.
+            delta: The signed minute delta (positive forward, negative
+                backward).
+
+        Returns:
+            The new clock value.
+        """
+        return self.set_clock(slot, self.clock(slot) + delta)
+
+
+SCHEDULING = Scheduling()
+PLUGIN = SCHEDULING.plugin()
