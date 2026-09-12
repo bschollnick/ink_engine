@@ -9,36 +9,19 @@ from __future__ import annotations
 import json
 from unittest import TestCase as SimpleTestCase
 
+from ink_engine.engine_config_schemas import SystemConfigValidationError
+
 import ink_engine.engine_plugins.character_occupancy as character_occupancy_module
 import ink_engine.engine_plugins.location_graph as location_graph_module
 from ink_engine.engine_plugins.character_occupancy import (
+    CHARACTER_OCCUPANCY,
     Condition,
-    OccupancyState,
     ScheduleRule,
-    is_anywhere,
-    is_at,
-    is_with,
-    recompute_occupancy,
+    UnknownLocationError,
     resolve_present_characters,
     resolve_schedule,
-    set_location,
-    where_is,
-    who_is_at,
 )
-from ink_engine.engine_plugins.location_graph import (
-    LocationGraphState,
-    detail,
-    has_visited,
-    initial_state,
-    is_known,
-    mark_known,
-    mark_unknown,
-    movement_cost,
-    reachable_edges,
-    record_visit,
-    set_all_known,
-    visit_count,
-)
+from ink_engine.engine_plugins.location_graph import LocationGraph
 from ink_engine.engine_plugins.scheduling import (
     EIGHT_AM,
     EIGHT_PM,
@@ -66,117 +49,135 @@ _LOCATION_CONFIG = {
 }
 
 
+MAP = LocationGraph(name="test_map", config=_LOCATION_CONFIG)
+
+
+def _map_slot():
+    return MAP.init_state(None)
+
+
 class LocationGraphInitialStateTests(SimpleTestCase):
-    """initial_state() seeds every known_by_default location, and nothing
-    else."""
+    """A fresh slot seeds every known_by_default location, and nothing
+    else, plus the map's whole vocabulary."""
 
     def test_only_known_by_default_locations_start_known(self):
-        """Locations with known_by_default omitted or false start unknown."""
-        state = initial_state(_LOCATION_CONFIG)
-        self.assertTrue(is_known(state, "outside_hospital"))
-        self.assertFalse(is_known(state, "hospital_foyer"))
-        self.assertFalse(is_known(state, "sacred_clearing"))
+        slot = _map_slot()
+        self.assertTrue(MAP.is_known(slot, "outside_hospital"))
+        self.assertFalse(MAP.is_known(slot, "hospital_foyer"))
+        self.assertFalse(MAP.is_known(slot, "sacred_clearing"))
+
+    def test_the_vocabulary_is_in_the_slot_for_dependent_plugins(self):
+        """Occupancy checks a write against `declared`, read from the
+        session state, so the map must be there and not only on the
+        instance."""
+        slot = _map_slot()
+        self.assertEqual(slot["declared"], sorted(_LOCATION_CONFIG["locations"]))
+        self.assertTrue(MAP.declares(slot, "hospital_foyer"))
+        self.assertFalse(MAP.declares(slot, "nowhere"))
+
+    def test_a_map_less_plugin_declares_nothing(self):
+        slot = LocationGraph().init_state(None)
+        self.assertEqual(slot["declared"], [])
 
 
-class MarkKnownTests(SimpleTestCase):
-    """mark_known() is a real, non-mutating state transition."""
+class DiscoveryTests(SimpleTestCase):
+    """set_known() discovers and forgets; set_all_known() is the whole map."""
 
-    def test_marks_a_location_known_without_mutating_the_original(self):
-        """mark_known() returns a new state; the original is untouched."""
-        state = initial_state(_LOCATION_CONFIG)
-        new_state = mark_known(state, "hospital_foyer")
-        self.assertTrue(is_known(new_state, "hospital_foyer"))
-        self.assertFalse(is_known(state, "hospital_foyer"))
+    def test_set_known_discovers_a_location(self):
+        slot = _map_slot()
+        MAP.set_known(slot, "hospital_foyer")
+        self.assertTrue(MAP.is_known(slot, "hospital_foyer"))
 
+    def test_forgetting_removes_a_known_location(self):
+        slot = _map_slot()
+        MAP.set_known(slot, "hospital_foyer")
+        MAP.set_known(slot, "hospital_foyer", False)
+        self.assertFalse(MAP.is_known(slot, "hospital_foyer"))
 
-class MarkUnknownTests(SimpleTestCase):
-    """mark_unknown() is the real inverse of mark_known()."""
+    def test_forgetting_can_revoke_a_known_by_default_location(self):
+        """A known_by_default location is not privileged."""
+        slot = _map_slot()
+        MAP.set_known(slot, "outside_hospital", False)
+        self.assertFalse(MAP.is_known(slot, "outside_hospital"))
 
-    def test_mark_unknown_removes_a_known_location_without_mutating(self):
-        """mark_unknown() returns a new state; the original is untouched."""
-        state = mark_known(initial_state(_LOCATION_CONFIG), "hospital_foyer")
-        new_state = mark_unknown(state, "hospital_foyer")
-        self.assertFalse(is_known(new_state, "hospital_foyer"))
-        self.assertTrue(is_known(state, "hospital_foyer"))
+    def test_forgetting_an_unknown_location_is_a_no_op(self):
+        slot = _map_slot()
+        MAP.set_known(slot, "sacred_clearing", False)
+        self.assertFalse(MAP.is_known(slot, "sacred_clearing"))
 
-    def test_mark_unknown_can_revoke_a_known_by_default_location(self):
-        """A known_by_default location is not privileged — a story that
-        takes a place away can take that one away too."""
-        state = mark_unknown(initial_state(_LOCATION_CONFIG), "outside_hospital")
-        self.assertFalse(is_known(state, "outside_hospital"))
-
-    def test_mark_unknown_on_an_unknown_location_is_a_no_op(self):
-        """Revoking a location that was never known is not an error."""
-        state = initial_state(_LOCATION_CONFIG)
-        self.assertFalse(is_known(mark_unknown(state, "sacred_clearing"), "sacred_clearing"))
-
-
-class SetAllKnownTests(SimpleTestCase):
-    """set_all_known() is the whole-map operation."""
-
-    def test_true_marks_every_declared_location_known(self):
-        """Every location in config becomes known, including ones that
-        default to unknown."""
-        state = set_all_known(_LOCATION_CONFIG, True)
+    def test_set_all_known_true_marks_every_declared_location_known(self):
+        slot = _map_slot()
+        MAP.set_all_known(slot, True)
         for location_id in _LOCATION_CONFIG["locations"]:
-            self.assertTrue(is_known(state, location_id), location_id)
+            self.assertTrue(MAP.is_known(slot, location_id), location_id)
 
-    def test_false_clears_every_location_including_known_by_default(self):
-        """False is 'forget everything', not 'reset to a new game' — a
-        known_by_default location is cleared too, which is exactly what
-        distinguishes it from initial_state()."""
-        state = set_all_known(_LOCATION_CONFIG, False)
-        self.assertEqual(state.known, set())
-        self.assertTrue(is_known(initial_state(_LOCATION_CONFIG), "outside_hospital"))
+    def test_set_all_known_false_clears_every_location_including_known_by_default(self):
+        """False is 'forget everything', not 'reset to a new game'."""
+        slot = _map_slot()
+        MAP.set_all_known(slot, False)
+        self.assertEqual(slot["known"], [])
+        self.assertTrue(MAP.is_known(_map_slot(), "outside_hospital"))
 
-    def test_result_round_trips_through_serialization(self):
-        """The whole-map state serializes like any other state."""
-        state = set_all_known(_LOCATION_CONFIG, True)
-        self.assertEqual(LocationGraphState.from_dict(state.to_dict()).known, state.known)
+    def test_known_is_saved_sorted(self):
+        slot = _map_slot()
+        MAP.set_known(slot, "sacred_clearing")
+        MAP.set_known(slot, "hospital_foyer")
+        self.assertEqual(slot["known"], sorted(slot["known"]))
 
 
 class ReachableEdgesTests(SimpleTestCase):
     """reachable_edges() applies the real requires_known gating."""
 
     def test_edge_with_no_requires_known_is_always_reachable(self):
-        """An edge with no requires_known key doesn't need its
-        destination already known — walking there is often how it
-        BECOMES known."""
-        state = initial_state(_LOCATION_CONFIG)
-        self.assertEqual(reachable_edges(_LOCATION_CONFIG, state, "outside_hospital"), ["hospital_foyer"])
+        self.assertEqual(MAP.reachable_edges(_map_slot(), "outside_hospital"), ["hospital_foyer"])
 
     def test_requires_known_edge_is_hidden_until_the_destination_is_known(self):
-        """An edge with requires_known: true is excluded while its
-        destination is still unknown."""
-        state = initial_state(_LOCATION_CONFIG)
-        self.assertEqual(reachable_edges(_LOCATION_CONFIG, state, "hospital_foyer"), [])
+        self.assertEqual(MAP.reachable_edges(_map_slot(), "hospital_foyer"), [])
 
     def test_requires_known_edge_appears_once_the_destination_is_known(self):
-        """The same edge appears once its destination becomes known."""
-        state = initial_state(_LOCATION_CONFIG)
-        state = mark_known(state, "sacred_clearing")
-        self.assertEqual(reachable_edges(_LOCATION_CONFIG, state, "hospital_foyer"), ["sacred_clearing"])
+        slot = _map_slot()
+        MAP.set_known(slot, "sacred_clearing")
+        self.assertEqual(MAP.reachable_edges(slot, "hospital_foyer"), ["sacred_clearing"])
 
     def test_undeclared_location_has_no_edges(self):
-        """A location id absent from config's own "locations" has no
-        edges, rather than raising."""
-        state = initial_state(_LOCATION_CONFIG)
-        self.assertEqual(reachable_edges(_LOCATION_CONFIG, state, "nonexistent"), [])
+        self.assertEqual(MAP.reachable_edges(_map_slot(), "nonexistent"), [])
 
 
 class LocationGraphSerializationTests(SimpleTestCase):
-    """LocationGraphState round-trips through plain JSON."""
+    """The slot round-trips through plain JSON."""
 
     def test_round_trips_through_real_json(self):
-        """A real json.dumps/json.loads round-trip preserves every known
-        location."""
-        state = initial_state(_LOCATION_CONFIG)
-        state = mark_known(state, "hospital_foyer")
-        round_tripped = json.loads(json.dumps(state.to_dict()))
-        restored = LocationGraphState.from_dict(round_tripped)
-        self.assertTrue(is_known(restored, "hospital_foyer"))
-        self.assertTrue(is_known(restored, "outside_hospital"))
-        self.assertFalse(is_known(restored, "sacred_clearing"))
+        slot = _map_slot()
+        MAP.set_known(slot, "hospital_foyer")
+        restored = json.loads(json.dumps(slot))
+        self.assertTrue(MAP.is_known(restored, "hospital_foyer"))
+        self.assertTrue(MAP.is_known(restored, "outside_hospital"))
+        self.assertFalse(MAP.is_known(restored, "sacred_clearing"))
+
+    def test_a_bad_map_fails_at_construction(self):
+        with self.assertRaises(SystemConfigValidationError):
+            LocationGraph(name="broken", config={"locations": {"a": {"edges": [{"to": "nowhere"}]}}})
+
+
+class PlaceAttributeTests(SimpleTestCase):
+    """A place's own story-set facts, apart from what the config declared."""
+
+    def test_read_write_exists(self):
+        slot = _map_slot()
+        self.assertFalse(MAP.read_attribute(slot, "hospital_foyer", "door_open"))
+        self.assertFalse(MAP.attribute_exists(slot, "hospital_foyer", "door_open"))
+        MAP.set_attribute(slot, "hospital_foyer", "door_open", False)
+        self.assertTrue(MAP.attribute_exists(slot, "hospital_foyer", "door_open"))
+        MAP.set_attribute(slot, "hospital_foyer", "door_open", True)
+        self.assertTrue(MAP.read_attribute(slot, "hospital_foyer", "door_open"))
+
+    def test_the_published_queries_are_the_readers(self):
+        slot = _map_slot()
+        MAP.set_attribute(slot, "hospital_foyer", "door_open", True)
+        queries = MAP.plugin().queries
+        self.assertEqual(sorted(queries), ["is_known", "read_attribute"])
+        self.assertTrue(queries["read_attribute"](slot, "hospital_foyer", "door_open"))
+        self.assertTrue(queries["is_known"](slot, "outside_hospital"))
 
 
 class ResolveScheduleTests(SimpleTestCase):
@@ -414,54 +415,54 @@ class PresenceQueryTests(SimpleTestCase):
     tests pin the difference rather than just the happy path."""
 
     def setUp(self):
-        self.state = OccupancyState(locations={"alice": "the_square", "player": "the_square", "bob": "the_shop"})
+        self.slot = {"locations": {"alice": "the_square", "player": "the_square", "bob": "the_shop"}}
 
     def test_is_at_is_true_only_at_that_location(self):
         """The place-specific question."""
-        self.assertTrue(is_at(self.state, "alice", "the_square"))
-        self.assertFalse(is_at(self.state, "alice", "the_shop"))
+        self.assertTrue(CHARACTER_OCCUPANCY.is_at(self.slot, "alice", "the_square"))
+        self.assertFalse(CHARACTER_OCCUPANCY.is_at(self.slot, "alice", "the_shop"))
 
     def test_is_at_is_false_for_an_unplaced_character(self):
         """Nowhere is not "at" anywhere — including not at ""."""
-        self.assertFalse(is_at(self.state, "carol", "the_square"))
-        self.assertFalse(is_at(self.state, "carol", ""))
+        self.assertFalse(CHARACTER_OCCUPANCY.is_at(self.slot, "carol", "the_square"))
+        self.assertFalse(CHARACTER_OCCUPANCY.is_at(self.slot, "carol", ""))
 
     def test_is_anywhere_ignores_which_location(self):
         """The existence question: true wherever they are."""
-        self.assertTrue(is_anywhere(self.state, "bob"))
-        self.assertFalse(is_anywhere(self.state, "carol"))
+        self.assertTrue(CHARACTER_OCCUPANCY.is_anywhere(self.slot, "bob"))
+        self.assertFalse(CHARACTER_OCCUPANCY.is_anywhere(self.slot, "carol"))
 
     def test_is_anywhere_is_not_a_substitute_for_is_at(self):
         """The distinction that matters: Bob is somewhere, but not where
         Alice is. Using `is_anywhere` for presence would call him here."""
-        self.assertTrue(is_anywhere(self.state, "bob"))
-        self.assertFalse(is_at(self.state, "bob", "the_square"))
+        self.assertTrue(CHARACTER_OCCUPANCY.is_anywhere(self.slot, "bob"))
+        self.assertFalse(CHARACTER_OCCUPANCY.is_at(self.slot, "bob", "the_square"))
 
     def test_is_with_compares_two_characters_locations(self):
         """ "Is X here", where here means wherever the player is."""
-        self.assertTrue(is_with(self.state, "alice", "player"))
-        self.assertFalse(is_with(self.state, "bob", "player"))
+        self.assertTrue(CHARACTER_OCCUPANCY.is_with(self.slot, "alice", "player"))
+        self.assertFalse(CHARACTER_OCCUPANCY.is_with(self.slot, "bob", "player"))
 
     def test_is_with_is_false_when_either_is_unplaced(self):
         """Two absent characters are not together; they are both nowhere."""
-        self.assertFalse(is_with(self.state, "carol", "player"))
-        self.assertFalse(is_with(OccupancyState(locations={"alice": "the_square"}), "alice", "player"))
-        self.assertFalse(is_with(OccupancyState(), "carol", "dave"))
+        self.assertFalse(CHARACTER_OCCUPANCY.is_with(self.slot, "carol", "player"))
+        self.assertFalse(CHARACTER_OCCUPANCY.is_with({"locations": {"alice": "the_square"}}, "alice", "player"))
+        self.assertFalse(CHARACTER_OCCUPANCY.is_with({"locations": {}}, "carol", "dave"))
 
     def test_is_with_agrees_with_is_at_on_the_players_own_location(self):
         """The two spellings of the same question must not diverge."""
         for character_id in ("alice", "bob", "carol"):
             self.assertEqual(
-                is_with(self.state, character_id, "player"),
-                is_at(self.state, character_id, where_is(self.state, "player") or ""),
+                CHARACTER_OCCUPANCY.is_with(self.slot, character_id, "player"),
+                CHARACTER_OCCUPANCY.is_at(self.slot, character_id, CHARACTER_OCCUPANCY.where_is(self.slot, "player")),
                 character_id,
             )
 
 
 class RecomputeOccupancyTests(SimpleTestCase):
-    """recompute_occupancy() is the scheduler's write-back: it resolves
-    every scheduled character and pushes the answers into the store, so
-    later where_is()/who_is_at() reads see one consistent moment."""
+    """recompute() is the scheduler's write-back: it resolves every
+    scheduled character and pushes the answers into the store, so later
+    where_is()/characters_at() reads see one consistent moment."""
 
     def test_every_scheduled_character_is_written_into_the_store(self):
         """The point of the write-back — after one recompute, a plain
@@ -471,10 +472,11 @@ class RecomputeOccupancyTests(SimpleTestCase):
             "alice": (ScheduleRule(condition=None, location_id="the_square"),),
             "bob": (ScheduleRule(condition=None, location_id="the_shop"),),
         }
-        updated = recompute_occupancy(OccupancyState(), schedules, flags=frozenset(), clock=0)
-        self.assertEqual(where_is(updated, "alice"), "the_square")
-        self.assertEqual(where_is(updated, "bob"), "the_shop")
-        self.assertEqual(who_is_at(updated, "the_square"), ["alice"])
+        slot = CHARACTER_OCCUPANCY.init_state(None)
+        CHARACTER_OCCUPANCY.recompute(slot, schedules, flags=frozenset(), clock=0)
+        self.assertEqual(CHARACTER_OCCUPANCY.where_is(slot, "alice"), "the_square")
+        self.assertEqual(CHARACTER_OCCUPANCY.where_is(slot, "bob"), "the_shop")
+        self.assertEqual(CHARACTER_OCCUPANCY.characters_at(slot, "the_square"), ["alice"])
 
     def test_a_none_resolution_clears_the_previous_entry(self):
         """ "Nowhere" is an answer, not a reason to leave yesterday's
@@ -486,35 +488,30 @@ class RecomputeOccupancyTests(SimpleTestCase):
                 ScheduleRule(condition=None, location_id=None),
             )
         }
-        placed = recompute_occupancy(OccupancyState(), schedules, flags=frozenset({"alice_out"}), clock=0)
-        self.assertEqual(where_is(placed, "alice"), "the_square")
-        cleared = recompute_occupancy(placed, schedules, flags=frozenset(), clock=0)
-        self.assertIsNone(where_is(cleared, "alice"))
+        slot = CHARACTER_OCCUPANCY.init_state(None)
+        CHARACTER_OCCUPANCY.recompute(slot, schedules, flags=frozenset({"alice_out"}), clock=0)
+        self.assertEqual(CHARACTER_OCCUPANCY.where_is(slot, "alice"), "the_square")
+        CHARACTER_OCCUPANCY.recompute(slot, schedules, flags=frozenset(), clock=0)
+        self.assertIsNone(CHARACTER_OCCUPANCY.where_is(slot, "alice", default=None))
 
     def test_an_unchanged_location_stays_put(self):
         """Recomputing repeatedly is safe — a character whose schedule
         still resolves the same way keeps the same entry, so a story may
         recompute as often as it likes."""
         schedules = {"alice": (ScheduleRule(condition=None, location_id="the_square"),)}
-        first = recompute_occupancy(OccupancyState(), schedules, flags=frozenset(), clock=0)
-        second = recompute_occupancy(first, schedules, flags=frozenset(), clock=1)
-        self.assertEqual(second.locations, {"alice": "the_square"})
+        slot = CHARACTER_OCCUPANCY.init_state(None)
+        CHARACTER_OCCUPANCY.recompute(slot, schedules, flags=frozenset(), clock=0)
+        CHARACTER_OCCUPANCY.recompute(slot, schedules, flags=frozenset(), clock=1)
+        self.assertEqual(slot["locations"], {"alice": "the_square"})
 
     def test_characters_outside_the_schedules_are_left_untouched(self):
         """Explicitly-placed characters — the player above all — are not
         in any schedule table and must survive a recompute."""
-        state = set_location(OccupancyState(), "player", "the_square")
+        slot = CHARACTER_OCCUPANCY.init_state(None)
+        CHARACTER_OCCUPANCY.place(slot, "player", "the_square")
         schedules = {"alice": (ScheduleRule(condition=None, location_id="the_shop"),)}
-        updated = recompute_occupancy(state, schedules, flags=frozenset(), clock=0)
-        self.assertEqual(where_is(updated, "player"), "the_square")
-
-    def test_the_caller_s_state_is_never_mutated(self):
-        """Same pure in/out contract as set_location() — callers hold a
-        previous state safely."""
-        state = OccupancyState()
-        schedules = {"alice": (ScheduleRule(condition=None, location_id="the_square"),)}
-        recompute_occupancy(state, schedules, flags=frozenset(), clock=0)
-        self.assertEqual(state.locations, {})
+        CHARACTER_OCCUPANCY.recompute(slot, schedules, flags=frozenset(), clock=0)
+        self.assertEqual(CHARACTER_OCCUPANCY.where_is(slot, "player"), "the_square")
 
     def test_flags_clock_and_registries_reach_every_character(self):
         """The resolution inputs are shared across the whole pass, exactly
@@ -530,55 +527,85 @@ class RecomputeOccupancyTests(SimpleTestCase):
             ),
         }
         story_rules = {"shop_is_open": lambda clock: True}
-        daytime = recompute_occupancy(OccupancyState(), schedules, flags=frozenset(), clock=NOON // 5, story_rules=story_rules)
-        self.assertEqual(daytime.locations, {"alice": "the_square", "bob": "the_shop"})
+        slot = CHARACTER_OCCUPANCY.init_state(None)
+        CHARACTER_OCCUPANCY.recompute(slot, schedules, flags=frozenset(), clock=NOON // 5, story_rules=story_rules)
+        self.assertEqual(slot["locations"], {"alice": "the_square", "bob": "the_shop"})
 
 
-class OccupancyStateTests(SimpleTestCase):
-    """set_location()/where_is()/who_is_at() are pure, non-mutating
-    functions over a plain dict of explicit character locations."""
+class OccupancyStoreTests(SimpleTestCase):
+    """set_location()/where_is()/characters_at() over the session's own slot."""
 
-    def test_set_location_then_where_is(self):
+    def test_place_then_where_is(self):
         """A character's explicitly-set location is readable back."""
-        state = OccupancyState()
-        state = set_location(state, "davy", "robbins_house")
-        self.assertEqual(where_is(state, "davy"), "robbins_house")
-
-    def test_set_location_does_not_mutate_the_original_state(self):
-        """set_location() returns a new state; the original is untouched."""
-        state = OccupancyState()
-        set_location(state, "davy", "robbins_house")
-        self.assertIsNone(where_is(state, "davy"))
+        slot = CHARACTER_OCCUPANCY.init_state(None)
+        CHARACTER_OCCUPANCY.place(slot, "davy", "robbins_house")
+        self.assertEqual(CHARACTER_OCCUPANCY.where_is(slot, "davy"), "robbins_house")
 
     def test_clearing_a_location_with_none_removes_it(self):
         """Passing location_id=None removes the character's entry entirely."""
-        state = OccupancyState()
-        state = set_location(state, "davy", "robbins_house")
-        state = set_location(state, "davy", None)
-        self.assertIsNone(where_is(state, "davy"))
+        slot = CHARACTER_OCCUPANCY.init_state(None)
+        CHARACTER_OCCUPANCY.place(slot, "davy", "robbins_house")
+        CHARACTER_OCCUPANCY.place(slot, "davy", None)
+        self.assertNotIn("davy", slot["locations"])
+        self.assertIsNone(CHARACTER_OCCUPANCY.where_is(slot, "davy", default=None))
 
-    def test_unset_character_has_no_location(self):
-        """A character never explicitly placed anywhere has no location."""
-        state = OccupancyState()
-        self.assertIsNone(where_is(state, "nobody"))
+    def test_unset_character_answers_the_default(self):
+        """A character never placed anywhere answers the caller's own
+        "nowhere": "" for Ink, None for a Python caller that asks."""
+        slot = CHARACTER_OCCUPANCY.init_state(None)
+        self.assertEqual(CHARACTER_OCCUPANCY.where_is(slot, "nobody"), "")
+        self.assertIsNone(CHARACTER_OCCUPANCY.where_is(slot, "nobody", default=None))
 
-    def test_who_is_at_returns_every_character_at_a_location(self):
-        """who_is_at() lists every character explicitly placed at a given
-        location, excluding characters placed elsewhere."""
-        state = OccupancyState()
-        state = set_location(state, "davy", "robbins_house")
-        state = set_location(state, "mrs_robbins", "robbins_house")
-        state = set_location(state, "tina", "elsewhere")
-        self.assertEqual(who_is_at(state, "robbins_house"), ["davy", "mrs_robbins"])
+    def test_characters_at_returns_every_character_at_a_location(self):
+        """characters_at() lists every character explicitly placed at a
+        given location, excluding characters placed elsewhere."""
+        slot = CHARACTER_OCCUPANCY.init_state(None)
+        CHARACTER_OCCUPANCY.place(slot, "davy", "robbins_house")
+        CHARACTER_OCCUPANCY.place(slot, "mrs_robbins", "robbins_house")
+        CHARACTER_OCCUPANCY.place(slot, "tina", "elsewhere")
+        self.assertEqual(CHARACTER_OCCUPANCY.characters_at(slot, "robbins_house"), ["davy", "mrs_robbins"])
 
-    def test_occupancy_state_round_trips_through_real_json(self):
+    def test_an_undeclared_location_is_refused_when_the_story_declares_a_map(self):
+        slot = CHARACTER_OCCUPANCY.init_state(None)
+        with self.assertRaises(UnknownLocationError):
+            CHARACTER_OCCUPANCY.place(slot, "davy", "robins_house", frozenset({"robbins_house"}))
+        CHARACTER_OCCUPANCY.place(slot, "davy", "anywhere", None)
+
+    def test_the_slot_round_trips_through_real_json(self):
         """A real json.dumps/json.loads round-trip preserves every
         explicitly-set character location."""
-        state = OccupancyState()
-        state = set_location(state, "davy", "robbins_house")
-        round_tripped = json.loads(json.dumps(state.to_dict()))
-        restored = OccupancyState.from_dict(round_tripped)
-        self.assertEqual(where_is(restored, "davy"), "robbins_house")
+        slot = CHARACTER_OCCUPANCY.init_state(None)
+        CHARACTER_OCCUPANCY.place(slot, "davy", "robbins_house")
+        restored = json.loads(json.dumps(slot))
+        self.assertEqual(CHARACTER_OCCUPANCY.where_is(restored, "davy"), "robbins_house")
+
+
+class OccupancyBindingTests(SimpleTestCase):
+    """The Ink surface: the same methods over the session's live slot."""
+
+    def test_the_bindings_are_published_under_the_method_names(self):
+        slot = CHARACTER_OCCUPANCY.init_state(None)
+        bindings = CHARACTER_OCCUPANCY.bind(slot, {}, {})
+        self.assertEqual(sorted(bindings), ["is_anywhere", "is_at", "is_with", "set_location", "where_is", "who_is_at"])
+
+    def test_set_location_clears_with_an_empty_string(self):
+        slot = CHARACTER_OCCUPANCY.init_state(None)
+        bindings = CHARACTER_OCCUPANCY.bind(slot, {}, {})
+        bindings["set_location"]("davy", "robbins_house")
+        self.assertEqual(bindings["where_is"]("davy"), "robbins_house")
+        bindings["set_location"]("davy", "")
+        self.assertEqual(bindings["where_is"]("davy"), "")
+
+    def test_set_location_checks_the_maps_vocabulary(self):
+        slot = CHARACTER_OCCUPANCY.init_state(None)
+        engine_state = {"character_occupancy": slot, location_graph_module.STATE_KEY: {"declared": ["cellar"]}}
+        bindings = CHARACTER_OCCUPANCY.bind(slot, engine_state, {})
+        with self.assertRaises(UnknownLocationError):
+            bindings["set_location"]("davy", "celler")
+
+    def test_who_is_at_joins_for_ink(self):
+        slot = {"locations": {"davy": "house", "mrs_robbins": "house", "odd,name": "house"}}
+        self.assertEqual(CHARACTER_OCCUPANCY.bind(slot, {}, {})["who_is_at"]("house"), "davy,mrs_robbins")
 
 
 class LayeredIndependenceTests(SimpleTestCase):
@@ -591,15 +618,13 @@ class LayeredIndependenceTests(SimpleTestCase):
         module."""
         self.assertNotIn(location_graph_module, character_occupancy_module.__dict__.values())
 
-    def test_occupancy_functions_accept_plain_strings_never_a_location_graph_type(self):
+    def test_occupancy_accepts_plain_strings_never_a_location_graph_type(self):
         """A story tracking locations with its own scheme (not
         location_graph.py's config shape at all) can still use occupancy
-        tracking — location ids are plain strings here, nothing about
-        them is a location_graph.LocationGraphState or requires one to
-        exist."""
-        state = OccupancyState()
-        state = set_location(state, "some_npc", "a-location-id-from-any-scheme-at-all")
-        self.assertEqual(where_is(state, "some_npc"), "a-location-id-from-any-scheme-at-all")
+        tracking — location ids are plain strings here."""
+        slot = CHARACTER_OCCUPANCY.init_state(None)
+        CHARACTER_OCCUPANCY.place(slot, "some_npc", "a-location-id-from-any-scheme-at-all")
+        self.assertEqual(CHARACTER_OCCUPANCY.where_is(slot, "some_npc"), "a-location-id-from-any-scheme-at-all")
 
 
 class LocationDetailsTests(SimpleTestCase):
@@ -612,67 +637,62 @@ class LocationDetailsTests(SimpleTestCase):
             "void": {},
         }
     }
+    DETAILED = LocationGraph(name="detailed_map", config=CONFIG)
 
     def test_details_are_carried_into_the_session_state(self):
         """A dependent system reads one place for everything about a
         location, rather than a structure per consumer."""
-        state = initial_state(self.CONFIG)
-        self.assertEqual(detail(state, "cellar", "name"), "The Cellar")
-        self.assertEqual(detail(state, "cellar", "external_identifier"), [12])
-        self.assertEqual(detail(state, "moor", "story_scene"), "storm", "a story's own key is kept as declared")
-        self.assertIsNone(detail(state, "void", "terrain"), "a location declaring nothing has no details")
+        slot = self.DETAILED.init_state(None)
+        self.assertEqual(self.DETAILED.detail(slot, "cellar", "name"), "The Cellar")
+        self.assertEqual(self.DETAILED.detail(slot, "cellar", "external_identifier"), [12])
+        self.assertEqual(self.DETAILED.detail(slot, "moor", "story_scene"), "storm", "a story's own key is kept as declared")
+        self.assertIsNone(self.DETAILED.detail(slot, "void", "terrain"), "a location declaring nothing has no details")
 
     def test_movement_cost_comes_from_terrain(self):
-        """Terrain fixes what arriving costs, so a story does not need a
-        second table to answer it."""
-        state = initial_state(self.CONFIG)
-        self.assertEqual(movement_cost(state, "cellar"), 1)
-        self.assertEqual(movement_cost(state, "moor"), 4)
-        self.assertEqual(movement_cost(state, "void"), 1, "no terrain declared falls back to the default")
+        slot = self.DETAILED.init_state(None)
+        self.assertEqual(self.DETAILED.movement_cost(slot, "cellar"), 1)
+        self.assertEqual(self.DETAILED.movement_cost(slot, "moor"), 4)
+        self.assertEqual(self.DETAILED.movement_cost(slot, "void"), 1, "no terrain declared falls back to the default")
 
     def test_details_survive_a_serialization_round_trip(self):
-        """They live in the session's own state, so they must round-trip
-        like everything else in it."""
-        state = LocationGraphState.from_dict(initial_state(self.CONFIG).to_dict())
-        self.assertEqual(detail(state, "cellar", "name"), "The Cellar")
-        self.assertEqual(movement_cost(state, "moor"), 4)
+        slot = json.loads(json.dumps(self.DETAILED.init_state(None)))
+        self.assertEqual(self.DETAILED.detail(slot, "cellar", "name"), "The Cellar")
+        self.assertEqual(self.DETAILED.movement_cost(slot, "moor"), 4)
 
     def test_discovery_changes_keep_the_details(self):
-        """`mark_known`/`mark_unknown` rebuild the state, so they must
-        carry every field — dropping one is exactly how `declared` was
-        lost when it was first added."""
-        state = mark_unknown(mark_known(initial_state(self.CONFIG), "moor"), "cellar")
-        self.assertEqual(detail(state, "cellar", "name"), "The Cellar")
-        self.assertEqual(state.declared, {"cellar", "moor", "void"})
+        slot = self.DETAILED.init_state(None)
+        self.DETAILED.set_known(slot, "moor")
+        self.DETAILED.set_known(slot, "cellar", False)
+        self.assertEqual(self.DETAILED.detail(slot, "cellar", "name"), "The Cellar")
+        self.assertEqual(slot["declared"], ["cellar", "moor", "void"])
 
 
 class LocationVisitTests(SimpleTestCase):
     """Visits are counted; "has been here" is derived from the count."""
 
-    CONFIG = {"locations": {"cellar": {"known_by_default": True}}}
+    SIMPLE = LocationGraph(name="simple_map", config={"locations": {"cellar": {"known_by_default": True}}})
 
     def test_a_new_game_has_visited_nothing(self):
-        """Absent means zero, so a new session declares no visits."""
-        state = initial_state(self.CONFIG)
-        self.assertEqual(visit_count(state, "cellar"), 0)
-        self.assertFalse(has_visited(state, "cellar"))
+        slot = self.SIMPLE.init_state(None)
+        self.assertEqual(self.SIMPLE.visit_count(slot, "cellar"), 0)
+        self.assertFalse(self.SIMPLE.has_visited(slot, "cellar"))
 
     def test_visits_accumulate_and_the_boolean_follows(self):
-        """The count is the stored fact and the flag is derived from it,
-        so the two can never disagree — a boolean alone could not answer
-        "how many times", while a count answers both questions."""
-        state = record_visit(record_visit(initial_state(self.CONFIG), "cellar"), "cellar")
-        self.assertEqual(visit_count(state, "cellar"), 2)
-        self.assertTrue(has_visited(state, "cellar"))
+        slot = self.SIMPLE.init_state(None)
+        self.SIMPLE.record_visit(slot, "cellar")
+        self.assertEqual(self.SIMPLE.record_visit(slot, "cellar"), 2)
+        self.assertEqual(self.SIMPLE.visit_count(slot, "cellar"), 2)
+        self.assertTrue(self.SIMPLE.has_visited(slot, "cellar"))
 
     def test_a_story_may_declare_starting_visits(self):
         """A story resuming mid-narrative can say a place is already
         known to the character."""
-        state = initial_state({"locations": {"cellar": {"details": {"visits": 3}}}})
-        self.assertEqual(visit_count(state, "cellar"), 3)
-        self.assertTrue(has_visited(state, "cellar"))
+        resumed = LocationGraph(name="resumed_map", config={"locations": {"cellar": {"details": {"visits": 3}}}})
+        slot = resumed.init_state(None)
+        self.assertEqual(resumed.visit_count(slot, "cellar"), 3)
+        self.assertTrue(resumed.has_visited(slot, "cellar"))
 
     def test_visits_survive_a_round_trip(self):
-        """Counted visits are session state and must persist."""
-        state = LocationGraphState.from_dict(record_visit(initial_state(self.CONFIG), "cellar").to_dict())
-        self.assertEqual(visit_count(state, "cellar"), 1)
+        slot = self.SIMPLE.init_state(None)
+        self.SIMPLE.record_visit(slot, "cellar")
+        self.assertEqual(self.SIMPLE.visit_count(json.loads(json.dumps(slot)), "cellar"), 1)

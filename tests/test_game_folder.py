@@ -12,6 +12,7 @@ from unittest import TestCase
 from ink_engine.game_folder import (
     GameFolderError,
     find_main_story_file,
+    read_module_literals,
     read_play_layout,
     read_required_plugins,
 )
@@ -191,3 +192,65 @@ class ReadRequiredPluginsTests(TestCase):
         import os
 
         self.assertNotIn("SHOULD_NEVER_RUN_PLUGINS", os.environ)
+
+
+class ReadModuleLiteralsTests(TestCase):
+    """The general primitive every single-field/whole-file reader in this
+    module (and each host application's own manifest/mapping reader)
+    builds on."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _write(self, relative_path: str, content: str = "") -> Path:
+        path = self.tmp / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def test_every_top_level_literal_assignment_is_read(self):
+        path = self._write("data.py", 'A = 1\nB = "two"\nC = [3, 4]\n')
+        result = read_module_literals(path)
+        self.assertEqual(result.literals, {"A": 1, "B": "two", "C": [3, 4]})
+        self.assertEqual(result.skipped, frozenset())
+
+    def test_annotated_assignment_is_read_like_plain_assignment(self):
+        """A declaration written as `NAME: Type = ...` is the same data as
+        `NAME = ...` -- silently missing it would make a real mapping look
+        like an empty one."""
+        path = self._write("data.py", 'MAPPING: dict[str, str] = {"a": "b"}\n')
+        self.assertEqual(read_module_literals(path).literals, {"MAPPING": {"a": "b"}})
+
+    def test_a_bare_annotation_with_no_value_contributes_nothing_and_is_not_skipped(self):
+        """A bare `NAME: Type` declares a type but gives no value -- there
+        is nothing to evaluate, and nothing a game author was trying to
+        assign, so it must not show up in `.skipped` either."""
+        path = self._write("data.py", "MAPPING: dict\n")
+        result = read_module_literals(path)
+        self.assertEqual(result.literals, {})
+        self.assertEqual(result.skipped, frozenset())
+
+    def test_a_non_literal_assignment_is_skipped_not_raised(self):
+        path = self._write("data.py", "A = 1\nB = some_function_call()\nC = 2\n")
+        result = read_module_literals(path)
+        self.assertEqual(result.literals, {"A": 1, "C": 2})
+        self.assertEqual(result.skipped, frozenset({"B"}))
+
+    def test_a_missing_file_returns_empty_result(self):
+        result = read_module_literals(self.tmp / "nope.py")
+        self.assertEqual(result.literals, {})
+        self.assertEqual(result.skipped, frozenset())
+
+    def test_a_malformed_file_returns_empty_result_not_a_crash(self):
+        path = self._write("data.py", "this is not valid python (((")
+        result = read_module_literals(path)
+        self.assertEqual(result.literals, {})
+        self.assertEqual(result.skipped, frozenset())
+
+    def test_the_file_is_read_as_data_never_imported(self):
+        path = self._write("data.py", 'import os\nos.environ["SHOULD_NEVER_RUN_LITERALS"] = "1"\nA = 1\n')
+        self.assertEqual(read_module_literals(path).literals, {"A": 1})
+        import os
+
+        self.assertNotIn("SHOULD_NEVER_RUN_LITERALS", os.environ)

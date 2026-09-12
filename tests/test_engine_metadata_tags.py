@@ -13,6 +13,7 @@ import json
 from pathlib import Path as FilePath
 from unittest import TestCase as SimpleTestCase
 
+from ink_engine import engine
 from ink_engine.engine import InkRuntimeState, load_story_root
 
 FIXTURES = FilePath(__file__).parent / "fixtures"
@@ -189,3 +190,41 @@ class TagTests(SimpleTestCase):
         text = state.continue_story()
         self.assertEqual(text, "You step into a clearing.\n")
         self.assertEqual(state.current_tags, ["image: Anna/gypsy0.jpg"])
+
+
+class EvalStackCommandGroupingTests(SimpleTestCase):
+    """The token groups that several dispatch sites share.
+
+    These were once three hand-written lists that had to be edited in
+    lock-step. A token added to one and missed in another is captured as
+    literal choice text and shown to the player, with nothing raising --
+    so the grouping is pinned here rather than trusted to review.
+    """
+
+    def test_every_grouped_token_is_a_real_control_command(self):
+        self.assertLessEqual(engine.EVAL_STACK_COMMANDS, engine.CONTROL_COMMAND_MARKERS)
+
+    def test_the_groups_partition_cleanly(self):
+        self.assertEqual(engine.STORY_METADATA_COMMANDS & engine.RNG_COMMANDS, set())
+        self.assertEqual(
+            engine.EVAL_STACK_COMMANDS,
+            engine.STORY_METADATA_COMMANDS | engine.RNG_COMMANDS | {engine.EVAL_OUTPUT},
+        )
+
+    def test_the_metadata_group_holds_exactly_the_five_pushers(self):
+        self.assertEqual(
+            engine.STORY_METADATA_COMMANDS,
+            {engine.CHOICE_COUNT, engine.TURNS, engine.TURNS_SINCE, engine.READ_COUNT, engine.VISIT_INDEX},
+        )
+
+    def test_the_rng_group_holds_exactly_the_four_rng_markers(self):
+        self.assertEqual(
+            engine.RNG_COMMANDS,
+            {engine.RANDOM, engine.SEED_RANDOM, engine.SEQUENCE_SHUFFLE, engine.LIST_RANDOM},
+        )
+
+    def test_eval_output_is_grouped_but_not_a_metadata_pusher(self):
+        """It reaches the same depth-gated check, but its own handling
+        differs: it must not be swallowed unconditionally."""
+        self.assertIn(engine.EVAL_OUTPUT, engine.EVAL_STACK_COMMANDS)
+        self.assertNotIn(engine.EVAL_OUTPUT, engine.STORY_METADATA_COMMANDS)

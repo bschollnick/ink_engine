@@ -1,20 +1,16 @@
-"""The closed, per-system config schema for a host's own config store.
+"""The closed config schema `location_graph` declares for its own config.
 
-Covers engine_config_schemas.py's own validators directly (pure functions,
-no host framework needed). A host application's own enforcement of when
-these validators run (e.g. on save, via a model's own clean() dispatch)
-is that host's own concern and is tested in that host's own test suite.
+Covers the validator directly (a pure function, no host framework
+needed). A host application's own enforcement of when it runs -- on a
+model's save, say -- is that host's concern and is tested there.
 """
 
 from __future__ import annotations
 
 from unittest import TestCase as SimpleTestCase
 
-from ink_engine.engine_config_schemas import (
-    SystemConfigValidationError,
-    validate_character_occupancy,
-    validate_location_graph,
-)
+from ink_engine.engine_config_schemas import SystemConfigValidationError
+from ink_engine.engine_plugins.location_graph import validate_location_graph
 
 _VALID_LOCATION_GRAPH = {
     "locations": {
@@ -116,80 +112,6 @@ _VALID_CHARACTER_OCCUPANCY = {
         },
     },
 }
-
-
-class ValidateCharacterOccupancyTests(SimpleTestCase):
-    """Direct unit coverage of the character_occupancy validator, against
-    a real Doctor-Kay-shaped multi-condition priority chain."""
-
-    def test_real_doctor_kay_shape_passes(self):
-        """The exact multi-condition priority chain shape real
-        _place_now() functions already use validates cleanly."""
-        validate_character_occupancy(_VALID_CHARACTER_OCCUPANCY)
-
-    def test_top_level_must_be_an_object(self):
-        """A list (or any non-dict) top-level value is rejected."""
-        with self.assertRaises(SystemConfigValidationError):
-            validate_character_occupancy(["not", "an", "object"])
-
-    def test_characters_must_not_be_empty(self):
-        """An empty "characters" dict is rejected."""
-        with self.assertRaises(SystemConfigValidationError):
-            validate_character_occupancy({"characters": {}})
-
-    def test_schedule_must_not_be_empty(self):
-        """A character with no schedule rules at all is rejected — every
-        real character has at least a fallback rule."""
-        config = {"characters": {"a": {"schedule": []}}}
-        with self.assertRaises(SystemConfigValidationError):
-            validate_character_occupancy(config)
-
-    def test_missing_location_id_is_rejected(self):
-        """location_id must be present (even if null) — a rule without it
-        at all is a real shape error, not "assume absent"."""
-        config = {"characters": {"a": {"schedule": [{"condition": None}]}}}
-        with self.assertRaises(SystemConfigValidationError):
-            validate_character_occupancy(config)
-
-    def test_unknown_condition_kind_is_rejected(self):
-        """A condition kind outside the closed vocabulary is rejected —
-        never silently ignored or treated as always-true/false."""
-        config = {"characters": {"a": {"schedule": [{"condition": {"kind": "eval"}, "location_id": "x"}]}}}
-        with self.assertRaises(SystemConfigValidationError):
-            validate_character_occupancy(config)
-
-    def test_minute_in_range_bounds_must_be_in_0_to_1440(self):
-        """A minute_low/minute_high outside the real 0-1440 minute-per-day
-        range is rejected, not silently clamped."""
-        config = {
-            "characters": {
-                "a": {
-                    "schedule": [
-                        {"condition": {"kind": "minute_in_range", "minute_low": 0, "minute_high": 9999}, "location_id": "x"},
-                    ],
-                },
-            },
-        }
-        with self.assertRaises(SystemConfigValidationError):
-            validate_character_occupancy(config)
-
-    def test_not_condition_requires_exactly_one_clause(self):
-        """A "not" with 0 or 2+ clauses is rejected — it inverts exactly
-        one child condition, matching character_occupancy.Condition.negate()."""
-        config = {
-            "characters": {
-                "a": {
-                    "schedule": [
-                        {
-                            "condition": {"kind": "not", "clauses": [{"kind": "flag", "flag": "x"}, {"kind": "flag", "flag": "y"}]},
-                            "location_id": "z",
-                        },
-                    ],
-                },
-            },
-        }
-        with self.assertRaises(SystemConfigValidationError):
-            validate_character_occupancy(config)
 
 
 class LocationDetailsValidationTests(SimpleTestCase):

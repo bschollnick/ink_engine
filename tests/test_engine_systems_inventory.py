@@ -1,60 +1,79 @@
 """Tests for the generic `engine_plugins/inventory.py` framework.
 
-Every id here is a fixture invention ("item_a", "holder_1", "room_x") —
+Every id here is a fixture invention ("item_a", "holder_1", "room_x") --
 no real story's items, characters or locations appear, so this suite
 cannot pass or fail for reasons belonging to any particular game.
+
+The helpers below are the plugin's own methods, each handing the slot
+back so a test reads as the sequence of operations it exercises.
 """
 
 from __future__ import annotations
 
+import json
 from unittest import TestCase as SimpleTestCase
 
-from ink_engine.engine_plugins.containers import (
-    declare_container,
-    is_container,
-    is_container_open,
-    put_in_container,
-    set_container_open,
-    take_from_container,
-    visible_contents,
-)
 from ink_engine.engine_plugins.inventory import (
     DEFAULT_STACK_LIMIT,
     DEFAULT_WORN_SLOT_CAPACITY,
+    INVENTORY,
     MAX_STACK_LIMIT,
     MAX_WORN_SLOT_CAPACITY,
     UNLIMITED,
     ContainerClosedError,
     InvalidLimitError,
     InventoryFullError,
-    InventoryState,
     ItemNotHeldError,
     SlotOccupiedError,
     StackFullError,
-    capacity,
-    give_item,
-    has_item,
-    held_items,
-    is_worn,
-    item_count,
-    item_holder,
-    item_location,
-    items_at_location,
-    place_item,
-    remove_from_world,
-    remove_worn_item,
-    set_capacity,
-    set_stack_limit,
-    set_worn_slot_capacity,
-    stack_limit,
-    take_item,
-    transfer_item,
-    wear_item,
-    worn_in_slot,
-    worn_items,
-    worn_slot_capacity,
 )
 from ink_engine.engine_plugins.item_text import describe
+
+
+def InventoryState() -> dict:  # pylint: disable=invalid-name
+    """Return a fresh inventory slot."""
+    return INVENTORY.init_state(None)
+
+
+def _chained(method_name):
+    def call(slot, *args, **kwargs):
+        getattr(INVENTORY, method_name)(slot, *args, **kwargs)
+        return slot
+
+    call.__name__ = method_name
+    return call
+
+
+place_item = _chained("place_item")
+remove_from_world = _chained("remove_from_world")
+set_capacity = _chained("set_capacity")
+set_stack_limit = _chained("set_stack_limit")
+give_item = _chained("give_item")
+take_item = _chained("take_item")
+transfer_item = _chained("transfer_item")
+set_worn_slot_capacity = _chained("set_worn_slot_capacity")
+wear_item = _chained("wear_item")
+remove_worn_item = _chained("remove_worn_item")
+declare_container = _chained("declare_container")
+set_container_open = _chained("set_container_open")
+take_from_container = _chained("take_from_container")
+put_in_container = _chained("put_in_container")
+
+item_location = INVENTORY.item_location
+items_at_location = INVENTORY.items_at_location
+capacity = INVENTORY.capacity
+stack_limit = INVENTORY.stack_limit
+has_item = INVENTORY.has_item
+item_count = INVENTORY.item_count
+held_items = INVENTORY.held_items
+item_holder = INVENTORY.item_holder
+worn_slot_capacity = INVENTORY.worn_slot_capacity
+is_worn = INVENTORY.is_worn
+worn_items = INVENTORY.worn_items
+worn_in_slot = INVENTORY.worn_in_slot
+is_container = INVENTORY.is_container
+is_container_open = INVENTORY.is_container_open
+visible_contents = INVENTORY.visible_contents
 
 
 class WorldPlacementTests(SimpleTestCase):
@@ -247,63 +266,56 @@ class TransferTests(SimpleTestCase):
         self.assertTrue(has_item(state, "holder_1", "item_a"))
 
 
-class ImmutabilityTests(SimpleTestCase):
-    """Every function returns new state and never mutates its argument."""
+class RefusalLeavesTheSlotUntouchedTests(SimpleTestCase):
+    """Every check happens before anything is written, so a refused
+    operation changes nothing."""
 
-    def test_give_does_not_mutate_the_original(self):
-        original = InventoryState()
-        give_item(original, "holder_1", "item_a")
-        self.assertFalse(has_item(original, "holder_1", "item_a"))
+    def test_a_refused_give_writes_nothing(self):
+        slot = set_capacity(InventoryState(), "holder_1", 1)
+        give_item(slot, "holder_1", "item_a")
+        before = json.dumps(slot, sort_keys=True)
+        with self.assertRaises(InventoryFullError):
+            give_item(slot, "holder_1", "item_b")
+        self.assertEqual(json.dumps(slot, sort_keys=True), before)
 
-    def test_place_does_not_mutate_the_original(self):
-        original = InventoryState()
-        place_item(original, "item_a", "room_x")
-        self.assertIsNone(item_location(original, "item_a"))
+    def test_a_refused_transfer_writes_nothing(self):
+        slot = give_item(InventoryState(), "holder_1", "item_a")
+        with self.assertRaises(ItemNotHeldError):
+            transfer_item(slot, "holder_1", "holder_2", "item_a", count=2)
+        self.assertTrue(has_item(slot, "holder_1", "item_a"))
+        self.assertFalse(has_item(slot, "holder_2", "item_a"))
 
-    def test_transfer_does_not_mutate_the_original(self):
-        original = give_item(InventoryState(), "holder_1", "item_a")
-        transfer_item(original, "holder_1", "holder_2", "item_a")
-        self.assertTrue(has_item(original, "holder_1", "item_a"))
-        self.assertFalse(has_item(original, "holder_2", "item_a"))
-
-    def test_nested_dicts_are_copied_not_shared(self):
-        original = give_item(InventoryState(), "holder_1", "item_a")
-        updated = give_item(original, "holder_1", "item_b")
-        self.assertFalse(has_item(original, "holder_1", "item_b"))
-        self.assertTrue(has_item(updated, "holder_1", "item_b"))
+    def test_held_items_returns_an_independent_copy(self):
+        slot = give_item(InventoryState(), "holder_1", "item_a")
+        snapshot = held_items(slot, "holder_1")
+        snapshot["item_b"] = 5
+        self.assertFalse(has_item(slot, "holder_1", "item_b"))
 
 
 class SerializationTests(SimpleTestCase):
-    """State must round-trip through a session's own serialized state."""
+    """The slot round-trips through a session's own saved state."""
 
     def test_round_trip_preserves_everything(self):
-        state = place_item(InventoryState(), "item_a", "room_x")
-        state = give_item(state, "holder_1", "item_b", count=3)
-        state = set_capacity(state, "holder_1", 4)
-
-        rebuilt = InventoryState.from_dict(state.to_dict())
-
+        slot = place_item(InventoryState(), "item_a", "room_x")
+        give_item(slot, "holder_1", "item_b", count=3)
+        set_capacity(slot, "holder_1", 4)
+        rebuilt = json.loads(json.dumps(slot))
         self.assertEqual(item_location(rebuilt, "item_a"), "room_x")
         self.assertEqual(item_count(rebuilt, "holder_1", "item_b"), 3)
         self.assertEqual(capacity(rebuilt, "holder_1"), 4)
 
-    def test_to_dict_is_json_safe(self):
-        import json
+    def test_a_fresh_slot_is_json_safe_and_complete(self):
+        slot = InventoryState()
+        self.assertEqual(json.loads(json.dumps(slot)), slot)
+        self.assertEqual(sorted(slot), ["capacities", "containers", "holder_items", "item_locations", "stack_limits", "worn", "worn_slot_capacities"])
 
-        state = give_item(InventoryState(), "holder_1", "item_a", count=2)
-        state = place_item(state, "item_b", "room_x")
-        self.assertEqual(InventoryState.from_dict(json.loads(json.dumps(state.to_dict()))).to_dict(), state.to_dict())
-
-    def test_from_dict_tolerates_missing_keys(self):
-        """An older saved state that predates a field still loads."""
-        rebuilt = InventoryState.from_dict({})
-        self.assertEqual(rebuilt.to_dict(), InventoryState().to_dict())
-
-    def test_to_dict_returns_copies_not_live_references(self):
-        state = give_item(InventoryState(), "holder_1", "item_a")
-        serialized = state.to_dict()
-        serialized["holder_items"]["holder_1"]["item_b"] = 5
-        self.assertFalse(has_item(state, "holder_1", "item_b"))
+    def test_an_older_save_missing_fields_is_repaired_on_bind(self):
+        """A saved state that predates a field still loads."""
+        old: dict = {"item_locations": {}, "holder_items": {"holder_1": {"item_a": 1}}}
+        INVENTORY.bind(old, {}, {})
+        self.assertEqual(old["containers"], {})
+        self.assertEqual(old["worn"], {})
+        self.assertTrue(has_item(old, "holder_1", "item_a"))
 
 
 class StackLimitTests(SimpleTestCase):
@@ -394,7 +406,7 @@ class StackLimitTests(SimpleTestCase):
 
     def test_stack_limits_survive_serialization(self):
         state = set_stack_limit(InventoryState(), "holder_1", 7)
-        self.assertEqual(stack_limit(InventoryState.from_dict(state.to_dict()), "holder_1"), 7)
+        self.assertEqual(stack_limit(json.loads(json.dumps(state)), "holder_1"), 7)
 
     def test_two_holders_have_independent_stack_limits(self):
         state = set_stack_limit(InventoryState(), "holder_1", 1)
@@ -473,15 +485,15 @@ class ContainerTests(SimpleTestCase):
 
     def test_containers_survive_serialization(self):
         state = declare_container(InventoryState(), "holder_1", openable=True, is_open=False, transparent=True)
-        rebuilt = InventoryState.from_dict(state.to_dict())
+        rebuilt = json.loads(json.dumps(state))
         self.assertTrue(is_container(rebuilt, "holder_1"))
         self.assertFalse(is_container_open(rebuilt, "holder_1"))
 
     def test_a_state_predating_containers_still_loads(self):
         old = {"item_locations": {}, "holder_items": {"holder_1": {"item_a": 1}}, "capacities": {}, "stack_limits": {}}
-        rebuilt = InventoryState.from_dict(old)
-        self.assertEqual(rebuilt.containers, {})
-        self.assertTrue(has_item(rebuilt, "holder_1", "item_a"))
+        self.assertFalse(is_container(old, "holder_1"))
+        self.assertTrue(is_container_open(old, "holder_1"))
+        self.assertTrue(has_item(old, "holder_1", "item_a"))
 
 
 class ExpiringContainerTests(SimpleTestCase):
@@ -552,9 +564,9 @@ class ExpiringContainerTests(SimpleTestCase):
     def test_expiry_survives_serialization(self):
         state = give_item(InventoryState(), "holder_1", "item_a")
         state = declare_container(state, "holder_1", expires_when_empty=True)
-        rebuilt = InventoryState.from_dict(state.to_dict())
+        rebuilt = json.loads(json.dumps(state))
         self.assertTrue(is_container(rebuilt, "holder_1"))
-        rebuilt = take_from_container(rebuilt, "holder_1", "holder_2", "item_a")
+        take_from_container(rebuilt, "holder_1", "holder_2", "item_a")
         self.assertFalse(is_container(rebuilt, "holder_1"))
 
 
@@ -637,11 +649,11 @@ class WornSlotTests(SimpleTestCase):
     def test_worn_state_survives_serialization(self):
         state = give_item(InventoryState(), "holder_1", "item_a")
         state = wear_item(state, "holder_1", "item_a", "slot_x")
-        self.assertTrue(is_worn(InventoryState.from_dict(state.to_dict()), "holder_1", "item_a"))
+        self.assertTrue(is_worn(json.loads(json.dumps(state)), "holder_1", "item_a"))
 
     def test_a_state_predating_worn_slots_still_loads(self):
         old = {"item_locations": {}, "holder_items": {"holder_1": {"item_a": 1}}, "capacities": {}, "stack_limits": {}}
-        self.assertEqual(InventoryState.from_dict(old).worn, {})
+        self.assertEqual(worn_items(old, "holder_1"), frozenset())
 
 
 class WornCapacityExemptionTests(SimpleTestCase):
@@ -712,3 +724,44 @@ class DescriptionSlotTests(SimpleTestCase):
     def test_a_template_without_a_name_placeholder_is_returned_as_is(self):
         defaults = {"use_failure": "That doesn't work here."}
         self.assertEqual(describe("use_failure", authored=None, defaults=defaults, name="widget"), "That doesn't work here.")
+
+
+class WornIndexStaysConsistentTests(SimpleTestCase):
+    """`worn` indexes `holder_items`; it is not a second truth.
+
+    An entry naming an item its holder no longer has reports it as both
+    not-held and worn, which no caller can make sense of. Every path that
+    takes an item away from a holder must clear it.
+    """
+
+    def _wearing(self) -> dict:
+        state = set_worn_slot_capacity(InventoryState(), "finger", 1)
+        state = give_item(state, "player", "ring")
+        return wear_item(state, "player", "ring", "finger")
+
+    def test_placing_a_worn_item_in_the_world_stops_it_being_worn(self):
+        after = place_item(self._wearing(), "ring", "market")
+        self.assertFalse(has_item(after, "player", "ring"))
+        self.assertFalse(is_worn(after, "player", "ring"))
+
+    def test_taking_a_worn_item_away_stops_it_being_worn(self):
+        after = take_item(self._wearing(), "player", "ring")
+        self.assertFalse(has_item(after, "player", "ring"))
+        self.assertFalse(is_worn(after, "player", "ring"))
+
+    def test_removing_a_worn_item_from_the_world_stops_it_being_worn(self):
+        after = remove_from_world(self._wearing(), "ring")
+        self.assertFalse(has_item(after, "player", "ring"))
+        self.assertFalse(is_worn(after, "player", "ring"))
+
+    def test_transferring_a_worn_item_stops_the_giver_wearing_it(self):
+        after = transfer_item(self._wearing(), "player", "gina", "ring")
+        self.assertFalse(is_worn(after, "player", "ring"))
+        self.assertTrue(has_item(after, "gina", "ring"))
+
+    def test_an_item_given_back_is_held_but_not_worn(self):
+        """Clearing the index must not survive as a phantom: the item
+        returns unworn, which is what taking it off means."""
+        after = give_item(take_item(self._wearing(), "player", "ring"), "player", "ring")
+        self.assertTrue(has_item(after, "player", "ring"))
+        self.assertFalse(is_worn(after, "player", "ring"))

@@ -213,3 +213,53 @@ class ControlCommandMarkerTests(SimpleTestCase):
         text += state.continue_story()
         self.assertEqual(text, "Hub.\nDone.\n")
         self.assertTrue(state.done)
+
+
+class InvisibleDefaultChoiceTests(SimpleTestCase):
+    """A fallback choice ("* ->", flag 0x8) -- never shown to the player,
+    auto-followed only once no other choice was generated this turn
+    (invisible_default_choice.ink, the ink_JSON_runtime_format.md
+    "Example of a fallback choice"). Expected transcript captured from a
+    real `inklecate -p` play-mode run with inputs 1, 1, 1 before any
+    assertion here was written."""
+
+    def test_the_fallback_is_never_offered_while_a_real_choice_exists(self):
+        state = InkRuntimeState(load_story_root(_load("invisible_default_choice.ink.json")))
+        state.continue_story()
+        self.assertEqual([c.text for c in state.current_choices], ["The woman in the hat?", "The man with the briefcase?"])
+
+    def test_the_fallback_is_auto_followed_once_no_real_choice_remains(self):
+        """Choosing 'the woman' twice exhausts her own once-only choice;
+        choosing 'the man' once then exhausts the only real choice left —
+        the fallback is the sole choice generated at that point, so it is
+        followed automatically, in the same turn, with no blank choice
+        ever offered."""
+        state = InkRuntimeState(load_story_root(_load("invisible_default_choice.ink.json")))
+        text = _play(state, [0, 0, 0])
+        self.assertEqual(
+            text,
+            "You search desperately for a friendly face in the crowd.\n"
+            "The woman in the hat pushes you roughly aside. You search desperately for a friendly face in the crowd.\n"
+            "The woman in the hat pushes you roughly aside. You search desperately for a friendly face in the crowd.\n"
+            "The man with the briefcase looks disgusted as you stumble past him. You search desperately for a friendly face in the crowd.\n"
+            "But it is too late: you collapse onto the station platform. This is the end.\n",
+        )
+        self.assertEqual(state.current_choices, [])
+        self.assertTrue(state.done)
+
+    def test_auto_following_the_fallback_does_not_count_as_a_turn(self):
+        """Only a real player choice advances turn_count -- the fallback
+        auto-follow is not one, even though it moves the pointer the same
+        way choose() does."""
+        state = InkRuntimeState(load_story_root(_load("invisible_default_choice.ink.json")))
+        state.continue_story()
+        state.choose(0)
+        state.continue_story()
+        turn_count_before_fallback = state.turn_count
+        state.choose(0)
+        state.continue_story()
+        turn_count_after_real_choice = state.turn_count
+        state.choose(0)  # exhausts "the man"; the fallback auto-follows
+        state.continue_story()
+        self.assertEqual(state.turn_count, turn_count_after_real_choice + 1)
+        self.assertGreater(turn_count_after_real_choice, turn_count_before_fallback)

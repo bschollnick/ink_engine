@@ -15,6 +15,7 @@ import json
 from pathlib import Path as FilePath
 from unittest import TestCase as SimpleTestCase
 
+from ink_engine import engine
 from ink_engine.engine import (
     InkRuntimeState,
     ListValue,
@@ -243,3 +244,125 @@ class MissingContainerDegradationTests(SimpleTestCase):
         root = load_story_root(data)
         state = InkRuntimeState.from_dict(root, {"current_choices": [{"text": "Ghost choice", "target_path": "does_not_exist"}]})
         self.assertEqual(state.current_choices, [])
+
+
+class PersistedKeyContractTests(SimpleTestCase):
+    """`to_dict()` output is a persisted format, not an internal detail.
+
+    A host stores it in a database column and in save files, so renaming
+    a key or changing a default silently invalidates every existing save.
+    The other tests here all round-trip freshly built state, which cannot
+    catch that: a key absent from BOTH halves round-trips perfectly while
+    dropping real data. These pin the shape itself.
+    """
+
+    #: Every key a saved state carries. Changing this list is a
+    #: save-format change: old saves lack anything added, and anything
+    #: removed or renamed is silently dropped on load.
+    EXPECTED_KEYS = frozenset(
+        {
+            "call_stack",
+            "current_choices",
+            "current_tags",
+            "done",
+            "eval_run_depth",
+            "eval_stack",
+            "globals",
+            "in_tag",
+            "last_turn_text",
+            "output_tokens",
+            "pending_thread",
+            "pointer",
+            "previous_pointer",
+            "previous_random",
+            "story_seed",
+            "string_capture_eval_depth",
+            "string_capture_stack",
+            "tag_buffer_tokens",
+            "temps",
+            "tunnel_stack",
+            "turn_count",
+            "visit_counts",
+            "visit_turns",
+        }
+    )
+
+    def _played(self) -> InkRuntimeState:
+        data = _load("variables.ink.json")
+        state = InkRuntimeState(load_story_root(data), load_list_defs(data))
+        state.continue_story()
+        return state
+
+    def test_the_saved_key_set_is_exactly_what_hosts_persist(self):
+        self.assertEqual(set(self._played().to_dict()), set(self.EXPECTED_KEYS))
+
+    def test_a_state_missing_every_optional_key_still_loads(self):
+        """What an older save looks like: only what that version wrote.
+        Each absent key must fall back, not raise."""
+        data = _load("variables.ink.json")
+        root = load_story_root(data)
+        restored = InkRuntimeState.from_dict(root, {}, load_list_defs(data))
+        self.assertEqual(restored.turn_count, -1)
+        self.assertFalse(restored.done)
+
+    def test_an_unknown_key_from_a_newer_save_is_ignored(self):
+        """A save written by a later version must not break this one."""
+        data = _load("variables.ink.json")
+        root = load_story_root(data)
+        snapshot = self._played().to_dict()
+        snapshot["a_key_this_version_never_wrote"] = 99
+        restored = InkRuntimeState.from_dict(root, snapshot, load_list_defs(data))
+        self.assertEqual(restored.turn_count, self._played().turn_count)
+
+    def test_a_bool_global_round_trips_as_a_bool(self):
+        """Bools are tagged rather than stored raw, because Python's bool
+        is an int subclass and would otherwise reload as 0/1."""
+        state = self._played()
+        state.globals["a_flag"] = True
+        data = _load("variables.ink.json")
+        restored = InkRuntimeState.from_dict(load_story_root(data), state.to_dict(), load_list_defs(data))
+        self.assertIs(restored.globals["a_flag"], True)
+
+
+class ScalarFieldTableTests(SimpleTestCase):
+    """The scalar fields both halves of serialization share.
+
+    Writing and reading were once two hand-mirrored lists, so a field
+    could be added to one and missed in the other. These check the table
+    that replaced them actually describes the real attributes.
+    """
+
+    def test_every_tabled_field_names_a_real_attribute(self):
+        data = _load("variables.ink.json")
+        state = InkRuntimeState(load_story_root(data), load_list_defs(data))
+        for key, attribute, _coerce, _default in engine._SCALAR_STATE_FIELDS:
+            with self.subTest(key=key):
+                self.assertTrue(hasattr(state, attribute), f"{key!r} names a missing attribute {attribute!r}")
+
+    def test_every_tabled_field_is_actually_written(self):
+        data = _load("variables.ink.json")
+        state = InkRuntimeState(load_story_root(data), load_list_defs(data))
+        state.continue_story()
+        written = state.to_dict()
+        for key, _attribute, _coerce, _default in engine._SCALAR_STATE_FIELDS:
+            with self.subTest(key=key):
+                self.assertIn(key, written)
+
+    def test_each_default_applies_when_a_save_omits_the_field(self):
+        data = _load("variables.ink.json")
+        restored = InkRuntimeState.from_dict(load_story_root(data), {}, load_list_defs(data))
+        for key, attribute, _coerce, default in engine._SCALAR_STATE_FIELDS:
+            with self.subTest(key=key):
+                self.assertEqual(getattr(restored, attribute), default)
+
+    def test_a_capture_depth_from_an_older_save_falls_back_to_the_run_depth(self):
+        """The one field deliberately left out of the table: its default
+        derives from other restored state, so an all-zero baseline would
+        make every capture believe it began at depth 0."""
+        data = _load("variables.ink.json")
+        restored = InkRuntimeState.from_dict(
+            load_story_root(data),
+            {"eval_run_depth": 3, "string_capture_stack": [["a"], ["b"]]},
+            load_list_defs(data),
+        )
+        self.assertEqual(restored._string_capture_eval_depth, [3, 3])
