@@ -2,26 +2,20 @@
 
 **Three separated concepts:**
 
-* A **quest** has a numeric *stage* -- the shape stories use for long
-  progressions, a counter compared against thresholds. It stays a plain
-  int because what the numbers mean is a game fact, not an engine one.
+* A **quest** has a numeric *stage*, a plain int compared against
+  thresholds the game defines.
 * A **goal** is one discrete objective, met or outstanding. Goals hang
-  off a quest and carry no stage of their own; they are what makes a
-  journal renderable, since "2 of 4 ingredients found" needs countable
-  units rather than a single number.
-* The **journal** is assembled here but worded by the game. This module
-  produces structure -- which quests are known, which goals remain, what
-  nests under what -- and never a player-facing string.
+  off a quest and carry no stage of their own.
+* The **journal** is assembled here but worded by the game: this module
+  produces structure, never a player-facing string.
 
 **Structure is definition; progress is state.** Which quests exist, which
 are subquests of which, and what any stage means live in the game's
 catalog, a `dict[str, QuestSpec]` handed to the plugin's constructor; the
-slot carries only what a session changed. So two sessions of the same
-story share one catalog, and a story that declares nothing gets empty
-answers everywhere.
+slot carries only what a session changed.
 
-**Everything is optional.** A story that declares no quests never starts
-one, and every query returns an empty answer rather than raising.
+A story that declares no quests gets empty answers everywhere, never a
+raise.
 """
 
 from __future__ import annotations
@@ -44,9 +38,7 @@ UNSTARTED_STAGE = 0
 class QuestSpec:
     """One quest's immutable structure, owned by the game's catalog.
 
-    Frozen because this is a declaration rather than session state: two
-    sessions sharing one catalog must not be able to edit each other's
-    view of what a quest requires.
+    Frozen: a catalog is shared by every session.
 
     Args:
         quest_id: The catalog's opaque id for this quest.
@@ -120,9 +112,8 @@ class JournalEntry:
 def unreachable_goals(catalog: dict[str, QuestSpec], reachable_goal_ids: set[str]) -> list[tuple[str, str]]:
     """Report goals a catalog declares that nothing can ever meet.
 
-    A goal no scene ever meets is neither a compile error nor a test
-    failure -- it is a quest that silently never finishes. A question
-    about the catalog alone, so it needs no plugin.
+    A goal no scene ever meets is a quest that silently never finishes.
+    A question about the catalog alone, so it needs no plugin.
 
     Args:
         catalog: The game's quest catalog.

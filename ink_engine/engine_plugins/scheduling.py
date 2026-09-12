@@ -20,21 +20,13 @@ module owns the `datetime`-like primitives every story needs
 `DayPhaseBoundaries`. Open-hours rules like "is this shop open" are story
 data and belong in a story's own scheduling module built on these.
 
-**Why a closed effect vocabulary, not "run this callback"**: an
-arbitrary-callback design would run host-supplied code when a timer
-fires. `Effect` is plain, JSON-safe data instead, so a fired event is
-always inert.
-
-**Why `advance()` only REPORTS fired effects**: applying a
-`MOVE_CHARACTER` effect would require knowing how a story represents
-character location, which must not leak into a reusable framework. The
-caller applies each reported effect to whatever state model it uses.
+**`advance()` only REPORTS fired effects**; the caller applies each one
+to whatever state model it uses.
 
 **The Enum never enters the slot.** `Effect` and `EffectKind` are the
 API's value types; the slot holds each pending event as a plain record
-with the kind's string value, converted at the one writer and the one
-reader that touch it. A record whose kind is unknown raises when it
-fires, not when the save loads.
+with the kind's string value. A record whose kind is unknown raises when
+it fires, not when the save loads.
 """
 
 from __future__ import annotations
@@ -71,8 +63,7 @@ class Effect:
         kind: Which of the 3 closed effect kinds this is.
         target: The subject of the effect -- a character id for
             MOVE_CHARACTER/SET_PERSON_FLAG, a place id for SET_PLACE_FLAG.
-            A plain string; this module never looks it up, it only reports
-            it back to the caller.
+            Never looked up here, only reported back.
         payload: The effect's arguments (e.g. {"place_id": "hotel_room"}
             for MOVE_CHARACTER, {"flag": "met_the_stranger", "value":
             True} for SET_PERSON_FLAG/SET_PLACE_FLAG) -- plain JSON-safe
@@ -102,14 +93,9 @@ class PendingRecord(TypedDict):
 class SchedulingSlot(TypedDict):
     """A session's clock and pending timed-event queue.
 
-    Holds no other per-game data (no character positions, no story flags)
-    -- those live in whatever state shape the caller uses.
-
     Attributes:
         clock: The current time, in whole minutes since an arbitrary
-            session-defined epoch. Treated as an opaque, ever-increasing
-            integer, except where the calendar/day-phase helpers interpret
-            it.
+            session-defined epoch.
         pending: The timed-event queue, each entry a (due_time, effect)
             record -- a non-`eval` port of source's `vTimedEvent` array of
             `TimedEvent(evt, time)` objects.
@@ -120,25 +106,12 @@ class SchedulingSlot(TypedDict):
 
 
 def _record(effect: Effect) -> EffectRecord:
-    """Take an effect apart into the record the slot holds.
-
-    Args:
-        effect: The effect.
-
-    Returns:
-        Its JSON-safe record.
-    """
+    """Take an effect apart into the JSON-safe record the slot holds."""
     return {"kind": effect.kind.value, "target": effect.target, "payload": dict(effect.payload)}
 
 
 def _effect(record: EffectRecord) -> Effect:
     """Rebuild an effect from the record the slot holds.
-
-    Args:
-        record: The record.
-
-    Returns:
-        The effect.
 
     Raises:
         ValueError: The record's kind is not one this vocabulary knows.
@@ -149,9 +122,7 @@ def _effect(record: EffectRecord) -> Effect:
 def clock_of(engine_state: EngineState) -> int:
     """Return the current clock, from a full session state.
 
-    For a plugin that needs the time but does not own it: reads this
-    plugin's own slot without the caller naming how the clock is stored,
-    and answers 0 when no clock is running.
+    For a plugin that needs the time but does not own it.
 
     Args:
         engine_state: The full session state, not this plugin's slot.
@@ -449,10 +420,8 @@ class Scheduling(StatefulPlugin[SchedulingSlot]):
     def advance_clock(self, slot: SchedulingSlot, minutes: int) -> int:
         """EXTERNAL `advance_clock(minutes)`: move the clock forward.
 
-        `advance()` reports fired effects for a caller that applies them.
-        This binding lets a story advance time from its turn loop, so it
-        discards them rather than inventing an application policy the
-        engine does not own.
+        This binding DISCARDS any effects that fire; call `advance()`
+        directly to receive them.
 
         Args:
             slot: This session's slot.
@@ -485,10 +454,8 @@ class Scheduling(StatefulPlugin[SchedulingSlot]):
         """Jump the clock by `delta` minutes in one step, firing nothing.
 
         A hard jump/rewind, not simulated time passing: no pending timed
-        event is fired or checked in either direction. A caller wanting
-        due events to fire after a forward jump calls `advance()`
-        separately. For a cheat menu or debug tool setting the game to
-        another moment without replaying every intervening turn.
+        event fires or is checked in either direction. Call `advance()`
+        separately to fire what is due.
 
         Args:
             slot: This session's slot.

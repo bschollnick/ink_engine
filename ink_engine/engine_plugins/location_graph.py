@@ -1,26 +1,20 @@
 """A plain, occupancy-free map framework.
 
 Knows only about places and the edges between them: no character, no NPC,
-no notion of anyone being "at" anywhere. A game wanting just a map -- can
-the player reach B from A, is a place known -- must not be forced to adopt
-occupancy tracking to use it.
+no notion of anyone being "at" anywhere.
 
-**The dependency runs one way only.** Occupancy depends on the map, since
-"who is at which location" presupposes locations; the map depends on
-nothing. Placing a character somewhere the map never declared is an
-error, and `character_occupancy` raises rather than storing it. So this
-module imports nothing from `character_occupancy`, and must not.
+**The dependency runs one way only.** Occupancy depends on the map; the
+map depends on nothing. **This module imports nothing from
+`character_occupancy`, and must not.**
 
 Config: `{"locations": {location_id: {"known_by_default": bool,
 "details": {...}, "edges": [{"to": location_id, "requires_known": bool}]}}}`,
 validated by `validate_location_graph()` below.
 
-**The map's vocabulary is seeded into the slot, deliberately.** The
-declared location ids and their details are read by a dependent plugin
-from the session state (occupancy checks a write against `declared`), so
-they must be where every plugin can see them: in this slot, written once
-when the session starts. Edges are read only by this plugin and stay on
-the instance.
+**The map's vocabulary is seeded into the slot** so a dependent plugin
+can read it from session state (occupancy checks writes against
+`declared`). Edges are read only by this plugin and stay on the
+instance.
 """
 
 from __future__ import annotations
@@ -48,10 +42,7 @@ STATE_KEY = "location_graph"
 GameDetailValue = bool | int | float | str
 
 # The terrain types the engine knows, each with the movement cost a story
-# may charge for arriving there. Modelled as terrain rather than an
-# indoor/outdoor boolean because that is what mature systems converged on
-# (ROM's sector types carry exactly this cost), and a two-value game is
-# simply one that uses two of these.
+# may charge for arriving there.
 TERRAIN_MOVEMENT_COST: dict[str, int] = {
     "indoor": 1,
     "outdoor": 2,
@@ -73,24 +64,17 @@ class LocationSlot(TypedDict):
             Location ids not flagged `known_by_default` in the story's
             config start absent until `set_known()` adds them.
         declared: Every location id the story's map declares, discovered
-            or not -- the map's own vocabulary, carried here so any plugin
-            depending on this one can ask what places exist. `known` is
-            always a subset of it. Empty for a story that declares no map,
-            which readers must treat as "unchecked" rather than "no place
-            is valid".
+            or not. `known` is always a subset of it. Empty for a story
+            that declares no map, which readers must treat as
+            "unchecked" rather than "no place is valid".
         details: location_id -> that location's declared details, exactly
-            as the story's config gave them. Static facts, carried here so
-            a dependent plugin reads one place for everything about a
-            location.
+            as the story's config gave them. Static.
         visits: location_id -> how many times this session has entered
-            it. Absent means zero. A counter rather than a flag because
-            "has the player been here" is recoverable from a count while
-            a count is not recoverable from a flag.
+            it. Absent means zero.
         place_records: location_id -> `{"attributes": {name: value}}`,
             a location's own story-set facts: whether a door was opened,
-            whether a shelf was read. Separate from `details` (what the
-            config declared, static) because these change as the story
-            runs.
+            whether a shelf was read. Unlike `details`, these change as
+            the story runs.
     """
 
     known: list[str]
@@ -109,9 +93,7 @@ def _validate_terrain(terrain: Any, path: str) -> None:
 
     Raises:
         SystemConfigValidationError: If it is not one the engine knows.
-            A closed set on purpose: terrain fixes the movement cost of
-            arriving, so an unrecognised one would silently charge the
-            default rather than what the story meant.
+            A closed set: terrain fixes the movement cost of arriving.
     """
     name = require_str(terrain, path)
     if name not in TERRAIN_MOVEMENT_COST:
@@ -127,9 +109,7 @@ def _validate_external_identifier(identifiers: Any, path: str) -> None:
 
     Raises:
         SystemConfigValidationError: If it is not a list of strings or
-            integers. `bool` is rejected for the same reason as elsewhere
-            here -- it is an int subclass, and a `true` in a list of
-            identifiers is a mistake, not an identifier.
+            integers. `bool` is rejected, being an int subclass.
     """
     if not isinstance(identifiers, list):
         raise SystemConfigValidationError(f"{path} must be a list")
@@ -145,10 +125,8 @@ def _validate_location_details(details: Any, path: str) -> None:
     """Validate one location's `details` dictionary.
 
     The engine defines the keys below and validates each one's type; any
-    other key is the story's own, and is kept as-is provided its value is
-    a plain JSON-safe scalar. That split is the point of the field: a game
-    stores its source place numbers and per-location scene data here
-    rather than in a parallel structure of its own.
+    other key is the story's own, kept as-is provided its value is a
+    plain JSON-safe scalar.
 
     Engine-defined keys, all optional: `name` (display name), `description`
     (default description), `external_identifier` (a list: the ids this
@@ -429,14 +407,8 @@ class LocationGraph(StatefulPlugin[LocationSlot]):
     def set_all_known(self, slot: LocationSlot, known: bool) -> None:
         """Mark EVERY declared location known, or none of them.
 
-        One step for the whole map. The two real uses are a debug/cheat
-        "reveal the whole map" toggle and a test fixture that needs every
-        destination reachable without replaying each discovery scene.
-
-        Note the asymmetry, which is deliberate: `known=False` clears the
-        map completely, including locations the story's config marks
-        `known_by_default`. It is "forget everything," not "reset to a
-        new game".
+        Asymmetric: `known=False` clears the map completely, including
+        locations config marks `known_by_default`.
 
         Args:
             slot: This session's slot.

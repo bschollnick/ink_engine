@@ -20,10 +20,10 @@ from unittest import TestCase as SimpleTestCase
 from ink_engine.engine import (
     InkRuntimeState,
     ListValue,
-    NetRandom,
     load_list_defs,
     load_story_root,
 )
+from ink_engine.rng import NetRandom
 
 FIXTURES = FilePath(__file__).parent / "fixtures"
 

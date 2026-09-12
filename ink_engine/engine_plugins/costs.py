@@ -1,31 +1,18 @@
 """CostTable: what an action costs, and whether it can be afforded.
 
-A game charges for things -- mana for a spell, time for a turn, money for
-a purchase -- and the amount usually depends on circumstance: a first cast
-is cheaper than the rest, a skill discounts a whole category, one route
-takes longer than another. Without somewhere to put that, those numbers
-end up spread across the story's own content as literals, and the same
-cost is then written in several places that drift apart.
+A story declares its costs as config; this plugin holds them and answers
+`cost_of(...)`. It knows nothing about mana, minutes or money: a cost has
+a RESOURCE name (a plain string the game chooses) and an AMOUNT, and what
+those mean is entirely the game's.
 
-This module is that somewhere. A story declares its costs as config; this
-plugin holds them and answers `cost_of(...)`. It knows nothing about mana,
-minutes or money: a cost has a RESOURCE name (a plain string the game
-chooses) and an AMOUNT, and what those mean is entirely the game's.
-
-**Lookup, not charging.** This plugin does not debit anything. The
-resources a game spends live in whichever plugin owns them -- a clock in
-`scheduling`, a currency in the game's own module -- and a `pay()` here
-would have to reach into all of them, coupling three systems to save one
-call. The caller looks the cost up and spends it through whatever owns
-that resource.
+**Lookup, not charging.** This plugin debits nothing. The caller looks a
+cost up and spends it through whatever plugin owns that resource.
 
 **Variants** are how a conditional cost stays data. A cost may declare
 named alternatives -- `{"amount": 20, "variants": {"first": 10}}` -- and
-the caller names one when the condition holds. The condition itself stays
-where it belongs (a character attribute, a skill, a quest stage); this
-plugin only holds the number that goes with it. That keeps a cost table
-from growing a rules engine, which is the failure mode it exists to
-prevent.
+the caller names one when the condition holds. The condition itself lives
+wherever the fact does (a character attribute, a skill, a quest stage);
+this plugin holds only the number.
 
 **Declared prices are definition; the slot holds only what play changed.**
 A game's price list is given to the constructor and read live from the
@@ -184,10 +171,9 @@ class CostTable(StatefulPlugin[CostSlot]):
     def is_priced(self, slot: CostSlot, cost_key: str) -> bool:
         """Return whether a cost key has a declared price at all.
 
-        A key nobody priced is almost always a typo or an unconverted
-        action rather than a deliberate freebie, and `cost_of()` cannot
-        tell the two apart -- it answers `default` for both. Ask this when
-        the difference matters.
+        `cost_of()` cannot tell an unpriced key from one priced at 0 --
+        it answers `default` for both. Ask this when the difference
+        matters.
 
         Args:
             slot: This session's slot.
@@ -206,11 +192,9 @@ class CostTable(StatefulPlugin[CostSlot]):
         Args:
             slot: This session's slot.
             cost_key: The cost's key, as the story declared it.
-            variant: A named alternative to prefer -- the caller names one
-                when its condition holds ("first" for a first cast, say).
-                Falls back to the base amount when the variant is not
-                declared, so a caller may always pass its variant without
-                checking whether this particular cost has one.
+            variant: A named alternative to prefer ("first" for a first
+                cast, say). Falls back to the base amount when not
+                declared, so a caller may always pass its variant.
             default: What to return for a key the story never declared.
 
         Returns:
@@ -247,12 +231,10 @@ class CostTable(StatefulPlugin[CostSlot]):
         The caller supplies what it has, since this plugin holds no
         resource of its own.
 
-        An UNDECLARED key answers False. A priced action is free only when
-        the story prices it at 0, which it must do explicitly: answering
-        True for a key nobody declared would make every typo
-        (`spell.cham` for `spell.charm`) a silently free action, and an
-        unconverted action indistinguishable from a deliberate freebie.
-        Use `is_priced()` to tell "unpriced" from "costs nothing".
+        An UNDECLARED key answers False: an action is free only when the
+        story prices it at 0 explicitly, so a typo (`spell.cham`) cannot
+        become a silently free action. Use `is_priced()` to tell
+        "unpriced" from "costs nothing".
 
         Args:
             slot: This session's slot.

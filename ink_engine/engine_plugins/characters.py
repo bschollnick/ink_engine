@@ -2,23 +2,19 @@
 character.
 
 A game's characters accumulate small private facts -- "has this one been
-introduced", numbered switches meaningful to one storyline. Without a home
-those flatten into one global per fact, which is how a corpus grows
-hundreds of near-identical names. This module gives them a shape:
-`character_id -> {key: value}`.
+introduced", numbered switches meaningful to one storyline. This module
+gives them a shape: `character_id -> {key: value}`.
 
 It owns **only** that. Where a character is, what they can do, how charmed
 they are, what they carry belong to `character_occupancy`, `skills` and an
-inventory system; storing them here too would mean two records of one
-fact. The character API instead reads through to whichever plugin owns
+inventory system. The character API reads through to whichever plugin owns
 each fact, so a story asks every question in one vocabulary with no
-duplicated state. `current_location()` is the worked example: it holds
-nothing and answers from the occupancy slot.
+duplicated state -- `current_location()` holds nothing and answers from
+the occupancy slot.
 
-Values are JSON-safe scalars so state round-trips like every other
-plugin's. Places accumulate exactly the same kind of small keyed state
-characters do; a game keeps those in `location_graph`'s own slot so a
-place and a character sharing a name cannot collide.
+Values must be JSON-safe scalars. A game's per-PLACE keyed state goes in
+`location_graph`'s own slot, so a place and a character sharing a name
+cannot collide.
 """
 
 from __future__ import annotations
@@ -44,23 +40,12 @@ class CharacterSlot(TypedDict):
 
     Attributes:
         records: character_id -> `{"attributes": {name: value}}`. A
-            character with nothing stored yet simply has no entry; reading
-            an unset attribute returns a caller-supplied default rather
-            than raising, because story content asks about facts that
-            have not happened yet far more often than it asks about ones
-            that have.
-
-            **Keyed by character first, deliberately.** A record is
-            addressed as `(character, "attributes", name)`, which is the
-            sentence the caller is actually saying, and it leaves room for
-            a record to carry more than attributes later without
-            restructuring every reader.
+            character with nothing stored yet has no entry; reading an
+            unset attribute returns a caller-supplied default rather
+            than raising.
         known: The characters the player has met, sorted so the saved
-            form is stable. Kept as its own list rather than an attribute
-            because "have I met this person" is asked across a whole
-            corpus in one uniform way -- the same reasoning that gives
-            `location_graph` a `known` list rather than a per-location
-            flag.
+            form is stable. Its own list rather than an attribute, as in
+            `location_graph`.
     """
 
     records: dict[str, dict[str, dict[str, AttributeValue]]]
@@ -202,18 +187,15 @@ class Characters(StatefulPlugin[CharacterSlot]):
     def current_location(self, context: BindingContext[CharacterSlot], character_id: str) -> str:
         """Return where a character is, read from the occupancy slot.
 
-        **This plugin stores no location.** The method exists so a story
-        can ask every question about a character through one vocabulary,
-        while the answer still comes from the single plugin that owns it.
+        This plugin stores no location of its own.
 
         Args:
             context: This session, for the occupancy slot.
             character_id: The character being asked about.
 
         Returns:
-            The character's location id, or "" when they are nowhere --
-            matching the empty-string convention a story's own bindings
-            use, since Ink has no None.
+            The character's location id, or "" when they are nowhere
+            (Ink has no None).
         """
         return context.slot_of(_OCCUPANCY_STATE_KEY).get("locations", {}).get(character_id, "")
 

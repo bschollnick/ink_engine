@@ -1,50 +1,29 @@
 """CharacterOccupancy: who's at which location right now.
 
-**This module depends on the map; the map does not depend on it.** "Who
-is at which location" presupposes a set of locations, so a story using
-occupancy is expected to declare its places through `location_graph.py`,
-and placing a character somewhere the map never declared raises
-`UnknownLocationError` rather than being stored. A mistyped location id
-that IS stored fails silently forever after: `characters_at()` answers
-with an empty list, indistinguishable from "nobody is here". A story
-wanting only the map never has to adopt occupancy.
+**This module depends on the map; the map does not depend on it.**
+Placing a character somewhere `location_graph` never declared raises
+`UnknownLocationError` rather than being stored. The map reaches this
+module as a plain `engine_state` read keyed by `location_graph.STATE_KEY`,
+so a story that declares no map is unchecked rather than broken.
 
-The map reaches this module as a plain `engine_state` read keyed by
-`location_graph.STATE_KEY` (imported directly), not an import of
-`location_graph`'s own functions: the vocabulary is read from the
-session's own location state, so a story that declares no map is simply
-unchecked rather than broken.
+A character's schedule is plain JSON-safe DATA (a `ScheduleRule`, from
+`schedule_rules`) evaluated by `resolve_schedule()`. Those names are
+re-exported here so a story imports one module.
 
-**What this framework replaces**: hand-written per-character
-`_place_now()` Ink functions, each re-deriving "where is this person
-right now" from schedule/story-flag logic. Here a character's schedule
-RULE is plain, closed, JSON-safe DATA (a `ScheduleRule`, from
-`schedule_rules`) evaluated by one generic function (`resolve_schedule()`).
-Those names are re-exported here so a story imports one module.
-
-**SchedulingSystem is an optional dependency, not a hard one.** A story
-can track a character's location as a flat "wherever it was last
-explicitly set" value (`place()`/`where_is()` alone) or layer a
-`ScheduleRule` on top that resolves against a clock tick and session
-flags. `resolve_schedule()` takes a plain integer tick, not a
-`SchedulingState` -- this module does not import
+**Scheduling is an optional dependency.** A story can track a location as
+a flat last-set value (`place()`/`where_is()` alone) or layer a
+`ScheduleRule` on top. `resolve_schedule()` takes a plain integer tick,
+never a `SchedulingState` -- this module does not import
 `engine_plugins.scheduling` at all.
 
-**How the two halves fit together**: the slot is the live layer -- the
-one record of where each character is, player and NPC alike. A story's
-own scheduler revises it: `recompute()` resolves every schedule-driven
-character and writes the answer in. Reads then come from the store
-rather than re-resolving, though `resolve_schedule()` and
-`resolve_present_characters()` are both public for a story that prefers
-resolving on read.
+**The slot is the live layer**: the one record of where each character
+is, player and NPC alike. `recompute()` resolves every schedule-driven
+character and writes the answer in; reads then come from the store.
+`resolve_schedule()` and `resolve_present_characters()` are both public
+for a story that prefers resolving on read.
 
-**No config, deliberately.** A schedule is built as `ScheduleRule`
-objects holding `Condition` objects, in Python, by the story that owns
-them. There is no JSON shape to check: `Condition` carries an Enum member
-and has no serialization to config. A validator for a schedule-shaped
-config once existed and silently drifted two condition kinds behind this
-module, because nothing could call it. Add one only alongside a real
-config reader, never on its own.
+A schedule is built in Python, not config: `Condition` carries an Enum
+member and has no serialization, so there is no JSON shape to validate.
 """
 
 from __future__ import annotations
@@ -110,16 +89,11 @@ class OccupancySlot(TypedDict):
 class UnknownLocationError(ValueError):
     """A character was placed at a location the story never declared.
 
-    Fatal rather than a warning. An unknown location id fails silently
-    everywhere else -- `characters_at()` returns an empty list and
-    `is_at()` returns False, both indistinguishable from "nobody is here"
-    -- so a typo silently removes characters and the content gated on
-    their presence for the rest of the playthrough. A player cannot
-    detect that; a stopped game they can.
+    Fatal rather than a warning: an unknown id is indistinguishable from
+    "nobody is here" everywhere else, so a typo would silently remove a
+    character for the rest of the playthrough.
 
-    Raised only when the story declares a map at all. A story that
-    declares none may track its places some other way, which this module
-    supports.
+    Raised only when the story declares a map at all.
     """
 
 
@@ -137,11 +111,9 @@ def resolve_present_characters(  # pylint: disable=too-many-arguments
 ) -> list[str]:
     """Return every schedule-driven character currently resolved to `location_id`.
 
-    The schedule-driven counterpart to `characters_at()`, which covers
-    only the store's explicitly-set locations. A character placed via
-    `place()` with no ScheduleRule is not covered here -- fold in a
-    `characters_at()` result separately if a story mixes both kinds at one
-    location.
+    The schedule-driven counterpart to `characters_at()`. A character
+    placed via `place()` with no ScheduleRule is NOT covered here -- fold
+    in a `characters_at()` result separately if a story mixes both.
 
     Args:
         location_id: The location to check.
@@ -192,9 +164,7 @@ class CharacterOccupancy(StatefulPlugin[OccupancySlot]):
         """Place a character at a location, or remove them from the world.
 
         Checked on write, the only moment a bad value is still
-        attributable: once a wrong id is in the store, every later symptom
-        (an empty `characters_at()`, a False `is_at()`) looks like a
-        character legitimately being elsewhere.
+        attributable to its source.
 
         Args:
             slot: This session's slot.
@@ -207,9 +177,7 @@ class CharacterOccupancy(StatefulPlugin[OccupancySlot]):
 
         Raises:
             UnknownLocationError: If `location_id` is not among
-                `known_locations`. Fatal rather than logged: the
-                alternative is a playthrough that silently loses
-                characters.
+                `known_locations`.
         """
         if location_id is not None and known_locations and location_id not in known_locations:
             raise UnknownLocationError(
@@ -249,10 +217,9 @@ class CharacterOccupancy(StatefulPlugin[OccupancySlot]):
     def where_is(self, slot: OccupancySlot, character_id: str, default: str | None = "") -> str | None:
         """Return a character's current location from the occupancy store.
 
-        A plain read of the store -- it never evaluates a ScheduleRule. A
-        schedule-driven character answers correctly here because the
-        story's scheduler wrote their resolved location in, so the value
-        is as fresh as the last recompute.
+        A plain read of the store; it never evaluates a ScheduleRule, so
+        a scheduled character's answer is only as fresh as the last
+        `recompute()`.
 
         Args:
             slot: This session's slot.
@@ -271,12 +238,9 @@ class CharacterOccupancy(StatefulPlugin[OccupancySlot]):
     def is_at(self, slot: OccupancySlot, character_id: str, location_id: str) -> bool:
         """Return whether a character is at a given location.
 
-        The boolean counterpart to `where_is()`. Both read the same store;
-        this one exists because "is X here" is the question most story
-        content asks, and spelling it as an equality at each call site
-        invites the subtly different "is X anywhere at all" to creep in
-        as a substitute -- a story that conflates them reports characters
-        as present across the whole map.
+        The boolean counterpart to `where_is()`. Ask this rather than
+        spelling the equality at the call site, where it is easily
+        confused with "is X anywhere at all".
 
         Args:
             slot: This session's slot.
@@ -367,6 +331,8 @@ class CharacterOccupancy(StatefulPlugin[OccupancySlot]):
         """
         return ",".join(character_id for character_id in self.characters_at(slot, location_id) if "," not in character_id)
 
+    # Removable once resolve_schedule() takes fewer parameters: this
+    # passes every one of them through.
     def recompute(  # pylint: disable=too-many-arguments
         self,
         slot: OccupancySlot,
@@ -380,20 +346,14 @@ class CharacterOccupancy(StatefulPlugin[OccupancySlot]):
     ) -> None:
         """Re-resolve every scheduled character and write the results into the store.
 
-        The write-back sibling of `resolve_present_characters()`, which
-        answers "who is at this place right now" without touching the
-        store. A story calls this whenever it wants the store brought up
-        to date -- typically on entering a location -- after which every
-        `where_is()`/`characters_at()` read reflects the same single
-        moment.
+        The write-back sibling of `resolve_present_characters()`. Call it
+        to bring the store up to date -- typically on entering a location
+        -- after which every `where_is()`/`characters_at()` read reflects
+        one moment.
 
-        A character whose schedule resolves to None is cleared rather than
-        left as a stale entry. Characters absent from `schedules` -- those
-        placed explicitly via `set_location()`, the player included -- are
-        untouched.
-
-        The pylint argument-count disable above holds for the reason given
-        on `resolve_present_characters()`.
+        A character whose schedule resolves to None is cleared, not left
+        stale. Characters absent from `schedules` -- those placed by
+        `set_location()`, the player included -- are untouched.
 
         Args:
             slot: This session's slot, written in place.

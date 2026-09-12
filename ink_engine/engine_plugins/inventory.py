@@ -6,30 +6,20 @@ game layer chooses, and only its whereabouts are tracked here. Item names,
 display text, prices, currency and per-item behaviour all belong in the
 game's own bridge module.
 
-**Two things are tracked, mutually exclusive per item:**
-
-1. **World placement** -- `item_locations` maps an item to the location it
-   lies in. An item held by someone is not in the world, so its entry is
-   dropped from that map rather than set to a sentinel.
-2. **Holder inventories** -- `holder_items` maps a holder to the items it
-   carries and how many of each.
+**Two things are tracked, mutually exclusive per item:** `item_locations`
+maps an item to the location it lies in, and `holder_items` maps a holder
+to the items it carries and how many of each. An item held by someone has
+no `item_locations` entry at all.
 
 A "holder" is any opaque id string -- the player, an NPC, a chest, a body
 being possessed. This module never distinguishes between them, which is
 what makes give-to-a-person, take-from-a-person and put-in-a-container the
 same operation.
 
-**Counts, not sets.** Most stories only ask "is this held?", which
-`has_item()` answers, but an item with limited uses needs a real number
-and retrofitting counts onto a set-based store would change every call
-site. The store is `{item_id: count}` and the boolean case is a count of
-1.
-
-**Capacity is a real mechanic.** A holder may declare a maximum number of
-DISTINCT items (adding more of something already held never trips it).
-`give_item` raises `InventoryFullError` rather than silently dropping the
-item, so a game can narrate its own refusal -- including leaving the item
-on the floor instead of destroying it.
+The store is `{item_id: count}`; the boolean case is a count of 1. A
+holder may declare a maximum number of DISTINCT items (adding more of
+something already held never trips it), and exceeding it raises
+`InventoryFullError`.
 
 **A library, not a discoverable plugin.** `Inventory` publishes no Ink
 binding of its own: a game subclasses it, names the bindings its story
@@ -84,29 +74,21 @@ class InventoryError(Exception):
 
 
 class InventoryFullError(InventoryError):
-    """A holder already carries its maximum number of distinct items.
-
-    Raised rather than silently no-op'ing so the game layer can tell
-    "can't take this, hands full" apart from "can't take this, it isn't
-    here" -- outcomes a story narrates differently.
-    """
+    """A holder already carries its maximum number of distinct items."""
 
 
 class StackFullError(InventoryError):
     """One item's slot is already at its stack limit.
 
-    Not the same error as `InventoryFullError`: "you cannot carry any more
-    stones" and "your hands are full" are different refusals. A holder can
-    hit this with slots still free.
+    Distinct from `InventoryFullError`: a holder can hit this with slots
+    still free.
     """
 
 
 class InvalidLimitError(InventoryError):
     """A caller asked for a limit this API will not accept.
 
-    Raised rather than clamping, so a typo (a stack of 2000 where 20 was
-    meant) surfaces immediately instead of silently becoming
-    MAX_STACK_LIMIT.
+    Out-of-range limits raise; they are never clamped.
     """
 
 
@@ -114,26 +96,22 @@ class ItemNotHeldError(InventoryError):
     """A holder was asked to give up an item it does not have enough of.
 
     Covers both "does not hold it at all" and "holds fewer than the count
-    asked for", since a story's narration for the two is the same: the
-    transfer does not happen.
+    asked for".
     """
 
 
 class SlotOccupiedError(InventoryError):
     """A worn slot is already full.
 
-    Distinct from `InventoryFullError` for the same reason
-    `StackFullError` is: "you are already wearing a necklace" and "your
-    hands are full" are different refusals a story narrates differently.
+    Distinct from `InventoryFullError`, which is about carrying capacity.
     """
 
 
 class ContainerClosedError(InventoryError):
     """A container was reached into while shut.
 
-    Raised for taking from a closed container whether or not its contents
-    are visible -- a transparent container shows what is inside but still
-    has to be opened before anything can come out.
+    Raised whether or not the container is transparent: seeing in does
+    not permit taking out.
     """
 
 
@@ -142,30 +120,26 @@ class InventorySlot(TypedDict):
 
     Attributes:
         item_locations: item_id -> location_id, for items lying in the
-            world. An item held by someone has NO entry here -- being held
-            and being on the ground are mutually exclusive, which an
-            absent key says unambiguously where a `None` value would not.
+            world. An item held by someone has NO entry here: held and
+            on-the-ground are mutually exclusive.
         holder_items: holder_id -> {item_id: count}. Counts are always
-            >= 1; an item reaching 0 is removed from the inner dict rather
-            than left as a zero entry, so `has_item()` and `held_items()`
-            never disagree.
+            >= 1; an item reaching 0 is removed rather than left as a
+            zero entry.
         capacities: holder_id -> maximum number of DISTINCT items, or None
             for unlimited. A holder with no entry is unlimited.
         stack_limits: holder_id -> how many units of ONE item fit in its
             slot, defaulting to DEFAULT_STACK_LIMIT. A property of the
-            SLOT, not the item: one value applies to everything that
-            holder carries.
+            SLOT, not the item.
         containers: holder_id -> its container record, for holders that
             are containers. A holder with no entry is an ordinary holder.
         worn: holder_id -> slot_name -> [item_id, ...]. Slot names are
-            chosen by the game layer and opaque here, like item ids.
-            Nested by slot rather than kept flat because the slot IS the
-            constraint. A worn item stays in `holder_items` too: wearing
-            requires holding, so "do you have it" keeps one home.
+            chosen by the game layer and opaque here, like item ids. A
+            worn item stays in `holder_items` too: wearing requires
+            holding.
         worn_slot_capacities: slot_name -> how many items that slot holds,
-            defaulting to DEFAULT_WORN_SLOT_CAPACITY. Global rather than
-            per-holder because a slot's capacity is a fact about the
-            game's anatomy, not about who is wearing it.
+            defaulting to DEFAULT_WORN_SLOT_CAPACITY. Global, not
+            per-holder: a slot's capacity is a fact about the game's
+            anatomy.
     """
 
     item_locations: dict[str, str]
@@ -343,16 +317,7 @@ class Inventory(StatefulPlugin[InventorySlot]):
     def _capacity_load(self, slot: InventorySlot, holder_id: str) -> int:
         """Return how many distinct items count against a holder's capacity.
 
-        Worn items are excluded, following the convention in
-        interactive-fiction world models that what you are wearing is not
-        what you are carrying.
-
-        Args:
-            slot: This session's slot.
-            holder_id: Whose load to measure.
-
-        Returns:
-            The number of distinct held items that are not currently worn.
+        Worn items do not count.
         """
         held = slot.get("holder_items", {}).get(holder_id, {})
         if not held:
@@ -491,11 +456,6 @@ class Inventory(StatefulPlugin[InventorySlot]):
     def transfer_item(self, slot: InventorySlot, from_holder: str, to_holder: str, item_id: str, count: int = 1) -> None:
         """Move an item from one holder to another.
 
-        Handing something over and taking something away are the same
-        operation with the arguments swapped. In every failure case the
-        slot is left untouched: every check happens before anything is
-        removed.
-
         Args:
             slot: This session's slot.
             from_holder: Who gives it up.
@@ -586,15 +546,8 @@ class Inventory(StatefulPlugin[InventorySlot]):
     def _stop_wearing(self, slot: InventorySlot, holder_id: str, item_id: str) -> None:
         """Drop one item from a holder's worn index.
 
-        Called wherever an item stops being held. `worn` is an index over
-        `holder_items`, not a separate truth: an entry naming an item its
-        holder no longer has reports it as simultaneously not-held and
-        worn, which no caller can make sense of.
-
-        Args:
-            slot: This session's slot.
-            holder_id: Who is losing the item.
-            item_id: The item leaving their possession.
+        `worn` is an index over `holder_items`, so call this wherever an
+        item stops being held.
         """
         worn = slot.get("worn", {})
         slots = worn.get(holder_id)

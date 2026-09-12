@@ -1,22 +1,17 @@
 """Containers: what makes a holder a container, as the inventory slot holds it.
 
 A companion to `inventory.py`. A container's contents live in the
-inventory's own `holder_items` like any other holder's -- which is what
-makes put-in-a-container and give-to-a-person the same operation -- so a
-container adds only what makes it different from a person: whether it can
+inventory's own `holder_items` like any other holder's, so a container
+record adds only what makes it different from a person: whether it can
 be shut, whether it is shut now, and whether you can see in while it is.
 
-Marking containers explicitly, rather than inferring one from the fact
-that something is inside it, follows the unanimous prior art in
-interactive-fiction world models (Inform 7, TADS 3, IntFicPy, Tale): a
-container is a KIND of thing with its own either/or properties, not a
-location and not merely a holder that happens to have contents.
+A holder must be marked a container explicitly; one is never inferred
+from having contents.
 
 This module holds the record's shape and the two questions asked of it;
 the operations (declare, open, put in, take from) are `Inventory`'s own
-methods, since they move items. A holder with no record is always
-reachable and always shows its contents, exactly as every holder did
-before containers existed.
+methods. **A holder with no record is always reachable and always shows
+its contents.**
 """
 
 from __future__ import annotations

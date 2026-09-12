@@ -2,20 +2,16 @@
 
 A skill is just a name the game layer chooses and a numeric level on
 whatever range it declares (1-6, 1-20, 1-100). Every check normalises
-internally to a percentile roll, so the game's display range is
-presentational and never touches the roll math. Nothing here knows what
-"Strength" means or what any game's skill list looks like.
+internally to a percentile roll, so the game's display range never
+touches the roll math.
 
 **Roll-under**: a check succeeds when a 1-100 roll is at or below
-(level + bonus). Levels and bonuses outside a sane range are clamped at
-roll time rather than rejected; range validation is the game's own
-concern.
+(level + bonus). Out-of-range levels and bonuses are clamped at roll
+time, never rejected.
 
-**Its own RNG, not Ink's.** The slot carries its own seed, so this module
-imports nothing from the interpreter. The cost is that skill checks and
-Ink's `RANDOM()` draw from separate streams; the gain is that a check is a
-pure function of (skill state, RNG state), deterministic and replayable
-from serialized state alone.
+**Its own RNG, not Ink's.** The slot carries its own seed, so skill
+checks and Ink's `RANDOM()` draw from separate streams and a check is a
+pure function of (skill state, RNG state).
 """
 
 from __future__ import annotations

@@ -142,14 +142,10 @@ class Condition:
     def query(cls, state_key: str, query: str, *args: Any, operator: str = "==", value: Any = True, missing: Any = False) -> "Condition":
         """Build a QUERY condition — ask a plugin a question it publishes.
 
-        The counterpart to `engine_state()` that names a QUESTION rather
-        than a storage path. The owning plugin answers from its own
-        accessor, so a rule written this way keeps working when that
-        plugin changes how it stores anything.
-
-        Prefer this over `engine_state()`. A plugin that has not published
-        the question yet should publish it; reaching for a raw path is the
-        last resort.
+        Preferred over `engine_state()`: naming a question rather than a
+        storage path keeps the rule working when the owning plugin
+        changes how it stores things. A plugin that has not published the
+        question yet should publish it; a raw path is the last resort.
 
         Args:
             state_key: The plugin to ask, as it publishes its `STATE_KEY`.
@@ -177,19 +173,18 @@ class Condition:
     def story_rule(cls, rule_name: str) -> "Condition":
         """Build a STORY_RULE condition.
 
-        Named "story_rule" because `rule_name` resolves to whatever the
-        CALLING STORY defines — the engine has no opinion about the
-        registry's contents.
+        `rule_name` resolves to whatever the CALLING STORY defines; the
+        engine has no opinion about the registry's contents.
 
         Args:
-            rule_name: The name of a story-supplied boolean function of
-                the raw clock, looked up in the `StoryRuleRegistry`
-                passed to `evaluate_condition()`/`resolve_schedule()`
-                (e.g. "is_school_open").
+            rule_name: A story-supplied boolean function of the raw
+                clock, in the `StoryRuleRegistry` passed to
+                `evaluate_condition()`/`resolve_schedule()` (e.g.
+                "is_school_open").
 
         Returns:
-            A Condition true exactly when the registry's function returns
-            True for the current raw clock value.
+            A Condition true exactly when that function returns True for
+            the current raw clock value.
         """
         return cls(kind=ConditionKind.STORY_RULE, payload={"rule_name": rule_name})
 
@@ -198,24 +193,21 @@ class Condition:
         """Build a STORY_VALUE condition.
 
         Args:
-            value_name: The name of a story-supplied int-or-str-valued
-                function of the raw clock, looked up in the
-                `StoryValueRegistry` passed to
+            value_name: A story-supplied int-or-str-valued function of
+                the raw clock, in the `StoryValueRegistry` passed to
                 `evaluate_condition()`/`resolve_schedule()` (e.g.
                 "hour_of_day").
             operator: One of ">", ">=", "<", "<=" (numbers only) or "==",
                 "!=" (numbers or strings).
-            value: The int or str to compare the named function's result
-                against — must be an int for an ordering operator.
+            value: What to compare against — an int for an ordering
+                operator.
 
         Returns:
             A Condition true exactly when
             `registry[value_name](clock) <operator> value` holds.
 
         Raises:
-            ValueError: If an ordering operator is given a string `value`
-                — schedule data never needs string ordering, so this is
-                almost certainly a mistake.
+            ValueError: If an ordering operator is given a string `value`.
         """
         if isinstance(value, str) and operator in _ORDERING_OPERATORS:
             raise ValueError(f"story_value(): ordering operator {operator!r} is not valid for a string value ({value!r})")
@@ -312,9 +304,8 @@ class EvalContext:
             (`(clock % 288) * 5`) — used by MINUTE_IN_RANGE only.
         clock: The raw, un-reduced clock value as passed to
             `resolve_schedule()` — used by STORY_RULE/STORY_VALUE only,
-            which delegate to caller-supplied functions operating in
-            whatever unit those functions expect, not `minute_of_day`.
-            Defaults to 0 for a tree with no such nodes.
+            whose caller-supplied functions expect their own unit, not
+            `minute_of_day`. Defaults to 0 for a tree with no such nodes.
         story_rules: The registry of named boolean functions of `clock`
             for STORY_RULE nodes. Defaults to an empty registry.
         story_values: The registry of named int-valued functions of
@@ -353,7 +344,8 @@ def engine_query_registry() -> QueryRegistry:
         `{state_key: {query_name: callable}}` for every shipped plugin
         that publishes a query.
     """
-    from ink_engine.engine_plugins import (  # pylint: disable=import-outside-toplevel  (avoids an import cycle: these import this module)
+    # Deferred to avoid an import cycle: these modules import this one.
+    from ink_engine.engine_plugins import (  # pylint: disable=import-outside-toplevel
         character_occupancy,
         characters,
         location_graph,
@@ -369,20 +361,9 @@ def engine_query_registry() -> QueryRegistry:
 def _run_query(context: "EvalContext", state_key: str, query: str, args: tuple[Any, ...]) -> Any:
     """Ask one plugin a question it publishes.
 
-    Args:
-        context: The session state being evaluated against.
-        state_key: The plugin to ask.
-        query: The question's name.
-        args: The question's own arguments.
-
-    Returns:
-        Whatever the plugin answers.
-
     Raises:
         UnknownQueryError: No active plugin owns that slot, or the plugin
-            publishes no such question. Loud rather than silently false:
-            a rule asking a question nobody answers is a misconfiguration,
-            and answering "no" would hide it for the rest of the session.
+            publishes no such question.
     """
     published = context.queries.get(state_key)
     if published is None:
@@ -396,10 +377,8 @@ def _run_query(context: "EvalContext", state_key: str, query: str, args: tuple[A
 def _read_engine_state(engine_state: dict[str, dict[str, Any]], state_key: str, path: tuple[str, ...]) -> Any:
     """Walk `path` into one state slot, or return None if it does not resolve.
 
-    Missing is not an error: a schedule asks about facts that have not
-    happened yet more often than ones that have, so a plugin that has
-    written nothing for a character yields "no" rather than a mid-turn
-    crash.
+    A missing key is not an error; a schedule routinely asks about facts
+    that have not happened yet.
 
     Args:
         engine_state: Other plugins' serialized state, keyed by slot.
@@ -514,11 +493,6 @@ def resolve_schedule(  # pylint: disable=too-many-arguments,too-many-positional-
 
     Rules are evaluated top to bottom, first match wins.
 
-    The pylint argument-count disable above holds because each parameter
-    is one kind of state a `Condition` may read; the closed
-    `ConditionKind` vocabulary decides how many there are, and dropping
-    any one would drop support for a condition kind.
-
     Args:
         rules: The character's schedule, in priority order. The caller
             supplies a trailing unconditional fallback rule
@@ -528,9 +502,7 @@ def resolve_schedule(  # pylint: disable=too-many-arguments,too-many-positional-
         flags: The set of currently-set session-flag names.
         clock: The current absolute tick count, reduced here to
             minute-of-day via `(clock % 288) * 5` for MINUTE_IN_RANGE
-            nodes, so the caller can pass the same raw value
-            `SchedulingState.clock` tracks with no coupling between the
-            modules. STORY_RULE/STORY_VALUE registry functions receive the
+            nodes. STORY_RULE/STORY_VALUE registry functions receive the
             raw value unchanged, in the story's own clock unit.
         story_rules: The registry of named boolean functions of `clock`
             for any STORY_RULE node in `rules`. Defaults to empty.
@@ -539,6 +511,10 @@ def resolve_schedule(  # pylint: disable=too-many-arguments,too-many-positional-
             empty.
         engine_state: Other plugins' serialized state, keyed by state
             slot, for any ENGINE_STATE node in `rules`. Defaults to empty.
+        queries: What each plugin can be asked, for any QUERY node in
+            `rules` -- `{state_key: {query_name: callable}}`, as
+            `engine_query_registry()` builds. Defaults to empty, which
+            makes a QUERY condition raise rather than answer False.
 
     Returns:
         The resolved location id, or None if the character isn't present
@@ -561,4 +537,3 @@ def resolve_schedule(  # pylint: disable=too-many-arguments,too-many-positional-
 
 class UnknownQueryError(ValueError):
     """A condition asked a question no active plugin publishes."""
-

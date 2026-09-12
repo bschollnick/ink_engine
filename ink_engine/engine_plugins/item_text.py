@@ -1,28 +1,17 @@
 """Description-slot lookup for items: one text, chosen from three layers.
 
-A companion to `inventory.py`, kept separate because it shares no state
-with it — the inventory tracks where things are; this module answers what
-a thing READS as. Splitting them keeps each module inside a reviewable
-size and means a game that wants placements without prose (or prose
-without placements) imports only what it uses.
+A companion to `inventory.py`, sharing no state with it: the inventory
+tracks where things are, this module what a thing READS as.
 
 **All text belongs to the caller.** This module holds no strings of its
 own: slot names, authored text and default templates are supplied by the
 game layer, exactly as item ids are. It performs only the walk from most
-specific to least.
+specific to least — the item's own authored string for a slot, then the
+game's fallback template formatted with the item's display name, then
+empty.
 
-The three layers a game builds on this:
-
-1. **Generic** — the game's own fallback templates, formatted with an
-   item's display name, so an item that authored nothing still reads as a
-   sentence rather than an id.
-2. **Game** — the item's own authored string for a slot.
-3. **Scene** — prose written inline at one moment in the story, which
-   never calls here at all; a scene with its own words simply writes them.
-
-Text that varies at runtime is deliberately NOT this module's business. A
-description that depends on story state is rendered by the story layer,
-which is the only layer that can see that state.
+Text that varies at runtime is not this module's business: a description
+depending on story state is rendered by the story layer.
 """
 
 from __future__ import annotations
@@ -36,12 +25,6 @@ def describe(
     name: str = "",
 ) -> str:
     """Return the text for one of an item's description slots.
-
-    The lookup walks from most specific to least: the game's own authored
-    string for this slot, else the game's default template for it,
-    formatted with the item's display name. Text that varies at runtime is
-    NOT this function's business — a game whose description depends on
-    story state renders that in its own story layer and never calls here.
 
     Args:
         slot: Which description is wanted. Opaque here; the game layer
