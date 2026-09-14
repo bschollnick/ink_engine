@@ -10,6 +10,8 @@ from __future__ import annotations
 import importlib
 import pkgutil
 import sys
+import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
@@ -32,6 +34,10 @@ def make_game_folder_importable(game_dir: Path) -> str:
     This is packaging, not permission: whether `game_dir` is safe to
     import is the host's decision, made before calling.
 
+    Prefer `mount_game()`, which releases what it adds. This function
+    leaves its entry on `sys.path` for the life of the process, so a
+    second game whose package has the same name resolves to the first.
+
     Args:
         game_dir: The game folder's path (must contain `__init__.py`).
 
@@ -42,6 +48,106 @@ def make_game_folder_importable(game_dir: Path) -> str:
     if parent not in sys.path:
         sys.path.insert(0, parent)
     return game_dir.name
+
+
+def mount_game(game: Path) -> "MountedGame":
+    """Make a game importable, releasably.
+
+    Takes either a game folder or a `.zip` bundle: a bundle goes on
+    `sys.path` as the archive itself, which `zipimport` resolves, so both
+    reach the same ordinary import machinery.
+
+    Args:
+        game: A game folder, or a bundle.
+
+    Returns:
+        A `MountedGame`. Use it as a context manager, or call
+        `unmount()`, so a later game with the same package name is not
+        shadowed by this one.
+
+    Raises:
+        ValueError: `game` is neither a directory nor a `.zip`.
+    """
+    if game.is_dir():
+        entry, package = str(game.parent), game.name
+    elif game.suffix.lower() == ".zip":
+        entry, package = str(game), _bundle_package_name(game)
+    else:
+        raise ValueError(f"not a game folder or bundle: {game}")
+
+    added = entry not in sys.path
+    if added:
+        sys.path.insert(0, entry)
+    # Anything already imported under this name belongs to a previous
+    # game: left in place it would be returned instead of this one's.
+    _purge_package(package)
+    importlib.invalidate_caches()
+    return MountedGame(package=package, path_entry=entry, _added_entry=added)
+
+
+def _bundle_package_name(bundle: Path) -> str:
+    """Return the single package directory inside a bundle.
+
+    Args:
+        bundle: The `.zip` bundle.
+
+    Returns:
+        The package's name.
+
+    Raises:
+        ValueError: The bundle holds no package directory, or several.
+    """
+    with zipfile.ZipFile(bundle) as archive:
+        roots = {name.split("/", 1)[0] for name in archive.namelist() if "/" in name}
+    if len(roots) != 1:
+        raise ValueError(f"bundle '{bundle.name}' must hold exactly one package directory, found {len(roots)}")
+    return roots.pop()
+
+
+def _purge_package(package: str) -> None:
+    """Drop a package and its submodules from `sys.modules`.
+
+    Removing the `sys.path` entry alone does not unload anything: an
+    imported module is cached by name, so the next import of that name
+    returns the old object whatever the path now says.
+
+    Args:
+        package: The top-level package name.
+    """
+    prefix = f"{package}."
+    for name in [n for n in sys.modules if n == package or n.startswith(prefix)]:
+        del sys.modules[name]
+
+
+@dataclass
+class MountedGame:
+    """One game made importable, and the means to release it.
+
+    Attributes:
+        package: The name to import — what `discover_plugins()` is given.
+        path_entry: What was added to `sys.path`.
+    """
+
+    package: str
+    path_entry: str
+    _added_entry: bool = True
+
+    def unmount(self) -> None:
+        """Release the game: drop its modules and its path entry.
+
+        Idempotent. Both halves are needed — see `_purge_package()`.
+        """
+        _purge_package(self.package)
+        if self._added_entry and self.path_entry in sys.path:
+            sys.path.remove(self.path_entry)
+            self._added_entry = False
+        importlib.invalidate_caches()
+
+    def __enter__(self) -> "MountedGame":
+        return self
+
+    def __exit__(self, *_exception: object) -> None:
+        self.unmount()
 
 
 def _plugins_from_module(module: ModuleType) -> list[Plugin]:

@@ -78,7 +78,9 @@ def allocate_state(
         seeders = [(name, plugin, config) for name, plugin in owners if (config := _config_for(plugin, name, host_configs)) is not None]
         if len(seeders) > 1:
             seeder_names = ", ".join(repr(name) for name, _, _ in seeders)
-            raise AmbiguousSlotConfigError(f"slot '{state_key}' has more than one config-bearing plugin active ({seeder_names}); activate one, or give only one a config")
+            raise AmbiguousSlotConfigError(
+                f"slot '{state_key}' has more than one config-bearing plugin active ({seeder_names}); activate one, or give only one a config"
+            )
         if seeders:
             _, plugin, config = seeders[0]
             if plugin.validate_config is not None:

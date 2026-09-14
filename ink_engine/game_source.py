@@ -1,0 +1,327 @@
+"""Where a game's files come from: a directory, or a bundle read in place.
+
+A published game is a `.zip` bundle. A loose directory is a development
+convenience — it exists so an author can edit a `.ink` file, recompile,
+and re-open without re-zipping — so anything a player depends on must
+work from a bundle, and directory-only behaviour is a defect rather than
+a supported mode.
+
+Every path handed to a source is **relative to the game's own root**, in
+POSIX form (`"images/cover.png"`), whichever implementation is behind it.
+Absolute paths and `..` are refused: a manifest is game-supplied content,
+and a game may not read outside itself.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import posixpath
+import zipfile
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Protocol, runtime_checkable
+
+
+class GameSourceError(Exception):
+    """A game's files cannot be read as asked."""
+
+
+def normalise(relative: str) -> str:
+    """Return a game-relative path in POSIX form, or raise if it escapes.
+
+    Args:
+        relative: A path as a manifest or a story tag wrote it.
+
+    Returns:
+        The cleaned path, always relative and `/`-separated.
+
+    Raises:
+        GameSourceError: The path is absolute, or climbs above the game
+            root.
+    """
+    cleaned = posixpath.normpath(relative.replace("\\", "/"))
+    if posixpath.isabs(cleaned) or cleaned == ".." or cleaned.startswith("../"):
+        raise GameSourceError(f"path escapes the game: {relative!r}")
+    return cleaned
+
+
+@runtime_checkable
+class GameSource(Protocol):
+    """Read-only access to one game's files."""
+
+    @property
+    def name(self) -> str:
+        """The game's own name, for error messages."""
+
+    def exists(self, relative: str) -> bool:
+        """Return whether a file exists at `relative`."""
+
+    def read_bytes(self, relative: str) -> bytes:
+        """Return one file's bytes.
+
+        Raises:
+            GameSourceError: No such file.
+        """
+
+    def read_text(self, relative: str) -> str:
+        """Return one file's decoded text.
+
+        Raises:
+            GameSourceError: No such file, or it is not UTF-8.
+        """
+
+    def iter_names(self, prefix: str = "", *, recursive: bool = True) -> Iterator[str]:
+        """Yield file paths under `prefix`, game-relative.
+
+        Args:
+            prefix: Limit to this directory, or "" for the game's root.
+            recursive: False to yield only `prefix`'s immediate children.
+                A caller wanting the game's own top-level files must pass
+                False: a game ships its media inside itself, so walking
+                the whole tree to answer a question about the root reads
+                every media file's directory entry — 14,000 of them for a
+                real game, seconds rather than milliseconds.
+        """
+
+    def fingerprint(self, relative: str) -> int:
+        """Return a value that changes when `relative` changes.
+
+        The cache key behind `read_manifest()`. A directory answers the
+        file's modification time; a bundle answers a constant, since an
+        archive cannot change under a session that has it open.
+
+        Returns:
+            0 when the file does not exist.
+        """
+
+
+# The two implementations below satisfy `GameSource`, whose methods carry
+# the contract; repeating each docstring here would be duplication rather
+# than documentation. Only behaviour specific to one implementation is
+# documented on it.
+# pylint: disable=missing-function-docstring
+
+
+class DirectoryGameSource:
+    """A game read from a directory on disk — the development path."""
+
+    def __init__(self, game_dir: Path) -> None:
+        """
+        Args:
+            game_dir: The game folder.
+        """
+        self._root = game_dir
+
+    @property
+    def root(self) -> Path:
+        """The game folder, for a caller that genuinely needs a real path.
+
+        Reaching for this is a sign the caller does something a bundle
+        cannot do; prefer the protocol's own methods.
+        """
+        return self._root
+
+    @property
+    def name(self) -> str:
+        return self._root.name
+
+    def _resolve(self, relative: str) -> Path:
+        return self._root / normalise(relative)
+
+    def exists(self, relative: str) -> bool:
+        try:
+            return self._resolve(relative).is_file()
+        except GameSourceError:
+            return False
+
+    def read_bytes(self, relative: str) -> bytes:
+        try:
+            return self._resolve(relative).read_bytes()
+        except OSError as error:
+            raise GameSourceError(f"cannot read '{relative}' from '{self.name}': {error}") from error
+
+    def read_text(self, relative: str) -> str:
+        try:
+            return self._resolve(relative).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            raise GameSourceError(f"cannot read '{relative}' from '{self.name}': {error}") from error
+
+    def iter_names(self, prefix: str = "", *, recursive: bool = True) -> Iterator[str]:
+        base = self._root / normalise(prefix) if prefix else self._root
+        if not base.is_dir():
+            return
+        for path in sorted(base.rglob("*") if recursive else base.glob("*")):
+            if path.is_file() and not path.is_symlink():
+                yield path.relative_to(self._root).as_posix()
+
+    def fingerprint(self, relative: str) -> int:
+        try:
+            return self._resolve(relative).stat().st_mtime_ns
+        except (OSError, GameSourceError):
+            return 0
+
+
+class ZipGameSource:
+    """A game read from a `.zip` bundle, in place and never extracted.
+
+    Entries inside a bundle live under one package directory, so the
+    package name is stripped on the way in and out: a caller asks for
+    `"images/cover.png"` exactly as it would of a directory.
+
+    A table of contents is built once at construction. Without it every
+    existence check re-parses the archive's central directory — measured
+    at 2.4 ms against 0.00002 ms for a set lookup on a 13,000-entry
+    bundle, and one extensionless media tag costs up to nine such checks.
+    """
+
+    def __init__(self, bundle_path: Path) -> None:
+        """
+        Args:
+            bundle_path: The `.zip` bundle.
+
+        Raises:
+            GameSourceError: The file is not a readable archive, or holds
+                no package directory.
+        """
+        self._path = bundle_path
+        try:
+            # Held open for the session, not scoped to a block: every
+            # later read goes through it. `close()` releases it.
+            self._archive = zipfile.ZipFile(bundle_path)  # pylint: disable=consider-using-with
+        except (OSError, zipfile.BadZipFile) as error:
+            raise GameSourceError(f"cannot open bundle '{bundle_path.name}': {error}") from error
+
+        entries = self._archive.namelist()
+        roots = {entry.split("/", 1)[0] for entry in entries if "/" in entry}
+        if len(roots) != 1:
+            raise GameSourceError(f"bundle '{bundle_path.name}' must hold exactly one package directory, found {len(roots)}")
+        self._package = roots.pop()
+        prefix = f"{self._package}/"
+        self._contents = frozenset(entry[len(prefix) :] for entry in entries if entry.startswith(prefix) and not entry.endswith("/"))
+
+    @property
+    def package(self) -> str:
+        """The bundle's own package directory name."""
+        return self._package
+
+    @property
+    def name(self) -> str:
+        return self._path.name
+
+    def close(self) -> None:
+        """Release the archive. The source is unusable afterwards."""
+        self._archive.close()
+
+    def exists(self, relative: str) -> bool:
+        try:
+            return normalise(relative) in self._contents
+        except GameSourceError:
+            return False
+
+    def read_bytes(self, relative: str) -> bytes:
+        cleaned = normalise(relative)
+        if cleaned not in self._contents:
+            raise GameSourceError(f"'{cleaned}' is not in bundle '{self.name}'")
+        return self._archive.read(f"{self._package}/{cleaned}")
+
+    def read_text(self, relative: str) -> str:
+        try:
+            return self.read_bytes(relative).decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise GameSourceError(f"'{relative}' in '{self.name}' is not UTF-8") from error
+
+    def iter_names(self, prefix: str = "", *, recursive: bool = True) -> Iterator[str]:
+        cleaned = f"{normalise(prefix)}/" if prefix else ""
+        names = (name for name in self._contents if name.startswith(cleaned))
+        if not recursive:
+            names = (name for name in names if "/" not in name[len(cleaned) :])
+        yield from sorted(names)
+
+    def fingerprint(self, relative: str) -> int:
+        # Constant for the life of the archive: a bundle open in a session
+        # cannot change, so any present file's answer need only differ
+        # from an absent file's.
+        return 1 if self.exists(relative) else 0
+
+
+def as_source(game: GameSource | Path) -> GameSource:
+    """Return a `GameSource` for `game`, wrapping a `Path` if needed.
+
+    Every reader in the engine takes either, so a caller holding a plain
+    directory path -- the development case, and what every existing call
+    site passes -- need not construct a source itself.
+
+    A `.zip` path is opened as a bundle, not treated as a directory:
+    wrapping one as a `DirectoryGameSource` silently gives it directory
+    semantics, so every read misses and the game appears empty.
+
+    Args:
+        game: A source, a game directory, or a bundle.
+
+    Returns:
+        The source.
+    """
+    if not isinstance(game, Path):
+        return game
+    if game.suffix.lower() == ".zip":
+        return ZipGameSource(game)
+    return DirectoryGameSource(game)
+
+
+#: Length of the identity digest a game is keyed by. Sixteen hex
+#: characters is 64 bits — collision-free in practice for a library of
+#: games, and short enough to read in a directory listing.
+IDENTITY_LENGTH = 16
+
+
+def game_identity(game: GameSource | Path) -> str:
+    """Return a stable id for one game, derived from its content.
+
+    A filename is not an identity: it is chosen by whoever downloaded the
+    game, so two unrelated games both saved as `game.zip` would share
+    save files and shadow each other's modules. This keys on what the
+    game IS instead.
+
+    A bundle answers the hash of its own manifest and story, so a renamed
+    or moved bundle keeps its saves and a changed one does not. A
+    directory answers its name, since a game being edited changes
+    constantly and an author expects their saves to survive that.
+
+    Args:
+        game: A source, or a game directory.
+
+    Returns:
+        A short hex digest for a bundle, the folder's own name for a
+        directory.
+    """
+    source = as_source(game)
+    if isinstance(source, DirectoryGameSource):
+        return source.root.resolve().name
+
+    digest = hashlib.sha256()
+    for relative in ("manifest.yaml", *sorted(n for n in source.iter_names(recursive=False) if n.endswith(".inkj"))):
+        if source.exists(relative):
+            digest.update(relative.encode("utf-8"))
+            digest.update(source.read_bytes(relative))
+    return digest.hexdigest()[:IDENTITY_LENGTH]
+
+
+def open_game_source(game: Path) -> GameSource:
+    """Return a source for a game folder or a `.zip` bundle.
+
+    The one place a host decides which kind of game it was handed.
+
+    Args:
+        game: A game folder, or a bundle.
+
+    Returns:
+        The matching source.
+
+    Raises:
+        GameSourceError: `game` is neither, or does not exist.
+    """
+    if game.is_dir():
+        return DirectoryGameSource(game)
+    if game.suffix.lower() == ".zip":
+        return ZipGameSource(game)
+    raise GameSourceError(f"not a game folder or bundle: {game}")

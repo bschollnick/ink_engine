@@ -21,7 +21,9 @@ from __future__ import annotations
 
 from typing import TypedDict
 
-from ink_engine.engine_plugins.character_occupancy import STATE_KEY as _OCCUPANCY_STATE_KEY
+from ink_engine.engine_plugins.character_occupancy import (
+    STATE_KEY as _OCCUPANCY_STATE_KEY,
+)
 from ink_engine.plugin_base import BindingContext, StatefulPlugin, external, query
 
 #: Where this plugin's state lives in a session's `EngineState`. Published

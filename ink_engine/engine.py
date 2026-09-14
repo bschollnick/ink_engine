@@ -50,8 +50,12 @@ class InkPathError(ValueError):
 
 
 class UnboundExternalError(ValueError):
-    """Raised when an EXTERNAL call has neither a bound Python callable
+    """Raised when an EXTERNAL call cannot reach a bound Python callable.
+
+    Two cases raise it. Unconditionally: the call has neither a binding
     nor a resolvable Ink fallback, matching inklecate's own runtime error.
+    Under `strict_externals`: the call has no binding but does have a
+    fallback, which would otherwise be taken silently.
     """
 
 
@@ -464,10 +468,15 @@ class Choice:
             choice point's own container, e.g. ".^.c-0", so resolution
             happens once at choice-creation time rather than being redone
             later against the wrong start container).
+        tags: Tags written inside this choice's own brackets, in source
+            order (`* [Go north # image: north.jpg]`). Standard Ink:
+            these belong to the choice, not the content it leads to, and
+            never appear in `text`.
     """
 
     text: str
     target: Container
+    tags: list[str] = field(default_factory=list)
 
 
 class Container:
@@ -680,6 +689,37 @@ def external_call_names(root: Container) -> set[str]:
 
     walk(root)
     return external_names
+
+
+def start_new_story(
+    root: Container,
+    list_defs: dict[str, dict[str, int]] | None = None,
+    *,
+    engine_bindings: dict[str, Callable[..., Any]] | None = None,
+    initial_globals: dict[str, Any] | None = None,
+    strict_externals: bool = False,
+) -> InkRuntimeState:
+    """Build a fresh `InkRuntimeState` and run it to its first stop point.
+
+    Args:
+        root: The story's root Container (`load_story_root()`'s result).
+        list_defs: The story's LIST definitions.
+        engine_bindings: The EXTERNAL bindings for this session.
+        initial_globals: Ink VAR values applied BEFORE the opening
+            `continue_story()` call, e.g. a character-creation answer.
+            None leaves the story's own declared VAR defaults untouched.
+        strict_externals: Raise `UnboundExternalError` when an EXTERNAL
+            has no bound callable, rather than falling through to the
+            story's own Ink fallback.
+
+    Returns:
+        The new state, already advanced through its opening turn.
+    """
+    state = InkRuntimeState(root, list_defs, engine_bindings=engine_bindings, strict_externals=strict_externals)
+    if initial_globals:
+        state.globals.update(initial_globals)
+    state.continue_story()
+    return state
 
 
 def _load_container(obj: list[Any]) -> Container:
@@ -978,19 +1018,6 @@ class OutputStream:
 
     def __init__(self) -> None:
         self.tokens: list[str] = []
-        # Caches `_latest_glue_index()`'s answer. `_glue_cache_len` is
-        # the length `self.tokens` had when `_glue_cache_index` was last
-        # correct, so `_latest_glue_index()` need only rescan the suffix
-        # appended since. A shorter list means the cache is stale and a
-        # full rescan is needed: the only way `tokens` shrinks from
-        # outside `push()` is wholesale reassignment (`continue_story()`'s
-        # per-turn slice, `from_dict()`'s restore), never suffix removal,
-        # so "shorter than last time" can never be a false negative.
-        # Without this, push() costs a full backward scan of every token
-        # so far — O(k²) for a k-token turn, since ordinary prose has no
-        # active glue and the scan runs to the start every time.
-        self._glue_cache_len = 0
-        self._glue_cache_index = -1
 
     @classmethod
     def from_tokens(cls, tokens: list[str]) -> "OutputStream":
@@ -1042,17 +1069,8 @@ class OutputStream:
         a glue-trim is active — that text has "consumed" the glue's join,
         so the glue marker itself is no longer needed in the stream.
         """
-        removed = False
         while self.tokens and self.tokens[-1] == GLUE:
             self.tokens.pop()
-            removed = True
-        if removed:
-            # A pop() immediately followed by push()'s append() can leave
-            # len(self.tokens) unchanged, so shrink-detection alone would
-            # not notice _glue_cache_index still pointing at a removed
-            # token. Lowering the cache length forces a rescan regardless.
-            self._glue_cache_len = min(self._glue_cache_len, len(self.tokens))
-            self._glue_cache_index = -1
 
     def _trim_newlines_from_end(self) -> None:
         """Remove a trailing run of newline/whitespace text.
@@ -1081,28 +1099,15 @@ class OutputStream:
         stream carries no ControlCommand tokens, so unlike the C# source
         there is no BeginString boundary to stop at.
 
-        Cached incrementally, which holds only because `self.tokens`
-        grows by appending and is never spliced in the middle: a longer
-        list needs just its new suffix scanned. A list shorter than the
-        cached length means an external `.tokens = [...]` reassignment
-        left the cache stale, and forces a full rescan.
-
         Returns:
             The index of the most recent glue token, or -1 if the stream
             has no trailing glue (i.e. it was already closed off by real
             text, or none was ever pushed).
         """
-        length = len(self.tokens)
-        if length < self._glue_cache_len:
-            self._glue_cache_index = -1
-            self._glue_cache_len = 0
-        if length > self._glue_cache_len:
-            for i in range(length - 1, self._glue_cache_len - 1, -1):
-                if self.tokens[i] == GLUE:
-                    self._glue_cache_index = i
-                    break
-            self._glue_cache_len = length
-        return self._glue_cache_index
+        for i in range(len(self.tokens) - 1, -1, -1):
+            if self.tokens[i] == GLUE:
+                return i
+        return -1
 
     def push(self, token: str) -> None:
         """Push one leaf token (text, newline, or glue) onto the stream.
@@ -1801,11 +1806,16 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         list_defs: dict[str, dict[str, int]] | None = None,
         engine_bindings: dict[str, Callable[..., Any]] | None = None,
         random_engine: Callable[[int], RandomEngine] = NetRandom,
+        *,
+        strict_externals: bool = False,
     ) -> None:
         self.root = root
         self.list_defs = list_defs or {}
         self.engine_bindings = engine_bindings or {}
         self.random_engine = random_engine
+        # Live host setting, never serialized -- it says how this process
+        # should react to a gap, not anything about the story's progress.
+        self.strict_externals = strict_externals
         self.pointer: Pointer | None = Pointer.start_of(root)
         self.previous_pointer: Pointer | None = None
         self.output = OutputStream()
@@ -1820,6 +1830,10 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         self.current_tags: list[str] = []
         self._in_tag = False
         self._tag_buffer = OutputStream()
+        # Tags written inside a choice's own brackets, collected while its
+        # text is evaluated and handed to the Choice built from it.
+        self._pending_choice_tags: list[str] = []
+        self._choice_tag_buffer: OutputStream | None = None
         self.done = False
         self._eval_run_depth = 0
         self.globals: dict[str, Any] = {}
@@ -2252,9 +2266,11 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
 
         Raises:
             UnboundExternalError: The call is EXTERNAL and neither a
-                bound Python callable nor an Ink fallback exists for it.
+                bound Python callable nor an Ink fallback exists for it;
+                or `strict_externals` is set and no callable is bound,
+                whether or not a fallback exists.
         """
-        if call.is_external and self.engine_bindings:
+        if call.is_external:
             binding = self.engine_bindings.get(str(call.target_path))
             if binding is not None:
                 arg_count = call.external_arg_count or 0
@@ -2264,6 +2280,11 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
                 assert self.pointer is not None
                 self.pointer = self._advance_past(self.pointer)
                 return
+            if self.strict_externals:
+                # An unwired binding whose story ships a fallback is
+                # invisible otherwise: the fallback answers plausibly and
+                # play continues.
+                raise UnboundExternalError(f"EXTERNAL '{call.target_path}' has no bound Python callable (strict_externals=True)")
 
         target = self._resolve_target_cached(call, holder, call.target_path)
         if not isinstance(target, Container):
@@ -2399,6 +2420,12 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
 
         choice_only_text = self._pop_eval_stack(default="") if choice_point.has_choice_only_content else ""
         start_text = self._pop_eval_stack(default="") if choice_point.has_start_content else ""
+        # Claimed here, beside the pops and for the same reason: these were
+        # collected while THIS choice's text was evaluated, so a choice that
+        # is never shown must still take them rather than leave them for
+        # whichever choice is built next.
+        tags = self._pending_choice_tags
+        self._pending_choice_tags = []
 
         if not show_choice:
             return
@@ -2411,7 +2438,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             return
 
         text = (str(start_text) + str(choice_only_text)).strip()
-        choice = Choice(text=text, target=target)
+        choice = Choice(text=text, target=target, tags=tags)
         if choice_point.is_invisible_default:
             self._invisible_default_choices.append(choice)
         else:
@@ -2454,6 +2481,21 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             self.eval_stack.append(captured.get_text())
             return True
         if self._string_capture_stack:
+            # A tag written inside a choice's own brackets (`* [Go #
+            # image: x.jpg]`) compiles to "#"/"/#" around its text INSIDE
+            # the choice-text capture. Collect it as a tag: swallowing the
+            # markers alone would leave the tag's text in the choice's
+            # visible label.
+            if content == BEGIN_TAG:
+                self._choice_tag_buffer = OutputStream()
+                return True
+            if content == END_TAG and self._choice_tag_buffer is not None:
+                self._pending_choice_tags.append(self._choice_tag_buffer.get_text().strip())
+                self._choice_tag_buffer = None
+                return True
+            if self._choice_tag_buffer is not None and content not in CONTROL_COMMAND_MARKERS:
+                self._choice_tag_buffer.push_text(content)
+                return True
             if content in CONTROL_COMMAND_MARKERS and content != EVAL_OUTPUT:
                 # A bare "nop" can appear inside an active str/../str
                 # capture, not just at the main-stream level — e.g. as a
@@ -3340,7 +3382,10 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             "pointer": self._serialize_pointer(self.pointer),
             "previous_pointer": self._serialize_pointer(self.previous_pointer),
             "output_tokens": list(self.output.tokens),
-            "current_choices": [{"text": choice.text, "target_path": _container_path(choice.target)} for choice in self.current_choices],
+            "current_choices": [
+                {"text": choice.text, "target_path": _container_path(choice.target), "tags": list(choice.tags)}
+                for choice in self.current_choices
+            ],
             "visit_counts": self._id_keyed_dict_to_path_keyed(self.visit_counts, by_id),
             "visit_turns": self._id_keyed_dict_to_path_keyed(self.visit_turns, by_id),
             "current_tags": list(self.current_tags),
@@ -3370,6 +3415,8 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         data: dict[str, Any],
         list_defs: dict[str, dict[str, int]] | None = None,
         engine_bindings: dict[str, Callable[..., Any]] | None = None,
+        *,
+        strict_externals: bool = False,
     ) -> "InkRuntimeState":
         """Rebuild an InkRuntimeState from a to_dict() result.
 
@@ -3383,11 +3430,13 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
                 constructor.
             engine_bindings: As for the constructor. Bindings are not part
                 of saved state; the caller re-derives them on every load.
+            strict_externals: As for the constructor, and for the same
+                reason not part of saved state.
 
         Returns:
             A new InkRuntimeState with every field from data restored.
         """
-        state = cls(root, list_defs, engine_bindings)
+        state = cls(root, list_defs, engine_bindings, strict_externals=strict_externals)
         state.pointer = state._deserialize_pointer(data.get("pointer"))
         state.previous_pointer = state._deserialize_pointer(data.get("previous_pointer"))
         state.output = OutputStream.from_tokens(list(data.get("output_tokens", [])))
@@ -3395,7 +3444,11 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         for choice_data in data.get("current_choices", []):
             target = resolve_path(state.root, Path.parse(str(choice_data["target_path"])))
             if isinstance(target, Container):
-                state.current_choices.append(Choice(text=str(choice_data["text"]), target=target))
+                # A save written before choices carried tags has no "tags"
+                # key; it restores as an untagged choice rather than failing.
+                state.current_choices.append(
+                    Choice(text=str(choice_data["text"]), target=target, tags=list(choice_data.get("tags", [])))
+                )
         state.visit_counts = state._path_keyed_dict_to_id_keyed(data.get("visit_counts", {}))
         state.visit_turns = state._path_keyed_dict_to_id_keyed(data.get("visit_turns", {}))
         state.current_tags = list(data.get("current_tags", []))

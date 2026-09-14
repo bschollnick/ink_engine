@@ -127,7 +127,9 @@ class CostTable(StatefulPlugin[CostSlot]):
             SystemConfigValidationError: `config` does not match the shape.
         """
         super().__init__(name=name, display_name=display_name, config=config)
-        self._declared: dict[str, dict[str, Any]] = {} if config is None else {cost_key: dict(cost) for cost_key, cost in config.get("costs", {}).items()}
+        self._declared: dict[str, dict[str, Any]] = (
+            {} if config is None else {cost_key: dict(cost) for cost_key, cost in config.get("costs", {}).items()}
+        )
 
     def validate_config(self, config: Any) -> None:
         """Validate a price list, declared or host-attached.

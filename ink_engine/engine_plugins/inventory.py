@@ -29,10 +29,14 @@ is written, so a refused operation leaves the slot exactly as it was.
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import TypedDict
 
-from ink_engine.engine_plugins.containers import ContainerRecord, accepts_reach, reveals_contents
-from ink_engine.plugin_base import StatefulPlugin
+from ink_engine.engine_plugins.containers import (
+    ContainerRecord,
+    accepts_reach,
+    reveals_contents,
+)
+from ink_engine.plugin_base import StatefulPlugin, external
 
 # --------------------------------------------------------------------------
 # Tunable limits
@@ -399,6 +403,7 @@ class Inventory(StatefulPlugin[InventorySlot]):
             del held[item_id]
             self._stop_wearing(slot, holder_id, item_id)
 
+    @external
     def has_item(self, slot: InventorySlot, holder_id: str, item_id: str) -> bool:
         """Return whether a holder has at least one of an item.
 
@@ -412,6 +417,7 @@ class Inventory(StatefulPlugin[InventorySlot]):
         """
         return self.item_count(slot, holder_id, item_id) > 0
 
+    @external
     def item_count(self, slot: InventorySlot, holder_id: str, item_id: str) -> int:
         """Return how many of an item a holder carries.
 
@@ -763,5 +769,108 @@ class Inventory(StatefulPlugin[InventorySlot]):
             raise ContainerClosedError(f"container '{holder_id}' is shut")
         self.transfer_item(slot, from_holder, holder_id, item_id, count)
 
+    # -- The Ink surface ---------------------------------------------------
+    #
+    # Ink receives only bool/int/float/str, so the methods above that
+    # return None, an optional string, or a collection cannot be EXTERNALs
+    # as they stand. These wrappers adapt them: a mutation answers whether
+    # it succeeded, an absent id answers "", and a collection answers a
+    # count or an emptiness. A game wanting richer access subclasses this
+    # plugin and publishes its own names.
+
+    @external
+    def give_item_to(self, slot: InventorySlot, holder_id: str, item_id: str, count: int = 1) -> bool:
+        """EXTERNAL give_item_to(holder_id, item_id, count).
+
+        Returns:
+            False when the holder cannot take it — a full inventory or a
+            full stack — leaving the item exactly where it was, so the
+            story can narrate the refusal instead of asserting.
+        """
+        try:
+            self.give_item(slot, holder_id, item_id, count)
+        except InventoryError:
+            return False
+        return True
+
+    @external
+    def take_item_from(self, slot: InventorySlot, holder_id: str, item_id: str, count: int = 1) -> bool:
+        """EXTERNAL take_item_from(holder_id, item_id, count).
+
+        Returns:
+            False when the holder does not have that many.
+        """
+        try:
+            self.take_item(slot, holder_id, item_id, count)
+        except InventoryError:
+            return False
+        return True
+
+    @external
+    def move_item(self, slot: InventorySlot, from_holder: str, to_holder: str, item_id: str, count: int = 1) -> bool:
+        """EXTERNAL move_item(from_holder, to_holder, item_id, count).
+
+        Returns:
+            False when the giver lacks the item or the taker cannot hold
+            it; nothing moves in either case.
+        """
+        try:
+            self.transfer_item(slot, from_holder, to_holder, item_id, count)
+        except InventoryError:
+            return False
+        return True
+
+    @external
+    def drop_item_at(self, slot: InventorySlot, item_id: str, location_id: str) -> bool:
+        """EXTERNAL drop_item_at(item_id, location_id); put an item in the world."""
+        self.place_item(slot, item_id, location_id)
+        return True
+
+    @external
+    def destroy_item(self, slot: InventorySlot, item_id: str) -> bool:
+        """EXTERNAL destroy_item(item_id); take it out of play entirely."""
+        self.remove_from_world(slot, item_id)
+        return True
+
+    @external
+    def location_of_item(self, slot: InventorySlot, item_id: str) -> str:
+        """EXTERNAL location_of_item(item_id).
+
+        Returns:
+            The location id, or "" when the item is held by someone or
+            out of play — Ink has no null, so absence is the empty string.
+        """
+        return self.item_location(slot, item_id) or ""
+
+    @external
+    def holder_of_item(self, slot: InventorySlot, item_id: str) -> str:
+        """EXTERNAL holder_of_item(item_id).
+
+        Returns:
+            The holder id, or "" when the item lies in the world or is
+            out of play.
+        """
+        return self.item_holder(slot, item_id) or ""
+
+    @external
+    def held_item_count(self, slot: InventorySlot, holder_id: str) -> int:
+        """EXTERNAL held_item_count(holder_id); how many DISTINCT items.
+
+        Counts kinds, not copies: a holder with three coins and a key
+        answers 2.
+        """
+        return len(self.held_items(slot, holder_id))
+
+    @external
+    def holds_nothing(self, slot: InventorySlot, holder_id: str) -> bool:
+        """EXTERNAL holds_nothing(holder_id)."""
+        return not self.held_items(slot, holder_id)
+
+    @external
+    def item_is_at(self, slot: InventorySlot, item_id: str, location_id: str) -> bool:
+        """EXTERNAL item_is_at(item_id, location_id); is it lying there."""
+        return item_id in self.items_at_location(slot, location_id)
+
 
 INVENTORY = Inventory()
+PLUGIN = INVENTORY.plugin()

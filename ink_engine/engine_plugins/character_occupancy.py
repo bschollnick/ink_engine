@@ -368,7 +368,9 @@ class CharacterOccupancy(StatefulPlugin[OccupancySlot]):
         """
         locations = slot.setdefault("locations", {})
         for character_id, rules in schedules.items():
-            resolved = resolve_schedule(rules, flags=flags, clock=clock, story_rules=story_rules, story_values=story_values, engine_state=engine_state)
+            resolved = resolve_schedule(
+                rules, flags=flags, clock=clock, story_rules=story_rules, story_values=story_values, engine_state=engine_state
+            )
             if resolved is None:
                 locations.pop(character_id, None)
             else:

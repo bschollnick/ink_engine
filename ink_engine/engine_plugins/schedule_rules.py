@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-
 # Named, closed registries a caller supplies to evaluate_condition()/
 # resolve_schedule() for STORY_RULE/STORY_VALUE nodes — plain functions of
 # the raw clock value (in whatever unit the calling story uses), never an
