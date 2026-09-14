@@ -16,6 +16,7 @@ import json
 from pathlib import Path as FilePath
 from unittest import TestCase as SimpleTestCase
 
+from ink_engine import engine
 from ink_engine.engine import InkRuntimeState, load_story_root
 
 FIXTURES = FilePath(__file__).parent / "fixtures"
@@ -263,3 +264,39 @@ class InvisibleDefaultChoiceTests(SimpleTestCase):
         state.continue_story()
         self.assertEqual(state.turn_count, turn_count_after_real_choice + 1)
         self.assertGreater(turn_count_after_real_choice, turn_count_before_fallback)
+
+
+class RefreshChoicesTests(SimpleTestCase):
+    """`refresh_choices()` -- re-evaluating a turn's choices after a host
+    changes state outside the story (an inventory panel, a spell menu)."""
+
+    def setUp(self):
+        data = _load("refresh_choices.json")
+        self.state = engine.start_new_story(load_story_root(data), data.get("listDefs", {}))
+
+    def test_a_newly_met_condition_offers_its_choice(self):
+        self.assertNotIn("Only once unlocked", [c.text for c in self.state.current_choices])
+        self.state.globals["unlocked"] = True
+        self.state.refresh_choices()
+        self.assertIn("Only once unlocked", [c.text for c in self.state.current_choices])
+
+    def test_the_turn_does_not_advance(self):
+        before = self.state.turn_count
+        self.state.refresh_choices()
+        self.assertEqual(self.state.turn_count, before)
+
+    def test_the_turn_text_is_not_re_emitted(self):
+        before = self.state.last_turn_text
+        self.state.refresh_choices()
+        self.assertEqual(self.state.last_turn_text, before)
+
+    def test_a_once_only_choice_is_not_retired(self):
+        """The replay revisits this turn's containers; counting them twice
+        would consume a `*` choice the player never took."""
+        self.state.refresh_choices()
+        self.assertIn("Once only", [c.text for c in self.state.current_choices])
+
+    def test_refreshing_before_any_turn_is_a_no_op(self):
+        fresh = InkRuntimeState(load_story_root(_load("refresh_choices.json")))
+        fresh.refresh_choices()
+        self.assertEqual(fresh.current_choices, [])

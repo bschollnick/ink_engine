@@ -19,7 +19,7 @@ import posixpath
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 
 class GameSourceError(Exception):
@@ -94,6 +94,22 @@ class GameSource(Protocol):
             0 when the file does not exist.
         """
 
+    @property
+    def listing_cache(self) -> dict[str, Any]:
+        """Scratch space a resolver can index this game's files in.
+
+        A game shipping its own media resolver (`resolve_tag`) typically
+        needs its directory listings more than once per turn, and reading
+        them is what dominates: measured at 98 ms a tag against 0.1 ms
+        cached. Holding that index HERE rather than in the resolver's own
+        module gives it the right lifetime -- it belongs to one game, is
+        freed with it, and is never shared between games or sessions.
+
+        The engine neither reads nor writes this; the shape is entirely
+        the resolver's own. Two games, or two concurrent sessions of one
+        game, each get their own.
+        """
+
 
 # The two implementations below satisfy `GameSource`, whose methods carry
 # the contract; repeating each docstring here would be duplication rather
@@ -111,6 +127,11 @@ class DirectoryGameSource:
             game_dir: The game folder.
         """
         self._root = game_dir
+        self._listing_cache: dict[str, Any] = {}
+
+    @property
+    def listing_cache(self) -> dict[str, Any]:
+        return self._listing_cache
 
     @property
     def root(self) -> Path:
@@ -184,6 +205,7 @@ class ZipGameSource:
                 no package directory.
         """
         self._path = bundle_path
+        self._listing_cache: dict[str, Any] = {}
         try:
             # Held open for the session, not scoped to a block: every
             # later read goes through it. `close()` releases it.
@@ -207,6 +229,10 @@ class ZipGameSource:
     @property
     def name(self) -> str:
         return self._path.name
+
+    @property
+    def listing_cache(self) -> dict[str, Any]:
+        return self._listing_cache
 
     def close(self) -> None:
         """Release the archive. The source is unusable afterwards."""

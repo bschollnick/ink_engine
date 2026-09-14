@@ -254,3 +254,29 @@ class MediaReferenceTests(GameSourceTestCase):
         for label, source in self.both:
             with self.subTest(label):
                 self.assertEqual(len(self._resolve(source, "images/cover")), 1)
+
+
+class ListingCacheTests(GameSourceTestCase):
+    """Scratch space a game's own media resolver indexes its files in.
+
+    Held here rather than in the resolver's module so its lifetime is the
+    game's: a module-level dict keyed by `id(source)` reads a freed game's
+    listings back for whichever game next reuses that id.
+    """
+
+    def test_both_offer_one(self):
+        for label, source in self.both:
+            with self.subTest(label):
+                self.assertEqual(source.listing_cache, {})
+
+    def test_it_is_writable(self):
+        for label, source in self.both:
+            with self.subTest(label):
+                source.listing_cache["x"] = {"a": 1}
+                self.assertEqual(source.listing_cache["x"], {"a": 1})
+
+    def test_two_sources_never_share_one(self):
+        """The defect this replaces: two games, one cache."""
+        self.directory.listing_cache["files"] = {"only": "in the first"}
+        second = DirectoryGameSource(self.tmp / "game")
+        self.assertEqual(second.listing_cache, {})

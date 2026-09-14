@@ -1834,6 +1834,8 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         # text is evaluated and handed to the Choice built from it.
         self._pending_choice_tags: list[str] = []
         self._choice_tag_buffer: OutputStream | None = None
+        # This turn's own starting state, for refresh_choices().
+        self._turn_start: dict[str, Any] | None = None
         self.done = False
         self._eval_run_depth = 0
         self.globals: dict[str, Any] = {}
@@ -3128,6 +3130,10 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             The newly produced visible text for this turn (since the last
             continue_story()/choose() call).
         """
+        # Kept so refresh_choices() can replay this turn after a host
+        # changes state mid-turn; taken here, before anything runs, since
+        # by the end the position is past the choices being re-evaluated.
+        self._turn_start = self.to_dict()
         self.current_choices = []
         self._invisible_default_choices = []
         # current_tags is per-turn, not cumulative: inklecate's own
@@ -3155,6 +3161,56 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         # ownership of it directly.
         self.output.tokens = new_tokens
         return self.last_turn_text
+
+    def refresh_choices(self) -> None:
+        """Re-evaluate this turn's choices against state changed mid-turn.
+
+        A host that lets the player act outside the story — an inventory
+        panel, a spell menu — can change what the current turn's choices
+        should offer after they were evaluated. Replaying the turn from
+        its own start re-runs those conditions; nothing is advanced, so
+        the turn count, the visible text and the player's position are
+        all the same afterwards.
+
+        Does nothing before the first turn has run.
+        """
+        if self._turn_start is None:
+            return
+        turn_start = self._turn_start
+        text, output = self.last_turn_text, self.output
+        # Visit counts key on object identity, so a replay would count
+        # this turn's containers a second time and retire any once-only
+        # choice the player has not actually taken.
+        visits, visit_turns = dict(self.visit_counts), dict(self.visit_turns)
+
+        # Whatever the host changed is the whole point of replaying, so
+        # the story's own variables are carried forward rather than rolled
+        # back with the position.
+        current_globals = dict(self.globals)
+        self._restore_from(
+            InkRuntimeState.from_dict(
+                self.root,
+                turn_start,
+                self.list_defs,
+                self.engine_bindings,
+                strict_externals=self.strict_externals,
+            )
+        )
+        self.globals = current_globals
+        self.visit_counts, self.visit_turns = visits, visit_turns
+
+        self.continue_story()
+        # The replay re-emits this turn's text; the host has already shown
+        # it, so the original output is kept and only the choices are new.
+        self.last_turn_text, self.output = text, output
+
+    def _restore_from(self, other: "InkRuntimeState") -> None:
+        """Adopt another state's position and variables, in place.
+
+        Args:
+            other: The state to copy from.
+        """
+        self.__dict__.update(other.__dict__)
 
     def choose(self, index: int) -> None:
         """Select one of the currently offered choices and follow its target.
