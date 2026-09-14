@@ -15,7 +15,12 @@ from unittest import TestCase as SimpleTestCase
 
 from ink_engine.binding import resolve_bindings
 from ink_engine.engine_config_schemas import SystemConfigValidationError
-from ink_engine.engine_plugins.costs import COST_TABLE, PLUGIN, CostTable, validate_cost_table
+from ink_engine.engine_plugins.costs import (
+    COST_TABLE,
+    PLUGIN,
+    CostTable,
+    validate_cost_table,
+)
 
 CONFIG = {
     "costs": {

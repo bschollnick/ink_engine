@@ -1,0 +1,181 @@
+"""Bundle tamper evidence: the three hashes and the companion readme."""
+
+from __future__ import annotations
+
+import shutil
+import tempfile
+import zipfile
+from pathlib import Path
+from unittest import TestCase
+
+import yaml
+
+from ink_engine.bundle_integrity import (
+    BUNDLE_DIRECTORY_SHA256_FIELD,
+    STORY_SHA256_FIELD,
+    directory_hash,
+    hash_bytes,
+    read_comment_hash,
+    verify_bundle,
+)
+from ink_engine.bundle_readme import render_readme
+from ink_engine.bundler import build_bundle, select_bundle_contents
+
+MANIFEST = "MAIN_STORY_FILE: story.inkj\nGAME_TITLE: Demo\nMEDIA_DIRECTORIES: [Images]\n# an author's comment\n"
+
+
+class BundleIntegrityTestCase(TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        game = self.tmp / "mygame"
+        (game / "Images").mkdir(parents=True)
+        (game / "manifest.yaml").write_text(MANIFEST, encoding="utf-8")
+        (game / "__init__.py").write_text("", encoding="utf-8")
+        (game / "story.inkj").write_text('{"inkVersion": 21}', encoding="utf-8")
+        (game / "plugins.py").write_text("SAFE = True\n", encoding="utf-8")
+        (game / "Images" / "a.jpg").write_bytes(b"\xff\xd8" + b"x" * 200)
+        self.game = game
+        self.bundle = build_bundle(select_bundle_contents(game), self.tmp / "out.zip")
+
+    def _rebuild_with(self, entry: str, data: bytes) -> Path:
+        """Copy the bundle, replacing one entry — an attacker who edits in
+        place but cannot recompute the comment."""
+        target = self.tmp / "tampered.zip"
+        with zipfile.ZipFile(self.bundle) as source, zipfile.ZipFile(target, "w") as copy:
+            copy.comment = source.comment
+            for info in source.infolist():
+                copy.writestr(info.filename, data if info.filename == entry else source.read(info.filename))
+        return target
+
+
+class RecordedHashTests(BundleIntegrityTestCase):
+    def test_a_freshly_built_bundle_verifies(self):
+        self.assertEqual(verify_bundle(self.bundle), [])
+
+    def test_the_manifest_gains_both_hash_fields(self):
+        with zipfile.ZipFile(self.bundle) as archive:
+            manifest = yaml.safe_load(archive.read("mygame/manifest.yaml"))
+        self.assertEqual(len(manifest[STORY_SHA256_FIELD]), 64)
+        self.assertEqual(len(manifest[BUNDLE_DIRECTORY_SHA256_FIELD]), 64)
+
+    def test_the_archive_comment_carries_the_manifest_hash(self):
+        with zipfile.ZipFile(self.bundle) as archive:
+            recorded = read_comment_hash(archive)
+            self.assertEqual(recorded, hash_bytes(archive.read("mygame/manifest.yaml")))
+
+    def test_the_authors_own_comments_survive(self):
+        """The hashes are appended as text, never round-tripped through a
+        YAML dump — a dump would discard every comment in the file."""
+        with zipfile.ZipFile(self.bundle) as archive:
+            manifest = archive.read("mygame/manifest.yaml").decode("utf-8")
+        self.assertIn("# an author's comment", manifest)
+
+    def test_the_story_hash_is_the_story_files_own(self):
+        with zipfile.ZipFile(self.bundle) as archive:
+            manifest = yaml.safe_load(archive.read("mygame/manifest.yaml"))
+            self.assertEqual(manifest[STORY_SHA256_FIELD], hash_bytes(archive.read("mygame/story.inkj")))
+
+
+class TamperDetectionTests(BundleIntegrityTestCase):
+    """Each case the three hashes exist to catch."""
+
+    def test_an_altered_plugin_is_detected(self):
+        target = self._rebuild_with("mygame/plugins.py", b"EVIL = True\n")
+        self.assertTrue(any(BUNDLE_DIRECTORY_SHA256_FIELD in p for p in verify_bundle(target)))
+
+    def test_an_altered_story_is_detected(self):
+        target = self._rebuild_with("mygame/story.inkj", b'{"inkVersion": 99}')
+        self.assertTrue(verify_bundle(target))
+
+    def test_an_altered_manifest_is_detected(self):
+        """The one case the directory hash cannot catch, since it must
+        exclude the manifest to avoid hashing itself."""
+        target = self._rebuild_with("mygame/manifest.yaml", MANIFEST.encode("utf-8") + b"EXTRA: yes\n")
+        self.assertTrue(any("archive comment" in p for p in verify_bundle(target)))
+
+    def test_a_bundle_recording_no_hashes_does_not_pass_silently(self):
+        target = self.tmp / "unsigned.zip"
+        with zipfile.ZipFile(target, "w") as archive:
+            archive.writestr("mygame/manifest.yaml", MANIFEST)
+            archive.writestr("mygame/story.inkj", "{}")
+        self.assertTrue(verify_bundle(target))
+
+
+class DirectoryHashTests(BundleIntegrityTestCase):
+    def test_the_manifest_is_excluded_from_its_own_hash(self):
+        """Including it would be self-referential: writing the hash into
+        the manifest changes the entry the hash covers."""
+        with zipfile.ZipFile(self.bundle) as archive:
+            excluded = directory_hash(archive, manifest_name="mygame/manifest.yaml")
+            included = directory_hash(archive, manifest_name="")
+            manifest = yaml.safe_load(archive.read("mygame/manifest.yaml"))
+        self.assertEqual(manifest[BUNDLE_DIRECTORY_SHA256_FIELD], excluded)
+        self.assertNotEqual(excluded, included)
+
+    def test_entry_order_does_not_change_the_hash(self):
+        with zipfile.ZipFile(self.bundle) as source:
+            names = source.namelist()
+            reordered = self.tmp / "reordered.zip"
+            with zipfile.ZipFile(reordered, "w") as copy:
+                for name in reversed(names):
+                    copy.writestr(name, source.read(name))
+            original = directory_hash(source, manifest_name="mygame/manifest.yaml")
+        with zipfile.ZipFile(reordered) as archive:
+            self.assertEqual(directory_hash(archive, manifest_name="mygame/manifest.yaml"), original)
+
+
+class CompanionReadmeTests(BundleIntegrityTestCase):
+    def test_a_readme_is_written_beside_the_bundle(self):
+        readme = self.bundle.with_suffix(".md")
+        self.assertTrue(readme.is_file())
+
+    def test_the_readme_is_not_inside_the_bundle(self):
+        """It travels separately by design — an entry would be one more
+        thing to hash, defeating the point of an out-of-band copy."""
+        with zipfile.ZipFile(self.bundle) as archive:
+            self.assertEqual([n for n in archive.namelist() if n.endswith(".md")], [])
+
+    def test_the_readme_publishes_all_three_hashes(self):
+        text = self.bundle.with_suffix(".md").read_text(encoding="utf-8")
+        with zipfile.ZipFile(self.bundle) as archive:
+            manifest_bytes = archive.read("mygame/manifest.yaml")
+            manifest = yaml.safe_load(manifest_bytes)
+        self.assertIn(manifest[STORY_SHA256_FIELD], text)
+        self.assertIn(manifest[BUNDLE_DIRECTORY_SHA256_FIELD], text)
+        self.assertIn(hash_bytes(manifest_bytes), text)
+
+    def test_the_readme_names_the_game_and_its_bundle(self):
+        text = self.bundle.with_suffix(".md").read_text(encoding="utf-8")
+        self.assertIn("# Demo", text)
+        self.assertIn("out.zip", text)
+
+    def test_rendering_is_pure_and_repeatable(self):
+        """Nothing is hand-written and nothing varies per run, so the same
+        inputs must produce byte-identical output — otherwise a rebuild of
+        unchanged content would show a spurious diff."""
+        arguments = {
+            "bundle_name": "g.zip",
+            "bundle_bytes": 1024,
+            "file_count": 3,
+            "story_sha256": "a" * 64,
+            "directory_sha256": "b" * 64,
+            "manifest_sha256": "c" * 64,
+        }
+        manifest = {"GAME_TITLE": "T", "MAIN_STORY_FILE": "s.inkj"}
+        self.assertEqual(render_readme(manifest, **arguments), render_readme(manifest, **arguments))
+
+    def test_a_minimal_manifest_still_renders(self):
+        """Every descriptive field is optional; a game declaring none must
+        not produce a broken readme."""
+        text = render_readme(
+            {},
+            bundle_name="g.zip",
+            bundle_bytes=10,
+            file_count=1,
+            story_sha256="",
+            directory_sha256="d" * 64,
+            manifest_sha256="e" * 64,
+        )
+        self.assertIn("# g", text)
+        self.assertIn("d" * 64, text)

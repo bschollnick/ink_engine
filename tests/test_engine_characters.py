@@ -105,7 +105,7 @@ class AttributeTests(SimpleTestCase):
 
 
 class KnownStateTests(SimpleTestCase):
-    """"Have I met this person" -- the one uniform question worth its own
+    """ "Have I met this person" -- the one uniform question worth its own
     vocabulary, mirroring `location_graph`'s own known-set."""
 
     def test_a_character_starts_unknown_and_becomes_known(self):

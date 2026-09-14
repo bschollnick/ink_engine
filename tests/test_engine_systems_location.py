@@ -9,10 +9,9 @@ from __future__ import annotations
 import json
 from unittest import TestCase as SimpleTestCase
 
-from ink_engine.engine_config_schemas import SystemConfigValidationError
-
 import ink_engine.engine_plugins.character_occupancy as character_occupancy_module
 import ink_engine.engine_plugins.location_graph as location_graph_module
+from ink_engine.engine_config_schemas import SystemConfigValidationError
 from ink_engine.engine_plugins.character_occupancy import (
     CHARACTER_OCCUPANCY,
     Condition,

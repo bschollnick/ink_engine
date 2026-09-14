@@ -11,7 +11,14 @@ from __future__ import annotations
 import json
 from unittest import TestCase as SimpleTestCase
 
-from ink_engine.engine_plugins.quests import PLUGIN, UNSTARTED_STAGE, JournalEntry, Quests, QuestSpec, unreachable_goals
+from ink_engine.engine_plugins.quests import (
+    PLUGIN,
+    UNSTARTED_STAGE,
+    JournalEntry,
+    Quests,
+    QuestSpec,
+    unreachable_goals,
+)
 
 # A catalog exercising every structural feature at once: a parent with two
 # required children and one optional child, goals on both a parent and a
@@ -316,7 +323,17 @@ class BindingTests(SimpleTestCase):
     def test_the_bindings_are_published_under_the_method_names(self):
         self.assertEqual(
             sorted(self.bindings),
-            ["advance_quest", "fail_quest", "is_goal_met", "is_quest_failed", "is_quest_started", "meet_goal", "quest_stage", "set_quest_stage", "start_quest"],
+            [
+                "advance_quest",
+                "fail_quest",
+                "is_goal_met",
+                "is_quest_failed",
+                "is_quest_started",
+                "meet_goal",
+                "quest_stage",
+                "set_quest_stage",
+                "start_quest",
+            ],
         )
 
     def test_writes_persist_into_the_session_slot(self):

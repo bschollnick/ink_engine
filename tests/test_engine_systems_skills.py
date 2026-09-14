@@ -193,7 +193,9 @@ class BindingTests(SimpleTestCase):
         self.bindings = PLUGIN.bind(self.slot, {}, {})
 
     def test_the_bindings_are_published_under_the_method_names(self):
-        self.assertEqual(sorted(self.bindings), ["adjust_skill_level", "last_skill_roll", "last_skill_target", "set_skill_level", "skill_check", "skill_level"])
+        self.assertEqual(
+            sorted(self.bindings), ["adjust_skill_level", "last_skill_roll", "last_skill_target", "set_skill_level", "skill_check", "skill_level"]
+        )
 
     def test_writes_persist_into_the_session_slot(self):
         self.bindings["set_skill_level"]("hero", "Strength", 15)
@@ -225,7 +227,9 @@ class BindingTests(SimpleTestCase):
     def test_repeated_checks_advance_the_rng_each_time(self):
         self.bindings["skill_check"](50, 100, 0)
         first_roll = self.bindings["last_skill_roll"]()
-        rolls_differ = any(self.bindings["skill_check"](50, 100, 0) is not None and self.bindings["last_skill_roll"]() != first_roll for _ in range(10))
+        rolls_differ = any(
+            self.bindings["skill_check"](50, 100, 0) is not None and self.bindings["last_skill_roll"]() != first_roll for _ in range(10)
+        )
         self.assertTrue(rolls_differ, "10 consecutive checks all rolled the same value -- RNG is not advancing")
 
     def test_the_plugin_declares_its_own_state_slot(self):

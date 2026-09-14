@@ -124,7 +124,7 @@ class SerializationTests(SimpleTestCase):
         SCHEDULING.schedule_effect(slot, Effect(EffectKind.SET_PLACE_FLAG, "sacred_clearing", {"flag": "tunnel_known", "value": True}), 30)
         restored = json.loads(json.dumps(slot))
         self.assertEqual(SCHEDULING.clock(restored), 0)
-        (due_time, effect), = SCHEDULING.pending_effects(restored)
+        ((due_time, effect),) = SCHEDULING.pending_effects(restored)
         self.assertEqual(due_time, 30)
         self.assertEqual(effect.kind, EffectKind.SET_PLACE_FLAG)
         self.assertEqual(effect.target, "sacred_clearing")
@@ -227,7 +227,9 @@ class BindingTests(SimpleTestCase):
     def test_the_bindings_are_published_under_the_method_names(self):
         slot = PLUGIN.init_state(None)
         self.assertEqual(sorted(PLUGIN.bind(slot, {}, {})), ["advance_clock", "clock", "set_clock"])
-        self.assertEqual(sorted(PLUGIN.bindings), ["day_of_week", "hour_of_day", "is_afternoon", "is_day", "is_evening", "is_morning", "is_night", "is_weekday"])
+        self.assertEqual(
+            sorted(PLUGIN.bindings), ["day_of_week", "hour_of_day", "is_afternoon", "is_day", "is_evening", "is_morning", "is_night", "is_weekday"]
+        )
 
     def test_advancing_the_clock_keeps_a_co_tenants_keys(self):
         """A plugin sharing this slot keeps its own keys: nothing here

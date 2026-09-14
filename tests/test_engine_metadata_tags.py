@@ -228,3 +228,53 @@ class EvalStackCommandGroupingTests(SimpleTestCase):
         differs: it must not be swallowed unconditionally."""
         self.assertIn(engine.EVAL_OUTPUT, engine.EVAL_STACK_COMMANDS)
         self.assertNotIn(engine.EVAL_OUTPUT, engine.STORY_METADATA_COMMANDS)
+
+
+class ChoiceTagTests(SimpleTestCase):
+    """Tags written inside a choice's own brackets.
+
+    Standard Ink (`RunningYourInk.md:186-194`): such a tag belongs to the
+    choice rather than the content it leads to, and is kept off the
+    choice's visible text.
+    """
+
+    def setUp(self):
+        data = _load("choice_tags.json")
+        self.state = engine.start_new_story(load_story_root(data), data.get("listDefs", {}))
+
+    def test_a_choice_tag_is_kept_off_the_choice_text(self):
+        self.assertEqual(self.state.current_choices[1].text, "As a cleaner")
+
+    def test_a_choice_tag_is_collected_on_the_choice(self):
+        self.assertEqual(self.state.current_choices[1].tags, ["image: louise/Monica/louise1b.jpg"])
+
+    def test_each_choice_keeps_its_own_tag(self):
+        self.assertEqual(
+            [choice.tags for choice in self.state.current_choices[1:3]],
+            [["image: louise/Monica/louise1b.jpg"], ["image: louise/Kayla/louise1b.jpg"]],
+        )
+
+    def test_an_untagged_choice_has_no_tags(self):
+        self.assertEqual(self.state.current_choices[-1].tags, [])
+
+    def test_a_hidden_choices_tag_does_not_leak_onto_the_next(self):
+        """A choice whose condition fails still claims the tags collected
+        while its text was evaluated."""
+        self.assertEqual(self.state.current_choices[-1].text, "Plain, no tag")
+        self.assertEqual(self.state.current_choices[-1].tags, [])
+
+    def test_shared_and_choice_only_tags_both_reach_the_choice(self):
+        self.assertEqual(self.state.current_choices[0].tags, ["shared_tag", "choice_tag"])
+
+    def test_choice_tags_survive_a_save_and_load(self):
+        data = _load("choice_tags.json")
+        restored = InkRuntimeState.from_dict(load_story_root(data), self.state.to_dict(), data.get("listDefs", {}))
+        self.assertEqual(restored.current_choices[1].tags, ["image: louise/Monica/louise1b.jpg"])
+
+    def test_a_save_written_before_choice_tags_still_loads(self):
+        data = _load("choice_tags.json")
+        saved = self.state.to_dict()
+        for choice in saved["current_choices"]:
+            del choice["tags"]
+        restored = InkRuntimeState.from_dict(load_story_root(data), saved, data.get("listDefs", {}))
+        self.assertEqual([choice.tags for choice in restored.current_choices], [[], [], [], []])

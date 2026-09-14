@@ -95,6 +95,72 @@ class ExternalCallDispatchTests(SimpleTestCase):
         self.assertEqual(state.globals.get("ran"), True)
 
 
+class StrictExternalsTests(SimpleTestCase):
+    """`strict_externals` turns the silent fallthrough into a loud error.
+
+    The hazard it addresses: an EXTERNAL that is declared in Ink, ships a
+    working fallback, and was simply never wired into `engine_bindings`
+    behaves exactly like one that works and legitimately answers
+    false/empty. Nothing raises and nothing logs, so the gap surfaces
+    downstream as "the story behaved wrong".
+
+    `external_dispatch_proof.ink` is reused throughout: its fallback's
+    only effect is setting `ran`, so that global says which path ran.
+    """
+
+    def _state(self, *, bindings=None, strict: bool = False) -> InkRuntimeState:
+        data = _load("external_dispatch_proof.ink.json")
+        return InkRuntimeState(load_story_root(data), engine_bindings=bindings, strict_externals=strict)
+
+    def test_the_default_still_falls_through_to_the_ink_fallback(self):
+        """Regression guard: every existing caller is unaffected."""
+        state = self._state()
+        state.continue_story()
+        self.assertEqual(state.globals.get("ran"), True)
+
+    def test_strict_mode_raises_naming_the_unwired_external(self):
+        state = self._state(strict=True)
+        with self.assertRaises(UnboundExternalError) as caught:
+            state.continue_story()
+        self.assertIn("MARK_RAN", str(caught.exception))
+
+    def test_strict_mode_does_not_fire_when_the_binding_is_wired(self):
+        """Proves the new branch is reached only by a genuine gap."""
+        calls: list[bool] = []
+
+        def mark_ran() -> int:
+            calls.append(True)
+            return 1
+
+        state = self._state(bindings={"MARK_RAN": mark_ran}, strict=True)
+        state.continue_story()
+        self.assertEqual(calls, [True])
+
+    def test_a_wired_binding_replaces_the_fallback_rather_than_running_both(self):
+        """The fallback writes `ran`; a bound callable that does not means
+        `ran` stays false, proving only one path ran."""
+        state = self._state(bindings={"MARK_RAN": lambda: 1}, strict=True)
+        state.continue_story()
+        self.assertEqual(state.globals.get("ran"), False)
+
+    def test_strict_mode_survives_a_save_load_round_trip(self):
+        """The setting is host-supplied, not saved state -- `from_dict`
+        takes it fresh, so a resumed session is as strict as it is told."""
+        saved = self._state().to_dict()
+        data = _load("external_dispatch_proof.ink.json")
+        resumed = InkRuntimeState.from_dict(load_story_root(data), saved, strict_externals=True)
+        self.assertTrue(resumed.strict_externals)
+
+    def test_strictness_is_not_carried_in_saved_state(self):
+        """A save written by a strict session must not force strictness on
+        whoever loads it."""
+        saved = self._state(strict=True).to_dict()
+        self.assertNotIn("strict_externals", saved)
+        data = _load("external_dispatch_proof.ink.json")
+        resumed = InkRuntimeState.from_dict(load_story_root(data), saved)
+        self.assertFalse(resumed.strict_externals)
+
+
 class ExternalArgCountTests(SimpleTestCase):
     """A real "x()" call's "exArgs" key must parse into
     FunctionCall.external_arg_count — previously silently discarded
