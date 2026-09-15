@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [tool.poetry]
-packages = [{ include = "ink_engine" }]
+packages = [{ include = "ink_engine" }, { include = "if_session" }]
 
 [tool.poetry.scripts]
 ink-bundle = "ink_engine.bundle_cli:main"

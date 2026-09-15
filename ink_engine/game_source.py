@@ -19,7 +19,7 @@ import posixpath
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import IO, Any, Protocol, runtime_checkable
 
 
 class GameSourceError(Exception):
@@ -61,6 +61,16 @@ class GameSource(Protocol):
 
         Raises:
             GameSourceError: No such file.
+        """
+
+    def open_stream(self, relative: str) -> tuple[IO[bytes], int]:
+        """Return an open handle on one file, and its total size.
+
+        For serving media a host must not read whole into memory. The
+        handle is the caller's to close.
+
+        Raises:
+            GameSourceError: No such file, or it cannot be opened.
         """
 
     def read_text(self, relative: str) -> str:
@@ -161,6 +171,13 @@ class DirectoryGameSource:
         except OSError as error:
             raise GameSourceError(f"cannot read '{relative}' from '{self.name}': {error}") from error
 
+    def open_stream(self, relative: str) -> tuple[IO[bytes], int]:
+        try:
+            path = self._resolve(relative)
+            return path.open("rb"), path.stat().st_size
+        except OSError as error:
+            raise GameSourceError(f"cannot read '{relative}' from '{self.name}': {error}") from error
+
     def read_text(self, relative: str) -> str:
         try:
             return self._resolve(relative).read_text(encoding="utf-8")
@@ -249,6 +266,18 @@ class ZipGameSource:
         if cleaned not in self._contents:
             raise GameSourceError(f"'{cleaned}' is not in bundle '{self.name}'")
         return self._archive.read(f"{self._package}/{cleaned}")
+
+    def open_stream(self, relative: str) -> tuple[IO[bytes], int]:
+        """Media is STORED rather than deflated, so the returned handle
+        seeks cheaply and a Range request costs no decompression."""
+        cleaned = normalise(relative)
+        if cleaned not in self._contents:
+            raise GameSourceError(f"'{cleaned}' is not in bundle '{self.name}'")
+        entry = f"{self._package}/{cleaned}"
+        try:
+            return self._archive.open(entry), self._archive.getinfo(entry).file_size
+        except (KeyError, OSError, zipfile.BadZipFile) as error:
+            raise GameSourceError(f"cannot read '{relative}' from '{self.name}': {error}") from error
 
     def read_text(self, relative: str) -> str:
         try:

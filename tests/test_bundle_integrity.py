@@ -16,9 +16,11 @@ from ink_engine.bundle_integrity import (
     directory_hash,
     hash_bytes,
     read_comment_hash,
+    recorded_hashes,
     verify_bundle,
 )
 from ink_engine.bundle_readme import render_readme
+from ink_engine.game_source import GameSourceError
 from ink_engine.bundler import build_bundle, select_bundle_contents
 
 MANIFEST = "MAIN_STORY_FILE: story.inkj\nGAME_TITLE: Demo\nMEDIA_DIRECTORIES: [Images]\n# an author's comment\n"
@@ -75,6 +77,39 @@ class RecordedHashTests(BundleIntegrityTestCase):
         with zipfile.ZipFile(self.bundle) as archive:
             manifest = yaml.safe_load(archive.read("mygame/manifest.yaml"))
             self.assertEqual(manifest[STORY_SHA256_FIELD], hash_bytes(archive.read("mygame/story.inkj")))
+
+
+class RecordedHashReaderTests(BundleIntegrityTestCase):
+    """`recorded_hashes()` reports what a bundle claims about itself, for
+    a host to store and compare against later."""
+
+    def test_it_returns_all_three_digests(self):
+        hashes = recorded_hashes(self.bundle)
+        self.assertEqual(set(hashes), {"manifest", "directory", "story"})
+        for value in hashes.values():
+            self.assertEqual(len(value), 64)
+
+    def test_they_are_the_hashes_the_bundle_actually_records(self):
+        hashes = recorded_hashes(self.bundle)
+        with zipfile.ZipFile(self.bundle) as archive:
+            manifest_bytes = archive.read("mygame/manifest.yaml")
+            manifest = yaml.safe_load(manifest_bytes)
+            self.assertEqual(hashes["manifest"], hash_bytes(manifest_bytes))
+            self.assertEqual(hashes["story"], manifest[STORY_SHA256_FIELD])
+            self.assertEqual(hashes["directory"], manifest[BUNDLE_DIRECTORY_SHA256_FIELD])
+
+    def test_it_reports_what_a_tampered_bundle_claims_not_what_it_is(self):
+        """The reader is not a verifier: an edited bundle still reports
+        its own stale claims, which is how a host detects the change."""
+        tampered = self._rebuild_with("mygame/story.inkj", b'{"inkVersion": 99}')
+        self.assertEqual(recorded_hashes(tampered)["story"], recorded_hashes(self.bundle)["story"])
+        self.assertNotEqual(verify_bundle(tampered), [])
+
+    def test_an_unreadable_file_raises(self):
+        not_a_bundle = self.tmp / "broken.zip"
+        not_a_bundle.write_bytes(b"not a zip at all")
+        with self.assertRaises(GameSourceError):
+            recorded_hashes(not_a_bundle)
 
 
 class TamperDetectionTests(BundleIntegrityTestCase):

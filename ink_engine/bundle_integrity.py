@@ -29,10 +29,12 @@ from __future__ import annotations
 import hashlib
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import yaml
 
 from ink_engine.game_folder import MANIFEST_FILENAME
+from ink_engine.game_source import GameSourceError
 
 #: Manifest field holding the compiled story's own SHA-256.
 STORY_SHA256_FIELD = "STORY_SHA256"
@@ -109,6 +111,39 @@ def read_comment_hash(archive: zipfile.ZipFile) -> str | None:
         if line.startswith(MANIFEST_COMMENT_PREFIX):
             return line[len(MANIFEST_COMMENT_PREFIX) :].strip()
     return None
+
+
+def recorded_hashes(bundle_path: Path) -> dict[str, str]:
+    """Return the three integrity hashes a bundle records about itself.
+
+    These are what the bundle claims, not what it is: `verify_bundle()`
+    answers whether the claims hold. A host stores them to detect a
+    bundle changing underneath it later.
+
+    Args:
+        bundle_path: The `.zip` bundle.
+
+    Returns:
+        `{"manifest", "directory", "story"}`, each a hex digest or an
+        empty string where the bundle records none.
+
+    Raises:
+        GameSourceError: The file is not a readable archive.
+    """
+    try:
+        with zipfile.ZipFile(bundle_path) as archive:
+            manifest_name = manifest_entry_name(archive)
+            manifest: dict[str, Any] = {}
+            if manifest_name is not None:
+                loaded = yaml.safe_load(archive.read(manifest_name).decode("utf-8"))
+                manifest = loaded if isinstance(loaded, dict) else {}
+            return {
+                "manifest": read_comment_hash(archive) or "",
+                "directory": str(manifest.get(BUNDLE_DIRECTORY_SHA256_FIELD) or ""),
+                "story": str(manifest.get(STORY_SHA256_FIELD) or ""),
+            }
+    except (OSError, zipfile.BadZipFile, UnicodeDecodeError, yaml.YAMLError) as error:
+        raise GameSourceError(f"cannot read bundle '{bundle_path.name}': {error}") from error
 
 
 def verify_bundle(bundle_path: Path) -> list[str]:

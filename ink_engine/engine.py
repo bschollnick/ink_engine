@@ -44,6 +44,12 @@ from typing import Any
 
 from ink_engine.rng import NetRandom, RandomEngine, time_seed
 
+#: How many parsed path strings to keep. A compiled story repeats the same
+#: few paths tens of thousands of times, so a small cache catches nearly
+#: all of it; the bound matters because a worker process loads many games
+#: over its life and an unbounded cache would never release any of them.
+PATH_CACHE_SIZE = 256
+
 
 class InkPathError(ValueError):
     """Raised when a path string cannot be resolved against a container tree."""
@@ -165,15 +171,22 @@ class Path:
     is_relative: bool = False
 
     @staticmethod
+    @functools.lru_cache(maxsize=PATH_CACHE_SIZE)
     def parse(raw: str) -> "Path":
         """Parse a dotted Ink path string into a Path.
+
+        Cached: a compiled story repeats the same few path strings tens of
+        thousands of times (`.^.b` alone appears 11,434 times in one real
+        game, and 90% of all path strings are repeats), and the result is
+        never mutated -- every consumer only reads `.components`.
 
         Args:
             raw: A path string as it appears in compiled JSON, e.g.
                 "start.0.g-0.2" or ".^.b" (relative, one level up, then "b").
 
         Returns:
-            The parsed Path.
+            The parsed Path. The SAME object for the same string, so
+            callers must continue to treat it as read-only.
         """
         is_relative = raw.startswith(".")
         stripped = raw[1:] if is_relative else raw
@@ -793,12 +806,15 @@ def _load_object(obj: Any) -> Any:
         text/newline tokens; a Divert or ChoicePoint for those dict forms;
         the raw JSON token unchanged otherwise.
     """
-    if isinstance(obj, list):
-        return _load_container(obj)
-    if isinstance(obj, str) and obj.startswith("^"):
-        return obj[1:]
+    # Ordered by how often each type actually occurs in compiled output:
+    # str 66%, dict 23%, list 4%. The three are mutually exclusive, so the
+    # order changes only how many checks a token costs, never its result.
+    if isinstance(obj, str):
+        return obj[1:] if obj.startswith("^") else obj
     if isinstance(obj, dict):
         return _load_dict_object(obj)
+    if isinstance(obj, list):
+        return _load_container(obj)
     return obj
 
 
