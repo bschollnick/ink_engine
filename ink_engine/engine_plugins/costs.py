@@ -18,7 +18,7 @@ this plugin holds only the number.
 A game's price list is given to the constructor and read live from the
 instance, so a new version of the game reaches every save automatically.
 The session slot holds only costs declared or changed during play, which
-take precedence. A host may also attach a price list as per-story config;
+take precedence. An application may also attach a price list as per-story config;
 that is seeded into the slot once, when the session starts, exactly as if
 the story had declared those costs itself.
 """
@@ -132,7 +132,7 @@ class CostTable(StatefulPlugin[CostSlot]):
         )
 
     def validate_config(self, config: Any) -> None:
-        """Validate a price list, declared or host-attached.
+        """Validate a price list, declared or application-attached.
 
         Args:
             config: The decoded config.
@@ -143,11 +143,11 @@ class CostTable(StatefulPlugin[CostSlot]):
         validate_cost_table(config)
 
     def seed(self, slot: CostSlot, config: Any) -> None:
-        """Declare a host-attached price list into a brand-new slot.
+        """Declare a application-attached price list into a brand-new slot.
 
         Args:
             slot: The fresh slot.
-            config: The host's config, or None.
+            config: The application's config, or None.
         """
         if config:
             for cost_key, cost in config.get("costs", {}).items():

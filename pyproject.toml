@@ -1,6 +1,6 @@
  [project]
 name = "ink-engine"
-version = "0.1.0"
+version = "0.9.0"
 description = "A standalone, Django-free Ink interactive-fiction interpreter and plugin engine"
 readme = "README.md"
 authors = [

@@ -1,6 +1,6 @@
 """One definition of a save envelope, a transcript, and a turn.
 
-Each of these was written twice -- once per host -- and the duplication
+Each of these was written twice -- once per application -- and the duplication
 fails silently: `from_dict()` reads every field with `data.get(key,
 default)`, so a renamed key is not an error, it is a default. Rename
 `output_tokens` and every save loads with an empty output stream and no
@@ -25,7 +25,7 @@ from ink_engine.media_resolver import parse_media_tags
 SAVE_FORMAT_VERSION = 2
 
 #: Keys this library layers onto the engine's own serialization. Named so
-#: a reader can see what the host owns without diffing two dicts.
+#: a reader can see what the application owns without diffing two dicts.
 ENVELOPE_KEYS = ("transcript", "previous_state", "engine_state", "save_format_version")
 
 
@@ -37,13 +37,13 @@ class SaveFormatError(Exception):
 class StoryEngine(Protocol):
     """What this library needs of a story engine.
 
-    Every member below is one a host actually calls today, traced at the
+    Every member below is one an application actually calls today, traced at the
     call sites -- not a guess at what a story engine might offer. A second
     IF engine plugs in by implementing these.
 
     Two things are deliberately absent. **Ink globals** are read by panel
     hooks and character creation, but they are Ink-shaped and have no
-    obvious equivalent elsewhere; a host reaches them directly and that is
+    obvious equivalent elsewhere; an application reaches them directly and that is
     a known extraction cost, named rather than pretended away. **Plugin
     bindings** are threaded through opaquely, because whether the
     capability system is format-neutral is still open.
@@ -74,7 +74,7 @@ class StoryEngine(Protocol):
 
 
 class MediaResolver(Protocol):  # pylint: disable=too-few-public-methods
-    """Turns a turn's media tags into references a host can display."""
+    """Turns a turn's media tags into references an application can display."""
 
     def resolve(self, requests: list[tuple[str, str]]) -> list[str]:
         """Return one displayable reference per request that resolves."""
@@ -88,7 +88,7 @@ def build_saved_state(
 ) -> dict[str, Any]:
     """Compose one session's full persistable state.
 
-    The engine's own serialization plus the host keys it has no use for:
+    The engine's own serialization plus the application keys it has no use for:
     `transcript` is a UI affordance, `previous_state` is undo,
     `engine_state` is the plugin slot bag.
 
@@ -171,15 +171,15 @@ def turn_context(
 ) -> dict[str, Any]:
     """Build one turn's display context.
 
-    This dict is the contract between a story engine and every host UI. A
-    host adds its own keys on top -- QuickBBS layers `story` and `user`
+    This dict is the contract between a story engine and every application UI. A
+    application adds its own keys on top -- QuickBBS layers `story` and `user`
     for its templates -- but the seven below mean the same thing
     everywhere.
 
     Args:
         state: The story engine, already advanced to this turn.
         resolver: Turns this turn's tags into displayable references. A
-            Protocol, so a filesystem host and a database host inject
+            Protocol, so a filesystem application and a database application inject
             their own without forking this function.
         transcript: The rolling history, or None for none.
         can_undo: Whether an undo target exists.

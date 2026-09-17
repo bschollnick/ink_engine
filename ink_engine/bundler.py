@@ -1,4 +1,4 @@
-"""Building a distributable game bundle: one `.zip` a host plays in place.
+"""Building a distributable game bundle: one `.zip` an application plays in place.
 
 **The manifest decides what ships.** A bundle carries `manifest.yaml`
 itself, the story it names, the game's Python package, the media
@@ -30,13 +30,16 @@ import yaml
 
 from ink_engine.bundle_integrity import (
     BUNDLE_DIRECTORY_SHA256_FIELD,
-    MANIFEST_COMMENT_PREFIX,
     STORY_SHA256_FIELD,
+    build_archive_comment,
     directory_hash,
     hash_bytes,
 )
 from ink_engine.bundle_readme import render_readme
 from ink_engine.game_folder import (
+    COVER_IMAGE_FIELD,
+    PLUGIN_DENIED_SCREEN_FIELD,
+    PROSE_STYLES_FIELD,
     COMPILED_STORY_SUFFIX,
     EXTRA_FILES_FIELD,
     MANIFEST_FILENAME,
@@ -61,7 +64,7 @@ STORED_SUFFIXES: frozenset[str] = frozenset(
 
 #: Suffix of the Python modules forming a game's own package. Every one is
 #: bundled: they import each other, and `sidebar.py` is imported lazily by
-#: a host rather than at package import, so reachability analysis would
+#: an application rather than at package import, so reachability analysis would
 #: wrongly drop it.
 PYTHON_SUFFIX = ".py"
 
@@ -82,7 +85,7 @@ class BundlePlan:
     Args:
         game_dir: The game folder being bundled.
         package_name: The bundle's top-level package directory, and the
-            name a host imports. Defaults to the folder's own name.
+            name an application imports. Defaults to the folder's own name.
         included: Files to write, relative to `game_dir`, each with the
             manifest reason it is present.
         missing: `(declared path, problem)` for every manifest
@@ -215,7 +218,33 @@ def select_bundle_contents(game_dir: Path, *, package_name: str | None = None) -
 
     _collect_declared(plan, manifest, MEDIA_DIRECTORIES_FIELD, wants_directory=True)
     _collect_declared(plan, manifest, EXTRA_FILES_FIELD, wants_directory=False)
+    # Fields naming ONE file rather than a list. Without these a game that
+    # declares a cover, a stylesheet or a plugin-denied screen builds a
+    # bundle that does not contain it, and the feature silently does
+    # nothing once bundled.
+    for field_name in (COVER_IMAGE_FIELD, PROSE_STYLES_FIELD, PLUGIN_DENIED_SCREEN_FIELD):
+        _collect_single_file(plan, manifest, field_name)
     return plan
+
+
+def _collect_single_file(plan: BundlePlan, manifest: dict[str, Any], field_name: str) -> None:
+    """Add one manifest field's single declared file to `plan`.
+
+    Args:
+        plan: The plan to add to, mutated in place.
+        manifest: The game's manifest.
+        field_name: The field naming one path, relative to the game folder.
+    """
+    declared = manifest.get(field_name)
+    if not isinstance(declared, str) or not declared:
+        return
+    resolved = _resolve_declared(plan.game_dir, declared)
+    if resolved is None:
+        plan.missing.append((declared, f"{field_name} names a path outside the game folder"))
+    elif resolved.is_file():
+        plan.included[Path(declared)] = field_name
+    else:
+        plan.missing.append((declared, f"{field_name} names a file that does not exist"))
 
 
 def _collect_declared(plan: BundlePlan, manifest: dict[str, Any], field_name: str, *, wants_directory: bool) -> None:
@@ -320,7 +349,7 @@ def build_bundle(plan: BundlePlan, output_path: Path, *, progress: Callable[[Pat
     """Write `plan` to a `.zip` bundle.
 
     Every file is written under the plan's `package_name` directory, so the
-    archive is importable: a host puts the bundle on `sys.path` and imports
+    archive is importable: an application puts the bundle on `sys.path` and imports
     that package.
 
     Args:
@@ -410,7 +439,9 @@ def _write_archive(plan: BundlePlan, output_path: Path, progress: Callable[[Path
         )
         archive.writestr(manifest_arcname, manifest_text)
         manifest_digest = hash_bytes(manifest_text.encode("utf-8"))
-        archive.comment = f"{MANIFEST_COMMENT_PREFIX}{manifest_digest}".encode("utf-8")
+        archive.comment = build_archive_comment(
+            manifest_sha256=manifest_digest, story_sha256=story_digest, directory_sha256=directory_digest
+        )
         if progress is not None:
             progress(manifest_relative)
 
@@ -444,7 +475,7 @@ def _manifest_with_hashes(source: str, *, story_sha256: str, directory_sha256: s
 def open_bundle_manifest(bundle_path: Path) -> dict[str, object]:
     """Read a built bundle's manifest without extracting it.
 
-    Confirms a bundle is well-formed by reading it back the way a host
+    Confirms a bundle is well-formed by reading it back the way an application
     will.
 
     Args:

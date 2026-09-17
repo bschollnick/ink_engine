@@ -23,10 +23,8 @@ JSON encoding (matches inkle's own reference runtime):
 Output-stream handling ports the C# reference runtime's
 StoryState.PushToOutputStream / TrySplittingHeadTailWhitespace /
 PushToOutputStreamIndividual / RemoveExistingGlue /
-TrimNewlinesFromOutputStream. The function-call-frame whitespace trimming
-(functionTrimIndex in the C# source) is deliberately not implemented —
-OutputStream implements only the glue- and story-level newline-dedup
-paths.
+TrimNewlinesFromOutputStream, and the function-call-frame trim
+(functionTrimIndex in the C# source), applied as a CallFrame pops.
 """
 
 # pylint: disable=too-many-lines
@@ -580,12 +578,18 @@ class Container:
         return self.named_content.get(component.name)
 
 
-def load_story_root(story_json: dict[str, Any]) -> Container:
+def load_story_root(story_json: dict[str, Any], *, full_build: bool = True) -> Container:
     """Build the story's Container tree from its compiled JSON.
 
     Args:
         story_json: The parsed top-level compiled-Ink JSON object (must
             contain a "root" key holding the container list).
+        full_build: Build the whole tree up front. An application that holds one
+            story for a session wants this. An application that rebuilds per
+            request can pass False to build only the top level, each knot
+            then being built whole the first time a path names it --
+            `story_json` must stay alive for as long as the tree does,
+            since the deferred children reference it.
 
     Returns:
         The root Container of the story's content tree.
@@ -595,7 +599,9 @@ def load_story_root(story_json: dict[str, Any]) -> Container:
     """
     if "root" not in story_json:
         raise InkPathError("Compiled story JSON has no 'root' key")
-    return _load_container(story_json["root"])
+    if full_build:
+        return _load_container(story_json["root"])
+    return _load_container_lazily(story_json["root"])
 
 
 def load_list_defs(story_json: dict[str, Any]) -> dict[str, dict[str, int]]:
@@ -662,7 +668,7 @@ def find_unbound_externals(root: Container) -> list[str]:
     Compiled Ink JSON erases the EXTERNAL declaration itself; only the
     call site survives. Each still needs a same-named
     `=== function name(...) ===` in the tree — the fallback used when no
-    host function is bound. A host validating an uploaded story can use
+    application function is bound. An application validating an uploaded story can use
     this to check every EXTERNAL has one.
 
     Args:
@@ -679,15 +685,29 @@ def find_unbound_externals(root: Container) -> list[str]:
 def external_call_names(root: Container) -> set[str]:
     """Return every EXTERNAL function name the story calls.
 
-    Whether each has a host binding, or an ink fallback, is a separate
+    Whether each has an application binding, or an ink fallback, is a separate
     question -- this only reports what the story asks for.
 
     Args:
-        root: The story's root container.
+        root: The story's root container. Must be fully built: this walks
+            the tree, and a lazily-built one would answer only for the
+            knots that happen to have been visited.
 
     Returns:
         The de-duplicated EXTERNAL target names.
+
+    Raises:
+        InkPathError: `root` still has unbuilt children. Answering from a
+            partial tree would report an incomplete set, and the caller
+            that cares -- upload validation -- would pass a story whose
+            EXTERNALs have no fallback.
     """
+    if isinstance(root, LazyContainer) and root.has_deferred_content:
+        raise InkPathError(
+            "external_call_names() needs a fully built story: this root still has unbuilt "
+            "children, so the answer would be incomplete. Load it with full_build=True."
+        )
+
     external_names: set[str] = set()
 
     def walk(container: Container) -> None:
@@ -733,6 +753,63 @@ def start_new_story(
         state.globals.update(initial_globals)
     state.continue_story()
     return state
+
+
+class LazyContainer(Container):
+    """A container whose named-only children are built on first access.
+
+    A story's knots are named-only children of the root: present in
+    `named_content`, absent from `content` (verified against a real game:
+    4,712 of 4,712). Deferring them therefore cannot disturb any
+    positional index, which `_container_path()` depends on.
+
+    The whole of a child's subtree is built at once, never partially, so
+    every direct `.content` read elsewhere in the interpreter sees a
+    complete container or no container at all.
+    """
+
+    def __init__(self, name: str | None = None) -> None:
+        super().__init__(name)
+        #: name -> the raw compiled JSON for a child not yet built. A
+        #: reference into the already-parsed story, not a copy.
+        self._deferred: dict[str, Any] = {}
+
+    def defer_named_content(self, name: str, raw: Any) -> None:
+        """Record a named child to build when something first asks for it."""
+        self._deferred[name] = raw
+
+    @property
+    def has_deferred_content(self) -> bool:
+        """Whether any named child is still unbuilt."""
+        return bool(self._deferred)
+
+    def _materialize(self, name: str) -> Any:
+        """Build one deferred child, or return it if already built."""
+        raw = self._deferred.pop(name)
+        loaded = _load_object(raw)
+        if isinstance(loaded, Container):
+            loaded.name = name  # pylint: disable=attribute-defined-outside-init
+        self.add_named_content(name, loaded)
+        return loaded
+
+    def materialize_all(self) -> None:
+        """Build every remaining deferred child.
+
+        For the callers that must see a whole tree, chiefly the EXTERNAL
+        walk. One level suffices: a child is built by `_load_object()` as
+        an ordinary Container, complete with its own subtree, so only the
+        root ever defers anything.
+        """
+        for name in list(self._deferred):
+            self._materialize(name)
+
+    def content_with_component(self, component: PathComponent) -> Any:
+        """Resolve one path component, building the child if deferred."""
+        if not component.is_parent and not component.is_index:
+            assert component.name is not None
+            if component.name in self._deferred:
+                return self._materialize(component.name)
+        return super().content_with_component(component)
 
 
 def _load_container(obj: list[Any]) -> Container:
@@ -786,6 +863,46 @@ def _load_container(obj: list[Any]) -> Container:
                     # and never a named_content lookup.
                     loaded_named.name = key  # pylint: disable=attribute-defined-outside-init
                 container.add_named_content(key, loaded_named)
+
+    return container
+
+
+def _load_container_lazily(obj: list[Any]) -> LazyContainer:
+    """Build one container, deferring its named-only children.
+
+    Positional content is built in full: it carries the indices
+    `_container_path()` addresses by. Only terminator-dict entries -- the
+    story's knots -- are deferred, and each is built whole when asked for.
+
+    Args:
+        obj: The container's JSON list, as `_load_container()` takes.
+
+    Returns:
+        The container, with `named_content` keys absent until first
+        access. `content` is complete.
+    """
+    container = LazyContainer()
+
+    positional = obj
+    terminator = None
+    if obj and isinstance(obj[-1], dict):
+        positional = obj[:-1]
+        terminator = obj[-1]
+
+    for item in positional:
+        loaded = _load_object(item)
+        container.add_content(loaded)
+        if isinstance(loaded, Container) and loaded.name:
+            container.add_named_content(loaded.name, loaded)
+
+    if terminator:
+        for key, value in terminator.items():
+            if key == "#n":
+                container.name = value
+            elif key == "#f":
+                container.count_flags = value
+            else:
+                container.defer_named_content(key, value)
 
     return container
 
@@ -1088,11 +1205,12 @@ class OutputStream:
         while self.tokens and self.tokens[-1] == GLUE:
             self.tokens.pop()
 
-    def _trim_newlines_from_end(self) -> None:
+    def trim_newlines_from_end(self) -> None:
         """Remove a trailing run of newline/whitespace text.
 
         Ports TrimNewlinesFromOutputStream. Called when new glue arrives,
-        so glue always eats the whitespace immediately before it.
+        so glue always eats the whitespace immediately before it, and as a
+        function's call frame pops (C#'s functionTrimIndex).
         """
         remove_from = -1
         for i in range(len(self.tokens) - 1, -1, -1):
@@ -1141,7 +1259,7 @@ class OutputStream:
                 literal glue marker "<>".
         """
         if token == GLUE:
-            self._trim_newlines_from_end()
+            self.trim_newlines_from_end()
             self.tokens.append(GLUE)
             return
 
@@ -1233,6 +1351,11 @@ RANDOM = "rnd"
 SEED_RANDOM = "srnd"
 SEQUENCE_SHUFFLE = "seq"
 LIST_RANDOM = "lrnd"
+LIST_RANGE = "range"
+LIST_FROM_INT = "listInt"
+NO_OP = "nop"
+#: The placeholder a function with no return value pushes ("ev","void","/ev").
+VOID_OPERAND = "void"
 BEGIN_TAG = "#"
 END_TAG = "/#"
 
@@ -1243,7 +1366,11 @@ END_TAG = "/#"
 #: text and shown to the player, with nothing raising.
 STORY_METADATA_COMMANDS = frozenset({CHOICE_COUNT, TURNS, TURNS_SINCE, READ_COUNT, VISIT_INDEX})
 RNG_COMMANDS = frozenset({RANDOM, SEED_RANDOM, SEQUENCE_SHUFFLE, LIST_RANDOM})
-EVAL_STACK_COMMANDS = STORY_METADATA_COMMANDS | RNG_COMMANDS | {EVAL_OUTPUT}
+#: LIST-valued ControlCommands. Separate from the LIST *operators* in
+#: LIST_NATIVE_FUNCTION_ARITY: the compiler emits these as bare markers,
+#: not NativeFunctionCalls.
+LIST_COMMANDS = frozenset({LIST_RANGE, LIST_FROM_INT})
+EVAL_STACK_COMMANDS = STORY_METADATA_COMMANDS | RNG_COMMANDS | LIST_COMMANDS | {EVAL_OUTPUT}
 
 # The full set of bare-string ControlCommand markers compiled JSON can
 # emit, matching the reference runtime's CommandType enum. Everything
@@ -1260,7 +1387,7 @@ CONTROL_COMMAND_MARKERS = frozenset(
         "~ret",
         "str",
         "/str",
-        "nop",
+        NO_OP,
         "choiceCnt",
         "turn",
         "turns",
@@ -1272,8 +1399,8 @@ CONTROL_COMMAND_MARKERS = frozenset(
         "thread",
         "done",
         "end",
-        "listInt",
-        "range",
+        LIST_FROM_INT,
+        LIST_RANGE,
         LIST_RANDOM,
         "#",
         "/#",
@@ -1313,8 +1440,8 @@ NATIVE_FUNCTION_ARITY = {
 # AddListBinaryOp/AddListUnaryOp call sites. LIST_RANGE/LIST_RANDOM are
 # absent because the real engine does not treat them as
 # NativeFunctionCall operators: they are
-# ControlCommand.ListRange/ListRandom, handled via
-# CONTROL_COMMAND_MARKERS's "range"/"lrnd" entries.
+# ControlCommand.ListRange/ListRandom, dispatched from LIST_COMMANDS and
+# RNG_COMMANDS respectively.
 LIST_NATIVE_FUNCTION_ARITY = {
     "+": 2,
     "-": 2,
@@ -1807,7 +1934,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         engine_bindings: Real Python callables to dispatch EXTERNAL calls
             to, keyed by the exact function name declared in the story.
             None/empty by default; whether to pass real bindings is the
-            host application's decision. Every bound callable must be
+            application's decision. Every bound callable must be
             stateless (see _call_function).
         random_engine: A factory taking a seed and returning a
             `RandomEngine`, called fresh each time a seeded sequence is
@@ -1829,7 +1956,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         self.list_defs = list_defs or {}
         self.engine_bindings = engine_bindings or {}
         self.random_engine = random_engine
-        # Live host setting, never serialized -- it says how this process
+        # Live application setting, never serialized -- it says how this process
         # should react to a gap, not anything about the story's progress.
         self.strict_externals = strict_externals
         self.pointer: Pointer | None = Pointer.start_of(root)
@@ -1843,6 +1970,12 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         self._invisible_default_choices: list[Choice] = []
         self.visit_counts: dict[int, int] = {}
         self.visit_turns: dict[int, int] = {}
+        # visit_counts/visit_turns are keyed by id(container), and Python
+        # has no id() -> object map, so serialization cannot recover the
+        # containers from those keys alone. Holding them here -- strongly,
+        # which also prevents an id being reused while a key still names
+        # it -- replaces walking the whole tree to find them again.
+        self._visited_containers: dict[int, Container] = {}
         self.current_tags: list[str] = []
         self._in_tag = False
         self._tag_buffer = OutputStream()
@@ -1922,8 +2055,10 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             return
         if container.visits_should_be_counted:
             self.visit_counts[id(container)] = self._visit_count(container) + 1
+            self._visited_containers[id(container)] = container
         if container.turn_index_should_be_counted:
             self.visit_turns[id(container)] = self.turn_count
+            self._visited_containers[id(container)] = container
 
     def _run_global_decl(self) -> None:
         """Run the compiled "global decl" container once, if present.
@@ -1933,7 +2068,11 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         starts so `self.globals` holds each VAR's initial value.
         self.pointer and self.done are restored afterwards.
         """
-        global_decl = self.root.named_content.get("global decl")
+        # Through content_with_component(), not a bare named_content read:
+        # on a lazily-built tree the knot is deferred until something asks
+        # for it by name, and a direct dict read would silently answer None
+        # -- skipping every VAR initialisation in the story.
+        global_decl = self.root.content_with_component(PathComponent(name="global decl"))
         if not isinstance(global_decl, Container):
             return
 
@@ -2241,23 +2380,32 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             self.pointer = saved_pointer
 
     def _pop_tunnel(self) -> None:
-        """Handle a bare "->->" (PopTunnel) control command.
+        """Handle "->->" (PopTunnel), plain or with an override target.
 
         Ports the PopTunnel branch of
         Story._perform_logic_and_flow_control: pops one value off
         eval_stack, then resumes at the most recently pushed tunnel return
-        address. The popped value is the void the compiler emits before
-        every plain `->->` (room for the unimplemented `->-> someExpr`
-        override form).
+        address. The compiler emits a void before a plain `->->`, and the
+        divert target before `->-> elsewhere` (WritingWithInk.md,
+        "Tunnels can return elsewhere").
+
+        An override consumes its tunnel frame rather than pushing a new
+        one, so the next `->->` returns to the caller one level further
+        out.
 
         An empty tunnel_stack ends the story rather than raising, as
         DONE_COMMANDS does for unexpected ends.
         """
-        self._pop_eval_stack()
+        override = self._pop_eval_stack()
         if not self.tunnel_stack:
             self.done = True
             return
-        self.pointer = self.tunnel_stack.pop()
+        return_pointer = self.tunnel_stack.pop()
+        if isinstance(override, ResolvedDivertTarget) and override.container is not None:
+            self.pointer = Pointer.start_of(override.container)
+            self._visit_changed_containers_due_to_divert()
+            return
+        self.pointer = return_pointer
 
     def _call_function(self, call: FunctionCall, holder: Container) -> None:
         """Push a CallFrame and jump into a `{"f()": path}` function call.
@@ -2338,6 +2486,10 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             return
         frame = self.call_stack.pop()
         self.pointer = frame.return_pointer
+        # C#'s functionTrimIndex: newlines the function's own body emitted
+        # are dropped as its frame pops, so a call mid-line (`Before
+        # {emit()} after.`) leaves the caller's line unbroken.
+        self.output.trim_newlines_from_end()
 
     def _advance_past(self, pointer: Pointer) -> Pointer | None:
         """Move one content item past pointer, walking up ended containers.
@@ -2391,6 +2543,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             self.eval_stack.append(VOID)
             frame = self.call_stack.pop()
             result = frame.return_pointer
+            self.output.trim_newlines_from_end()
         return result
 
     def _descend_into_containers(self, pointer: Pointer) -> Pointer:
@@ -2631,19 +2784,42 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             True (every case here is either handled or the intentional
             unreachable-literal fallthrough, both treated as consumed).
         """
-        if content in STORY_METADATA_COMMANDS:
-            self._handle_story_metadata_command(content)
+        for group, handler in (
+            (STORY_METADATA_COMMANDS, self._handle_story_metadata_command),
+            (RNG_COMMANDS, self._handle_rng_command),
+            (LIST_COMMANDS, self._handle_list_command),
+            (NATIVE_FUNCTION_ARITY, self._apply_operator_defensively),
+        ):
+            if content in group:
+                handler(content)
+                return True
+        if content == NO_OP:
+            # Genuinely nothing to do -- the compiler emits it as a
+            # placeholder. Named here so it is consumed deliberately
+            # rather than by the fallthrough below.
             return True
-        if content in RNG_COMMANDS:
-            self._handle_rng_command(content)
+        if content in CONTROL_COMMAND_MARKERS:
+            # A marker listed as recognized but with no branch above would
+            # otherwise be consumed in silence, leaving its operands on the
+            # eval stack for the next pop to mistake for a result -- wrong
+            # output, no error. LIST_RANGE shipped that way.
+            raise InkPathError(f"ControlCommand {content!r} is recognized but has no handler")
+        if self._eval_run_depth > 0 and not self._string_capture_stack:
+            if self.call_stack and content != VOID_OPERAND:
+                # Prose in a function body called from inside an eval run
+                # (`Before {emit()} after.`). It is output, not an operand:
+                # the call frame is what distinguishes the two, since both
+                # arrive at eval-run depth.
+                self.output.push_text(content)
+                return True
+            # A bare string operand, unwrapped by str/../str: LIST(n)
+            # compiles its list name this way (`"^Nums", 3, "listInt"`).
+            # Inside a capture the same token is text, handled above.
+            self.eval_stack.append(content)
             return True
-        if content in NATIVE_FUNCTION_ARITY:
-            self._apply_operator_defensively(content)
-            return True
-        # Nothing legitimate reaches here: plain literal values
-        # (int/float/str) are dispatched in _dispatch_content by Python
-        # type, not as strings, except for string literals inside
-        # str/.../str, handled above. Treated as consumed either way.
+        # Plain literal values (int/float) are dispatched in
+        # _dispatch_content by Python type, not as strings. Treated as
+        # consumed.
         return True
 
     def _handle_story_metadata_command(self, name: str) -> None:
@@ -2838,6 +3014,83 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         chosen_key, chosen_value = value.entries[next_random % len(value.entries)]
         self.eval_stack.append(ListValue(entries=((chosen_key, chosen_value),), origin_names=(chosen_key[0],)))
         self.previous_random = next_random
+
+    def _handle_list_command(self, name: str) -> None:
+        """Handle "range" (LIST_RANGE) or "listInt" (LIST(n)).
+
+        Args:
+            name: The control-command marker.
+        """
+        if name == LIST_RANGE:
+            self._push_list_range()
+            return
+        self._push_list_from_int()
+
+    def _push_list_range(self) -> None:
+        """Handle "range" (LIST_RANGE(list, min, max)).
+
+        Ports the ListRange branch of
+        Story._perform_logic_and_flow_control: pops max, min and the
+        source list, then pushes every entry whose value falls within the
+        inclusive bounds. Bounds may be ints or list items -- an item
+        contributes its own integer value, so
+        `LIST_RANGE(chain, LIST_MIN(chain), x)` works. Out-of-range bounds
+        clamp rather than raising (WritingWithInk.md, "a portion of the
+        full list"); a non-ListValue source yields an empty ListValue.
+        """
+        max_bound = self._coerce_list_bound(self._pop_eval_stack(default=None))
+        min_bound = self._coerce_list_bound(self._pop_eval_stack(default=None))
+        value = self._pop_eval_stack(default=None)
+        if not isinstance(value, ListValue) or min_bound is None or max_bound is None:
+            self.eval_stack.append(ListValue())
+            return
+        within = tuple(entry for entry in value.ordered_entries if min_bound <= entry[1] <= max_bound)
+        self.eval_stack.append(ListValue(entries=within, origin_names=value.origin_names))
+
+    @staticmethod
+    def _coerce_list_bound(bound: Any) -> int | None:
+        """Return a LIST_RANGE bound as an int, or None if it is unusable.
+
+        Args:
+            bound: A popped int, float or single-item ListValue.
+
+        Returns:
+            The bound's integer value; for a ListValue, its highest entry
+            (InkList.maxItem, as ListRange uses). None for an empty
+            ListValue or a value that is not numeric.
+        """
+        if isinstance(bound, ListValue):
+            entries = bound.ordered_entries
+            return entries[-1][1] if entries else None
+        if isinstance(bound, bool) or not isinstance(bound, (int, float)):
+            return None
+        return int(bound)
+
+    def _push_list_from_int(self) -> None:
+        """Handle "listInt" (LIST(n), the int-to-list-item conversion).
+
+        Ports the ListFromInt branch of
+        Story._perform_logic_and_flow_control: the compiler pushes the
+        list name then the integer (`"^Nums", 3, "listInt"`), so the
+        integer pops first. Pushes the single item of that list holding
+        that value. A name that is not a known list, or a value no item
+        holds, yields an empty ListValue -- matching the reference
+        runtime, which pushes InkList's null value rather than raising.
+        """
+        int_value = self._pop_eval_stack(default=None)
+        list_name = self._pop_eval_stack(default=None)
+        if isinstance(list_name, ListValue):
+            origins = list_name.origin_names
+            list_name = origins[0] if origins else None
+        if not isinstance(list_name, str) or isinstance(int_value, bool) or not isinstance(int_value, (int, float)):
+            self.eval_stack.append(ListValue())
+            return
+        int_value = int(int_value)
+        for item_name, item_value in self.list_defs.get(list_name, {}).items():
+            if item_value == int_value:
+                self.eval_stack.append(ListValue.single(list_name, item_name, item_value))
+                return
+        self.eval_stack.append(ListValue())
 
     def _apply_operator_defensively(self, name: str) -> None:
         """Pop operands for one native-function operator and push its result.
@@ -3146,7 +3399,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             The newly produced visible text for this turn (since the last
             continue_story()/choose() call).
         """
-        # Kept so refresh_choices() can replay this turn after a host
+        # Kept so refresh_choices() can replay this turn after an application
         # changes state mid-turn; taken here, before anything runs, since
         # by the end the position is past the choices being re-evaluated.
         self._turn_start = self.to_dict()
@@ -3181,7 +3434,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
     def refresh_choices(self) -> None:
         """Re-evaluate this turn's choices against state changed mid-turn.
 
-        A host that lets the player act outside the story — an inventory
+        An application that lets the player act outside the story — an inventory
         panel, a spell menu — can change what the current turn's choices
         should offer after they were evaluated. Replaying the turn from
         its own start re-runs those conditions; nothing is advanced, so
@@ -3199,7 +3452,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         # choice the player has not actually taken.
         visits, visit_turns = dict(self.visit_counts), dict(self.visit_turns)
 
-        # Whatever the host changed is the whole point of replaying, so
+        # Whatever the application changed is the whole point of replaying, so
         # the story's own variables are carried forward rather than rolled
         # back with the position.
         current_globals = dict(self.globals)
@@ -3216,7 +3469,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         self.visit_counts, self.visit_turns = visits, visit_turns
 
         self.continue_story()
-        # The replay re-emits this turn's text; the host has already shown
+        # The replay re-emits this turn's text; the application has already shown
         # it, so the original output is kept and only the choices are new.
         self.last_turn_text, self.output = text, output
 
@@ -3360,41 +3613,14 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         target = resolve_path(self.root, Path.parse(str(path)))
         return ResolvedDivertTarget(container=target if isinstance(target, Container) else None)
 
-    def _container_by_id_index(self) -> dict[int, Container]:
-        """Build an id(Container) -> Container index for the whole tree.
-
-        visit_counts/visit_turns are keyed by id(container), which is
-        meaningless across a save/load boundary, so serialization needs
-        this to recover each key's path string.
-
-        Returns:
-            {id(container): container} for every Container reachable
-            from self.root, including named-only (terminator-dict-only)
-            children.
-        """
-        index: dict[int, Container] = {}
-
-        def walk(container: Container) -> None:
-            index[id(container)] = container
-            for item in container.content:
-                if isinstance(item, Container):
-                    walk(item)
-            for item in container.named_content.values():
-                if isinstance(item, Container) and id(item) not in index:
-                    walk(item)
-
-        walk(self.root)
-        return index
-
     def _id_keyed_dict_to_path_keyed(self, id_keyed: dict[int, int], by_id: dict[int, Container]) -> dict[str, int]:
         """Convert an id(Container)-keyed dict (visit_counts/visit_turns'
         own storage shape) to a path-keyed dict, for serialization.
 
         Args:
             id_keyed: {id(container): int_value}.
-            by_id: A `_container_by_id_index()` result. Required rather
-                than built here, so `to_dict()`'s two calls share one
-                index instead of walking the tree twice.
+            by_id: `self._visited_containers`. Passed in rather than read
+                from self, so this stays a pure mapping function.
 
         Returns:
             {path_string: int_value}, one entry per id_keyed key whose
@@ -3429,6 +3655,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             target = resolve_path(self.root, Path.parse(path_str))
             if isinstance(target, Container):
                 result[id(target)] = value
+                self._visited_containers[id(target)] = target
         return result
 
     def to_dict(self) -> dict[str, Any]:
@@ -3446,10 +3673,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         Returns:
             The serialized state.
         """
-        # Built once and shared by both calls below, each of which would
-        # otherwise re-walk the whole compiled tree to build the same
-        # index.
-        by_id = self._container_by_id_index()
+        by_id = self._visited_containers
         return {
             "pointer": self._serialize_pointer(self.pointer),
             "previous_pointer": self._serialize_pointer(self.previous_pointer),

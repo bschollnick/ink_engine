@@ -12,11 +12,14 @@ import yaml
 
 from ink_engine.bundle_integrity import (
     BUNDLE_DIRECTORY_SHA256_FIELD,
+    BUNDLE_VERSION,
     STORY_SHA256_FIELD,
     directory_hash,
     hash_bytes,
     read_comment_hash,
+    read_bundle_version,
     recorded_hashes,
+    unrecognized_bundle_version,
     verify_bundle,
 )
 from ink_engine.bundle_readme import render_readme
@@ -214,3 +217,57 @@ class CompanionReadmeTests(BundleIntegrityTestCase):
         )
         self.assertIn("# g", text)
         self.assertIn("d" * 64, text)
+
+
+class ArchiveCommentTests(BundleIntegrityTestCase):
+    """The comment carries the bundle's version and all three hashes.
+
+    It makes a bundle self-describing: what it claims to be is readable
+    from the End of Central Directory record alone, with no YAML parse
+    and no entry reads. That is a CONVENIENCE -- the comment is inside
+    the artifact, so anything that can rewrite the bundle can rewrite the
+    comment in the same pass. `verify_bundle()` reads the manifest, which
+    stays the authority.
+    """
+
+    def _comment_lines(self) -> dict[str, str]:
+        with zipfile.ZipFile(self.bundle) as archive:
+            return dict(line.split("=", 1) for line in archive.comment.decode().splitlines())
+
+    def test_it_carries_all_three_hashes_and_the_version(self):
+        fields = self._comment_lines()
+        self.assertEqual(set(fields), {"bundle_version", "manifest_sha256", "story_sha256", "directory_sha256"})
+
+    def test_the_hashes_match_the_ones_the_bundle_records(self):
+        fields = self._comment_lines()
+        recorded = recorded_hashes(self.bundle)
+        self.assertEqual(fields["manifest_sha256"], recorded["manifest"])
+        self.assertEqual(fields["story_sha256"], recorded["story"])
+        self.assertEqual(fields["directory_sha256"], recorded["directory"])
+
+    def test_the_declared_version_is_the_one_this_bundler_writes(self):
+        with zipfile.ZipFile(self.bundle) as archive:
+            self.assertEqual(read_bundle_version(archive), BUNDLE_VERSION)
+
+    def test_a_bundle_of_this_version_raises_no_warning(self):
+        self.assertIsNone(unrecognized_bundle_version(self.bundle))
+
+    def test_an_unknown_version_is_reported_for_a_consumer_to_warn_on(self):
+        """Warn, never refuse: the layout has stayed backward-compatible,
+        and refusing a game over an unfamiliar container version would be
+        a worse answer than opening it and saying so."""
+        future = self.tmp / "future.zip"
+        with zipfile.ZipFile(self.bundle) as source, zipfile.ZipFile(future, "w") as copy:
+            copy.comment = source.comment.replace(f"bundle_version={BUNDLE_VERSION}".encode(), b"bundle_version=9.9")
+            for info in source.infolist():
+                copy.writestr(info.filename, source.read(info.filename))
+        self.assertEqual(unrecognized_bundle_version(future), "9.9")
+
+    def test_a_bundle_predating_versioning_raises_no_warning(self):
+        """None means "built before the version existed", not "wrong"."""
+        legacy = self.tmp / "legacy.zip"
+        with zipfile.ZipFile(self.bundle) as source, zipfile.ZipFile(legacy, "w") as copy:
+            copy.comment = b"manifest_sha256=" + recorded_hashes(self.bundle)["manifest"].encode()
+            for info in source.infolist():
+                copy.writestr(info.filename, source.read(info.filename))
+        self.assertIsNone(unrecognized_bundle_version(legacy))

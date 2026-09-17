@@ -194,7 +194,17 @@ class BindingTests(SimpleTestCase):
 
     def test_the_bindings_are_published_under_the_method_names(self):
         self.assertEqual(
-            sorted(self.bindings), ["adjust_skill_level", "last_skill_roll", "last_skill_target", "set_skill_level", "skill_check", "skill_level"]
+            sorted(self.bindings),
+            [
+                "add_skill",
+                "adjust_skill_level",
+                "knows_skill",
+                "last_skill_roll",
+                "last_skill_target",
+                "set_skill_level",
+                "skill_check",
+                "skill_level",
+            ],
         )
 
     def test_writes_persist_into_the_session_slot(self):
@@ -234,3 +244,40 @@ class BindingTests(SimpleTestCase):
 
     def test_the_plugin_declares_its_own_state_slot(self):
         self.assertEqual(PLUGIN.state_key, "skills")
+
+
+class KnowsAndAddSkillTests(SimpleTestCase):
+    """The known/not-known case, for a skill learned rather than practised."""
+
+    def setUp(self):
+        self.slot = PLUGIN.init_state(None)
+        self.bindings = PLUGIN.bind(self.slot, {}, {})
+
+    def test_an_unlearned_skill_is_not_known(self):
+        self.assertFalse(self.bindings["knows_skill"]("hero", "Fireball"))
+
+    def test_adding_a_skill_makes_it_known(self):
+        self.assertTrue(self.bindings["add_skill"]("hero", "Fireball"))
+        self.assertTrue(self.bindings["knows_skill"]("hero", "Fireball"))
+
+    def test_a_granted_skill_defaults_to_level_one(self):
+        self.bindings["add_skill"]("hero", "Fireball")
+        self.assertEqual(self.bindings["skill_level"]("hero", "Fireball"), 1)
+
+    def test_a_granted_skill_can_name_its_level(self):
+        self.bindings["add_skill"]("hero", "Fireball", 40)
+        self.assertEqual(self.bindings["skill_level"]("hero", "Fireball"), 40)
+
+    def test_adding_a_known_skill_does_not_reset_its_level(self):
+        """A re-entered scene must not quietly undo hard-won progress."""
+        self.bindings["set_skill_level"]("hero", "Fireball", 90)
+        self.assertFalse(self.bindings["add_skill"]("hero", "Fireball"))
+        self.assertEqual(self.bindings["skill_level"]("hero", "Fireball"), 90)
+
+    def test_level_zero_reads_as_not_known(self):
+        self.bindings["set_skill_level"]("hero", "Fireball", 0)
+        self.assertFalse(self.bindings["knows_skill"]("hero", "Fireball"))
+
+    def test_knowing_is_per_character(self):
+        self.bindings["add_skill"]("hero", "Fireball")
+        self.assertFalse(self.bindings["knows_skill"]("rival", "Fireball"))

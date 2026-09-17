@@ -90,7 +90,7 @@ up-to-date with inkle's standard reference.
 
   The two do not overlap as much as you would expect. `WritingWithInk.md`
   documents the *correct* way to write a conditional choice
-  (`* { cond } [Label]`, §7 "Conditional Choices") but never mentions that the
+  (`* { cond } [Label]`, Section 7 "Conditional Choices") but never mentions that the
   wrapped form `{ cond: * [Label] }` also compiles — and then silently
   auto-takes itself forever inside a hub. Read the upstream docs for what Ink
   *does*; read ours for what it does when you get it subtly wrong.

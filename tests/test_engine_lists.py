@@ -194,3 +194,45 @@ class ListNativeFunctionTests(SimpleTestCase):
         operation."""
         with self.assertRaises(Exception):
             apply_native_function(">", [self.coins, 5])
+
+
+class ListRangeAndListFromIntTests(SimpleTestCase):
+    """LIST_RANGE(list, min, max) and the LIST(n) int-to-item conversion.
+
+    Both compile to bare ControlCommand markers ("range"/"listInt")
+    rather than NativeFunctionCalls. Both were listed as recognized
+    markers with no handler, so each silently consumed nothing and left
+    its operands on the eval stack for the next pop to mistake for a
+    result -- LIST_RANGE(LIST_ALL(Nums), two, four) returned `four`.
+    Transcript captured from the local inklecate build's -p output.
+    """
+
+    def setUp(self):
+        self.text = _run("list_range.json").continue_story()
+
+    def test_integer_bounds_select_the_documented_slice(self):
+        """WritingWithInk.md's own example: primes between 10 and 20."""
+        self.assertIn("Doc: p11, p13, p17, p19", self.text)
+
+    def test_bounds_outside_the_list_clamp_rather_than_erroring(self):
+        self.assertIn("Clamp: one, two, three, four, five", self.text)
+
+    def test_a_range_matching_nothing_yields_an_empty_list(self):
+        self.assertIn("Empty:\n", self.text)
+
+    def test_list_item_bounds_work_as_well_as_integers(self):
+        """Both bound forms are valid; an item contributes its own value."""
+        self.assertIn("MinItem: two, three, four", self.text)
+
+    def test_list_from_int_returns_the_item_holding_that_value(self):
+        self.assertIn("FromInt: three", self.text)
+
+    def test_list_from_int_yields_an_empty_list_when_no_item_matches(self):
+        self.assertIn("FromIntBad:\n", self.text)
+
+    def test_no_operands_are_left_on_the_eval_stack(self):
+        """The defect's signature: operands orphaned by a consumed-but-
+        unhandled command are read as the next result."""
+        state = _run("list_range.json")
+        state.continue_story()
+        self.assertEqual(state.eval_stack, [])

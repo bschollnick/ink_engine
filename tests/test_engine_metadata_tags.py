@@ -206,9 +206,11 @@ class EvalStackCommandGroupingTests(SimpleTestCase):
 
     def test_the_groups_partition_cleanly(self):
         self.assertEqual(engine.STORY_METADATA_COMMANDS & engine.RNG_COMMANDS, set())
+        self.assertEqual(engine.STORY_METADATA_COMMANDS & engine.LIST_COMMANDS, set())
+        self.assertEqual(engine.RNG_COMMANDS & engine.LIST_COMMANDS, set())
         self.assertEqual(
             engine.EVAL_STACK_COMMANDS,
-            engine.STORY_METADATA_COMMANDS | engine.RNG_COMMANDS | {engine.EVAL_OUTPUT},
+            engine.STORY_METADATA_COMMANDS | engine.RNG_COMMANDS | engine.LIST_COMMANDS | {engine.EVAL_OUTPUT},
         )
 
     def test_the_metadata_group_holds_exactly_the_five_pushers(self):

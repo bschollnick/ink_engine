@@ -1,4 +1,4 @@
-"""The plugin contract: one dataclass, no trust concept, no host-UI
+"""The plugin contract: one dataclass, no trust concept, no application-UI
 awareness.
 """
 
@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 #: A game session's persisted state, keyed by each stateful plugin's own
-#: `state_key`. A plain dict, so a host can persist it as JSON.
+#: `state_key`. A plain dict, so an application can persist it as JSON.
 #:
 #: The KEYS are contract (each plugin publishes its own `STATE_KEY`); what
 #: a plugin stores UNDER its key is private to that plugin. Reach a
@@ -44,18 +44,18 @@ class Plugin:
     plugin stateful: it owns one named slice of the session's
     `EngineState`. Otherwise `bindings` is its complete surface.
 
-    ink_engine has no concept of trust, host UI, or config storage.
+    ink_engine has no concept of trust, application UI, or config storage.
 
     Attributes:
         name: Unique, stable identifier, e.g. "scheduling". Must be
             unique across every source one `discover_plugins()` call
             scans.
-        display_name: Human-readable label for a host's own UI. Never
+        display_name: Human-readable label for a application's own UI. Never
             read by ink_engine.
         bindings: Stateless EXTERNAL functions, keyed by the Ink function
             name each implements.
         validate_config: Optional validator for whatever config shape a
-            host attaches to this plugin. Called by the host, never here.
+            the application attaches to this plugin. Called by the application, never here.
         state_key: Where this plugin's state lives in `EngineState`, or
             None when stateless. It need not equal `name`, and two
             plugins may deliberately share one key -- so `EngineState`
@@ -65,11 +65,11 @@ class Plugin:
             win a collision.
         init_state: `(config) -> dict`, building this plugin's fresh state
             on first use, or None when stateless. Set with `state_key`,
-            never alone. `config` is the host's config for this plugin,
-            `default_config` when the host attaches none, or None. A
+            never alone. `config` is the application's config for this plugin,
+            `default_config` when the application attaches none, or None. A
             plugin may own state without binding anything: state_key and
             init_state with no `bind` is valid.
-        default_config: What `init_state` is given when the host attaches
+        default_config: What `init_state` is given when the application attaches
             no config. Declaring it is how the allocation step knows
             which of two plugins sharing a slot builds it.
         bind: `(own_state, engine_state, list_defs) -> dict[str, Callable]`,

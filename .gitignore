@@ -11,3 +11,5 @@ build/
 .DS_Store
 claude_docs/
 CLAUDE.md
+# Sweeps a large real story that only exists on the developer's machine.
+tests/test_engine_path_sweep.py

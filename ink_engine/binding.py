@@ -18,21 +18,21 @@ class AmbiguousSlotConfigError(ValueError):
     """Two plugins sharing one slot both claim to seed it."""
 
 
-def _config_for(plugin: Plugin, name: str, host_configs: Mapping[str, Any]) -> Any:
+def _config_for(plugin: Plugin, name: str, application_configs: Mapping[str, Any]) -> Any:
     """Return the config a plugin would seed its slot from, or None.
 
-    A host entry that is empty (`{}` or None) means "nothing attached"
+    An application entry that is empty (`{}` or None) means "nothing attached"
     and defers to the plugin's own `default_config`.
 
     Args:
         plugin: The plugin.
-        name: Its activation name, the key a host stores config under.
-        host_configs: Config per plugin name, from the host.
+        name: Its activation name, the key an application stores config under.
+        application_configs: Config per plugin name, from the application.
 
     Returns:
-        The host's config, else `plugin.default_config`, else None.
+        The application's config, else `plugin.default_config`, else None.
     """
-    attached = host_configs.get(name)
+    attached = application_configs.get(name)
     if attached not in (None, {}):
         return attached
     return plugin.default_config
@@ -48,7 +48,7 @@ def allocate_state(
     """Allocate every missing slot, independent of activation order.
 
     Of the active plugins sharing one slot, those carrying a config (a
-    host entry, else `default_config`) are its seeders. Exactly one seeder
+    application entry, else `default_config`) are its seeders. Exactly one seeder
     builds the slot with `validate_config(config)` then
     `init_state(config)`; with no seeder the first tenant builds it from
     `init_state(None)`; two seeders is an error, since whichever won would
@@ -59,7 +59,7 @@ def allocate_state(
         plugins: Every discoverable plugin, by name.
         active_names: Which plugins contribute to this session.
         engine_state: The session's mutable, JSON-safe state dict.
-        configs: Config per plugin name, from the host, or None.
+        configs: Config per plugin name, from the application, or None.
 
     Raises:
         KeyError: `active_names` holds a plugin discovery never found.
@@ -68,14 +68,14 @@ def allocate_state(
         SystemConfigValidationError: A config failed its plugin's
             validator.
     """
-    host_configs: Mapping[str, Any] = configs if configs is not None else {}
+    application_configs: Mapping[str, Any] = configs if configs is not None else {}
     tenants: dict[str, list[tuple[str, Plugin]]] = {}
     for name in active_names:
         plugin = plugins[name]
         if plugin.state_key is not None and plugin.init_state is not None and plugin.state_key not in engine_state:
             tenants.setdefault(plugin.state_key, []).append((name, plugin))
     for state_key, owners in tenants.items():
-        seeders = [(name, plugin, config) for name, plugin in owners if (config := _config_for(plugin, name, host_configs)) is not None]
+        seeders = [(name, plugin, config) for name, plugin in owners if (config := _config_for(plugin, name, application_configs)) is not None]
         if len(seeders) > 1:
             seeder_names = ", ".join(repr(name) for name, _, _ in seeders)
             raise AmbiguousSlotConfigError(
@@ -115,8 +115,8 @@ def resolve_bindings(
         list_defs: The story's compiled LIST definitions, passed to every
             `bind()`. Omit only when no story is in play: a plugin given
             `{}` answers as though the story declared no LISTs.
-        configs: Config per plugin name, from the host's own store, or
-            None when the host keeps none; every plugin then seeds from
+        configs: Config per plugin name, from the application's own store, or
+            None when the application keeps none; every plugin then seeds from
             its `default_config`.
 
     Returns:
@@ -161,7 +161,7 @@ def check_required_plugins(
 
     Three ways a plugin can be in use without being declared, all checked:
 
-    1. The host activates a name the manifest omits.
+    1. The application activates a name the manifest omits.
     2. The game's own package exports a `Plugin` the manifest omits.
     3. The story calls an EXTERNAL that only an undeclared plugin
        provides.
@@ -169,7 +169,7 @@ def check_required_plugins(
     Args:
         plugins: Every discovered plugin, by name.
         required_names: What the game's manifest declares.
-        active_names: What the host is about to activate.
+        active_names: What the application is about to activate.
         game_plugin_names: Names the game's own package exports, if the
             caller knows them.
         root: The compiled story, for the EXTERNAL-coverage check. Skipped

@@ -94,3 +94,36 @@ class StarvedOperatorTests(SimpleTestCase):
         state = InkRuntimeState(load_story_root(_load("starved_operator.json")))
         text = state.continue_story()
         self.assertEqual(text, "Survived.\n")
+
+
+class TunnelReturnOverrideTests(SimpleTestCase):
+    """`->-> elsewhere` — a tunnel returning somewhere other than its caller.
+
+    Documented in WritingWithInk.md, "Advanced: Tunnels can return
+    elsewhere". The compiler emits the divert target where a plain `->->`
+    emits a void; the engine discarded it, so the story silently returned
+    to the caller instead — inkle's own `hurt(x)` example printed "You're
+    still alive!" where the reference prints "You lost, buddy.".
+    Transcripts captured from the local inklecate build's -p output.
+    """
+
+    def test_the_override_target_is_taken_instead_of_the_return_address(self):
+        state = InkRuntimeState(load_story_root(_load("tunnel_return_override.json")))
+        self.assertEqual(state.continue_story(), "You slip.\nOuch.\nYou lost, buddy.\n")
+
+    def test_the_override_consumes_its_tunnel_frame(self):
+        """The outer tunnel's own content is skipped: the inner override
+        ate outer's return address, so `elsewhere`'s `->->` goes back to
+        main, one level further out."""
+        state = InkRuntimeState(load_story_root(_load("tunnel_return_override_nested.json")))
+        text = state.continue_story()
+        self.assertEqual(text, "Outer start.\nInner start.\nElsewhere reached.\nBack in main.\n")
+        self.assertNotIn("Outer after inner.", text)
+
+    def test_the_stacks_unwind_cleanly(self):
+        """An override that leaked a frame or an operand would strand the
+        next return."""
+        state = InkRuntimeState(load_story_root(_load("tunnel_return_override_nested.json")))
+        state.continue_story()
+        self.assertEqual(state.tunnel_stack, [])
+        self.assertEqual(state.eval_stack, [])

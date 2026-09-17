@@ -332,7 +332,7 @@ def engine_query_registry() -> QueryRegistry:
     """Return what the engine's own shipped plugins can be asked.
 
     A `QUERY` condition names a plugin and a question; this is where the
-    questions the engine itself publishes are found. A host with extra
+    questions the engine itself publishes are found. An application with extra
     plugins passes its own registry instead, built the same way from each
     active plugin's `Plugin.queries`.
 

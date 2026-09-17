@@ -175,7 +175,7 @@ class StatefulPlugin(Generic[SlotT]):
             `bind()` re-applies it with `setdefault`, so a save written
             before a field existed still loads.
         default_config: What `init_state()` seeds a brand-new slot from
-            when the host attaches no config. For state-like config only:
+            when the application attaches no config. For state-like config only:
             values play then changes, or values another plugin reads from
             this slot. Definition-like config (a price list) belongs in
             the constructor's `config` and is read live from the instance;
@@ -251,7 +251,7 @@ class StatefulPlugin(Generic[SlotT]):
     def seed(self, slot: SlotT, config: Any) -> None:
         """Write state-like config into a brand-new slot. Override to use it.
 
-        Called once, by `init_state()`, with the host's config for this
+        Called once, by `init_state()`, with the application's config for this
         plugin or `default_config`. Never called on a resumed save.
 
         Args:
@@ -265,7 +265,7 @@ class StatefulPlugin(Generic[SlotT]):
         """Return a fresh slot: every declared field empty, then seeded.
 
         Args:
-            config: The host's config for this plugin, or None to seed
+            config: The application's config for this plugin, or None to seed
                 from `default_config`.
 
         Returns:

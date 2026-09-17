@@ -300,3 +300,25 @@ class RefreshChoicesTests(SimpleTestCase):
         fresh = InkRuntimeState(load_story_root(_load("refresh_choices.json")))
         fresh.refresh_choices()
         self.assertEqual(fresh.current_choices, [])
+
+
+class ChoiceStartContentTests(SimpleTestCase):
+    """`Hello[, sailor]. Nice day.` -- start content, choice-only content
+    and continuation text on one choice.
+
+    The displayed choice is start + choice-only; the text printed after
+    taking it is start + whatever follows the brackets. Transcript
+    captured from the local inklecate build's -p output.
+    """
+
+    def setUp(self):
+        self.state = InkRuntimeState(load_story_root(_load("choice_start_content.json")))
+        self.state.continue_story()
+
+    def test_the_choice_shows_start_plus_choice_only_content(self):
+        self.assertEqual([c.text for c in self.state.current_choices], ["Hello, sailor", "Just brackets", "Plain choice"])
+
+    def test_taking_it_prints_start_plus_the_continuation(self):
+        """The bracketed half is shown, never printed."""
+        self.state.choose(0)
+        self.assertEqual(self.state.continue_story(), "Hello. Nice day. Done.\n")

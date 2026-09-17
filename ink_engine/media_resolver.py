@@ -1,9 +1,9 @@
 """Media-tag resolution: turning a turn's `# image: <tag>`/`# video: <tag>`
 Ink tags into displayable URLs or paths.
 
-What a tag resolves TO is host-specific: `parse_media_tags` splits a
+What a tag resolves TO is application-specific: `parse_media_tags` splits a
 turn's raw tags into `(kind, tag_name)` pairs, and `MediaResolver` is the
-seam each host implements.
+seam each application implements.
 
 The `image:`/`video:` prefixes are this project's convention, not Ink's:
 Ink tags are untyped metadata handed to the game verbatim, with no notion
@@ -25,7 +25,7 @@ from ink_engine.game_source import DirectoryGameSource, GameSource, as_source
 #: Ink tag prefix -> the media kind it names. Order matters: `resolve()`'s
 #: own grouped-output contract (all images, then all videos) follows this
 #: dict's own iteration order, matching the prefix-scan behavior every real
-#: host already implements today.
+#: application already implements today.
 MEDIA_TAG_PREFIXES: dict[str, str] = {"image:": "image", "video:": "video"}
 
 #: Extensions `FilesystemMediaResolver` tries, in order, for a tag that
@@ -96,9 +96,9 @@ def find_prose_styles(game_dir: GameSource | Path) -> str | None:
     inline `<style=name>...</style>` marker (this project's own inline-tag
     convention, not part of the Ink language); this file is where a game
     defines what each `name` actually renders as (font, size, colour).
-    Entirely optional — a host applies its own baseline style names first,
+    Entirely optional — an application applies its own baseline style names first,
     and this file's rules load after, so a game can override any baseline
-    name or add its own without the host knowing about it in advance.
+    name or add its own without the application knowing about it in advance.
 
     Args:
         game_dir: The game folder's real filesystem path.
@@ -106,7 +106,7 @@ def find_prose_styles(game_dir: GameSource | Path) -> str | None:
     Returns:
         The file's raw text content, or None if the game folder supplies
         no such file. Reading and injecting that CSS into a page is the
-        host's own concern — `ink_engine` has no opinion on host UI.
+        application's own concern — `ink_engine` has no opinion on application UI.
     """
     source = as_source(game_dir)
     candidate = read_prose_styles(source) or PROSE_STYLES_FILENAME
@@ -198,10 +198,10 @@ class FilesystemMediaResolver:  # pylint: disable=too-few-public-methods
 
     **What `resolve()` returns depends on the source**, because the two
     cannot answer the same way: a directory yields an absolute filesystem
-    path a host can turn into a `file://` URI, while a bundle has no such
+    path an application can turn into a `file://` URI, while a bundle has no such
     path and yields a `data:` URI carrying the bytes. Both are strings a
     browser loads directly from an `<img>`/`<video>` `src`, which is what
-    every host does with them, so the difference does not reach the host's
+    every application does with them, so the difference does not reach the application's
     own code.
     """
 
@@ -308,7 +308,7 @@ class FilesystemMediaResolver:  # pylint: disable=too-few-public-methods
         return result if isinstance(result, str) and result else None
 
     def reference(self, relative: str) -> str:
-        """Return the string a host can display for one resolved file."""
+        """Return the string an application can display for one resolved file."""
         if isinstance(self._source, DirectoryGameSource):
             return str((self._source.root / relative).resolve())
         return _data_uri(relative, self._source.read_bytes(relative))

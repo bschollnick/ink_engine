@@ -293,6 +293,39 @@ class Quests(StatefulPlugin[QuestSlot]):
             return []
         return [goal_id for goal_id in spec.goal_ids if not self.is_goal_met(slot, quest_id, goal_id)]
 
+    # -- completion -----------------------------------------------------------
+
+    @external
+    def finish_quest(self, slot: QuestSlot, quest_id: str) -> bool:
+        """Mark a quest finished, whatever its catalog says finishing means.
+
+        Meets every declared goal and moves the stage to `final_stage`, so
+        `is_complete()` then answers True without the caller having to know
+        either. Idempotent, and safe to call on a quest never started.
+
+        A quest whose catalog entry declares no goals and no `final_stage`
+        has no stated ending, so there is nothing to satisfy; it is left
+        alone, matching `is_complete()`'s own refusal to call such a quest
+        finished. Required subquests are NOT finished recursively -- a
+        questline ends when its parts do, so finish those first.
+
+        Args:
+            slot: This session's slot.
+            quest_id: The quest to finish.
+
+        Returns:
+            True if the quest now reports complete, False if its catalog
+            gives no way to finish it, or it is unknown.
+        """
+        spec = self.catalog.get(quest_id)
+        if spec is None:
+            return False
+        for goal_id in spec.goal_ids:
+            self.meet_goal(slot, quest_id, goal_id)
+        if spec.final_stage is not None:
+            self.set_quest_stage(slot, quest_id, spec.final_stage)
+        return self.is_complete(slot, quest_id)
+
     # -- failure --------------------------------------------------------------
 
     @external

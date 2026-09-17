@@ -1,12 +1,12 @@
 """Calling a game's own side-panel hooks.
 
 A game folder may ship a `sidebar.py` exposing `panel_context()`,
-`panel_action()` and `panel_command()`; a host renders whatever data they
+`panel_action()` and `panel_command()`; an application renders whatever data they
 return beside the story text. This module is the shared calling
 convention.
 
 A hook supplies data, never markup. This module never imports a game's
-code: it calls a module the host already imported, having made its own
+code: it calls a module the application already imported, having made its own
 trust decision upstream. Every hook is optional, and one that raises is
 logged and treated as absent.
 """
@@ -158,7 +158,7 @@ def panel_command(
 ) -> str:
     """Run one of a panel's state-changing commands (e.g. "use", "cast").
 
-    Expected to mutate `engine_state`, and may mutate `globals_`; a host
+    Expected to mutate `engine_state`, and may mutate `globals_`; an application
     persists both as it would after a mid-turn binding call. Does not
     advance the story -- a panel command is not a choice.
 

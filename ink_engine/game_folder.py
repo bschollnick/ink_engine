@@ -91,6 +91,19 @@ COVER_IMAGE_FIELD = "COVER_IMAGE"
 #: replaces the hardcoded `styles.css` convention.
 PROSE_STYLES_FIELD = "PROSE_STYLES"
 
+#: A Markdown file, relative to the game folder, explaining what the
+#: game's plugins do and why running them needs permission. Shown when a
+#: game that declares `REQUIRED_PLUGINS` has not been trusted.
+#:
+#: The game writes it because only the game knows what its plugins mean:
+#: an application can list names, but not that a missing occupancy plugin means no
+#: character is anywhere. A game declaring none gets the application's own
+#: fallback, which lists the names.
+#:
+#: Optional, so `MANIFEST_VERSION` does not change: a reader that does not
+#: know this field ignores it, which is the correct behaviour.
+PLUGIN_DENIED_SCREEN_FIELD = "PLUGIN_DENIED_SCREEN"
+
 #: The manifest field naming the media directories a game ships — a list
 #: of directory paths relative to the game folder, e.g. `["Images", "UI"]`.
 #: Each is bundled whole; a game with no media declares none.
@@ -254,6 +267,68 @@ def read_cover_image(game_dir: GameSource | Path) -> str | None:
 def read_prose_styles(game_dir: GameSource | Path) -> str | None:
     """Read the game's declared prose stylesheet path, or None."""
     return _read_manifest_string_field(game_dir, PROSE_STYLES_FIELD)
+
+
+def read_plugin_denied_screen(game_dir: GameSource | Path) -> str | None:
+    """Read the game's declared plugin-denied screen path, or None."""
+    return _read_manifest_string_field(game_dir, PLUGIN_DENIED_SCREEN_FIELD)
+
+
+def find_plugin_denied_screen(game_dir: GameSource | Path) -> str | None:
+    """Return the game's plugin-denied screen text, or None.
+
+    Args:
+        game_dir: The game's source, or its directory.
+
+    Returns:
+        The Markdown the game ships for this, or None when it declares
+        none or names a file it does not contain -- a missing screen is a
+        gap the application fills, never a reason a game cannot be opened.
+    """
+    source = as_source(game_dir)
+    declared = read_plugin_denied_screen(source)
+    if not declared or not source.exists(declared):
+        return None
+    try:
+        return source.read_text(declared)
+    except GameSourceError:
+        return None
+
+
+def plugin_denied_text(game_dir: GameSource | Path) -> str:
+    """Return what to show when a game's plugins have not been trusted.
+
+    The game's own screen when it ships one, else a plain listing of what
+    it declares. An application renders the result as Markdown.
+
+    Args:
+        game_dir: The game's source, or its directory.
+
+    Returns:
+        Markdown. Never empty: a game with neither a screen nor declared
+        plugins should not be reaching this, but says so rather than
+        rendering blank.
+    """
+    source = as_source(game_dir)
+    provided = find_plugin_denied_screen(source)
+    if provided:
+        return provided
+
+    required = read_required_plugins(source)
+    if not required:
+        return "This game needs no plugins, so nothing needs your permission."
+
+    names = "\n".join(f"- `{name}`" for name in required)
+    return (
+        f"## This game needs {len(required)} plugin"
+        f"{'s' if len(required) != 1 else ''} to run\n\n"
+        f"{names}\n\n"
+        "These are real Python modules that ship with the game, and running "
+        "the game runs them. They can do anything a program on this computer "
+        "can do.\n\n"
+        "The game does not explain what its own plugins do, so this list is "
+        "all the detail available."
+    )
 
 
 def read_required_plugins(game_dir: GameSource | Path) -> list[str]:

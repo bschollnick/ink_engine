@@ -2,7 +2,7 @@
 
 Three subcommands over `ink_engine.bundler`: `inspect` reports what a
 bundle would contain without writing one, `build` writes it, and `verify`
-reads a built bundle back the way a host will.
+reads a built bundle back the way an application will.
 
 `inspect` exists because a manifest-declared bundle fails quietly in one
 direction: a media directory the manifest forgets is simply absent, and
@@ -149,7 +149,7 @@ def _command_build(arguments: argparse.Namespace) -> int:
 
 
 def _command_verify(arguments: argparse.Namespace) -> int:
-    """Read a built bundle back the way a host will."""
+    """Read a built bundle back the way an application will."""
     bundle_path = Path(arguments.bundle)
     if not bundle_path.is_file():
         print(f"No such bundle: {bundle_path}", file=sys.stderr)
@@ -164,7 +164,7 @@ def _command_verify(arguments: argparse.Namespace) -> int:
     print(f"Size    : {_format_size(bundle_path.stat().st_size)}")
     print(f"Title   : {manifest.get('GAME_TITLE', '(untitled)')}")
     print(f"Story   : {manifest.get('MAIN_STORY_FILE', '(resolved by suffix)')}")
-    print(f"Layout  : {manifest.get('PLAY_LAYOUT', '(host default)')}")
+    print(f"Layout  : {manifest.get('PLAY_LAYOUT', '(application default)')}")
 
     required = manifest.get("REQUIRED_PLUGINS")
     if isinstance(required, list):

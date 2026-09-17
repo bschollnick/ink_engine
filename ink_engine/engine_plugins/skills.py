@@ -131,6 +131,46 @@ class Skills(StatefulPlugin[SkillSlot]):
         self.set_skill_level(slot, character_id, skill_name, new_level)
         return new_level
 
+    @query
+    @external
+    def knows_skill(self, slot: SkillSlot, character_id: str, skill_name: str) -> bool:
+        """Return whether a character has this skill at all.
+
+        The known/not-known case, for a skill that is learned rather than
+        practised: any level above 0 counts as known. A game wanting a
+        higher threshold compares `skill_level()` itself.
+
+        Args:
+            slot: This session's slot.
+            character_id: The character to look up.
+            skill_name: The skill to look up.
+
+        Returns:
+            True once the recorded level is above 0.
+        """
+        return self.skill_level(slot, character_id, skill_name) > 0
+
+    @external
+    def add_skill(self, slot: SkillSlot, character_id: str, skill_name: str, level: float = 1) -> bool:
+        """Grant a skill the character does not already have.
+
+        A character who already knows it is left at their current level,
+        so a re-entered scene cannot quietly reset hard-won progress.
+
+        Args:
+            slot: This session's slot.
+            character_id: The character to update.
+            skill_name: The skill to grant.
+            level: The level to grant it at.
+
+        Returns:
+            True if the skill was newly granted, False if already known.
+        """
+        if self.knows_skill(slot, character_id, skill_name):
+            return False
+        self.set_skill_level(slot, character_id, skill_name, level)
+        return True
+
     def all_levels(self, slot: SkillSlot, character_id: str) -> dict[str, float]:
         """Return every skill level currently recorded for a character.
 

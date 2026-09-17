@@ -15,11 +15,14 @@ and a game may not read outside itself.
 from __future__ import annotations
 
 import hashlib
+import re
 import posixpath
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
 from typing import IO, Any, Protocol, runtime_checkable
+
+import yaml
 
 
 class GameSourceError(Exception):
@@ -66,7 +69,7 @@ class GameSource(Protocol):
     def open_stream(self, relative: str) -> tuple[IO[bytes], int]:
         """Return an open handle on one file, and its total size.
 
-        For serving media a host must not read whole into memory. The
+        For serving media an application must not read whole into memory. The
         handle is the caller's to close.
 
         Raises:
@@ -329,30 +332,84 @@ def as_source(game: GameSource | Path) -> GameSource:
 IDENTITY_LENGTH = 16
 
 
+def _declared_title(source: GameSource) -> str:
+    """Return a bundle's own GAME_TITLE, or "" when it declares none.
+
+    Parses the manifest here rather than calling `game_folder`, which
+    imports this module -- the dependency runs one way only.
+    """
+    if not source.exists("manifest.yaml"):
+        return ""
+    try:
+        manifest = yaml.safe_load(source.read_text("manifest.yaml"))
+    except yaml.YAMLError:
+        return ""
+    if not isinstance(manifest, dict):
+        return ""
+    return str(manifest.get("GAME_TITLE", "") or "")
+
+
 def game_identity(game: GameSource | Path) -> str:
-    """Return a stable id for one game, derived from its content.
+    """Return a stable id for one game, unchanged by rebuilding it.
 
     A filename is not an identity: it is chosen by whoever downloaded the
     game, so two unrelated games both saved as `game.zip` would share
     save files and shadow each other's modules. This keys on what the
     game IS instead.
 
-    A bundle answers the hash of its own manifest and story, so a renamed
-    or moved bundle keeps its saves and a changed one does not. A
-    directory answers its name, since a game being edited changes
-    constantly and an author expects their saves to survive that.
+    A bundle answers a slug of its declared title plus a short hash of
+    that title, so a renamed, moved OR REBUILT bundle keeps its saves. A
+    directory answers its own name, for the same reason.
+
+    Rebuilding a game changes its story but not its identity. Use
+    `game_build()` to tell one build from another -- an application that
+    cares shows a caution, rather than a player losing every save to a
+    corrected typo.
 
     Args:
         game: A source, or a game directory.
 
     Returns:
-        A short hex digest for a bundle, the folder's own name for a
-        directory.
+        A readable, filesystem-safe id.
     """
     source = as_source(game)
     if isinstance(source, DirectoryGameSource):
         return source.root.resolve().name
 
+    title = _declared_title(source)
+    if not title:
+        # No declared title: fall back to content, which at least keys on
+        # something real. Such a game's saves do not survive a rebuild.
+        digest = hashlib.sha256()
+        for relative in sorted(n for n in source.iter_names(recursive=False) if n.endswith(".inkj")):
+            digest.update(source.read_bytes(relative))
+        return digest.hexdigest()[:IDENTITY_LENGTH]
+
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", title).strip("-.").lower() or "game"
+    # The suffix separates two games whose titles slug the same way, and
+    # keeps a title with no ASCII at all from collapsing to nothing.
+    suffix = hashlib.sha256(title.encode("utf-8")).hexdigest()[:8]
+    return f"{slug[:40]}-{suffix}"
+
+
+def game_build(game: GameSource | Path) -> str:
+    """Return which build of a game this is.
+
+    Changes whenever the story or manifest changes, where
+    `game_identity()` does not. An application compares the build
+    recorded in a save against the game in front of it, and cautions the
+    player when they differ.
+
+    Args:
+        game: A source, or a game directory.
+
+    Returns:
+        A short hex digest, or "" for a directory, which changes too
+        often for the comparison to mean anything.
+    """
+    source = as_source(game)
+    if isinstance(source, DirectoryGameSource):
+        return ""
     digest = hashlib.sha256()
     for relative in ("manifest.yaml", *sorted(n for n in source.iter_names(recursive=False) if n.endswith(".inkj"))):
         if source.exists(relative):
@@ -364,7 +421,7 @@ def game_identity(game: GameSource | Path) -> str:
 def open_game_source(game: Path) -> GameSource:
     """Return a source for a game folder or a `.zip` bundle.
 
-    The one place a host decides which kind of game it was handed.
+    The one place an application decides which kind of game it was handed.
 
     Args:
         game: A game folder, or a bundle.

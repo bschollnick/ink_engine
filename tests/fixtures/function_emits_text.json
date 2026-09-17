@@ -1,0 +1,1 @@
+{"inkVersion":21,"root":[["^Before ","ev",{"f()":"emit"},"out","/ev","^ after.","\n","^Line two ","ev",{"f()":"emit_multi"},"out","/ev","^ end.","\n","end",["done",{"#n":"g-0"}],null],"done",{"emit":["^MIDDLE","\n",null],"emit_multi":["^A","\n","^B","\n",null]}],"listDefs":{}}

@@ -3,14 +3,14 @@
 A standalone, Django-free Ink interactive-fiction interpreter and plugin engine.
 
 `ink-engine` runs compiled Ink stories (`.ink.json`/`.inkj`) and provides a minimal
-plugin contract for host applications (games) to extend the interpreter with their
+plugin contract for applications (games) to extend the interpreter with their
 own stateful mechanics — inventory, scheduling, character occupancy, and so on —
 without the engine itself knowing anything about Django, trust/security gating,
-or any particular host application's UI conventions.
+or any particular application's UI conventions.
 
 **This is a library for developers, not an app for players.** There is no
 UI here, no way to double-click your way into playing a story — `ink-engine`
-is the interpreter a host application embeds to *add* Ink support to itself.
+is the interpreter a application embeds to *add* Ink support to itself.
 If you're looking to actually play an Ink story, or ship one:
 
 - **[if_player](https://github.com/bschollnick/if-player)** — a standalone, native desktop player built
@@ -20,7 +20,7 @@ If you're looking to actually play an Ink story, or ship one:
   gallery/file-browser app that also plays Ink stories online, through an
   ordinary browser, for multiple users.
 
-Both are real host applications built on top of `ink-engine`'s public API;
+Both are real applications built on top of `ink-engine`'s public API;
 this repository is where you'd start if you're building a *third* one, or
 contributing to the interpreter itself.
 
@@ -30,7 +30,7 @@ contributing to the interpreter itself.
   Python stdlib.
 - **No trust concept.** `ink-engine` scans and loads exactly the sources it is
   given (`discover_plugins(sources)`) — deciding *which* sources are safe to
-  load is entirely the host application's responsibility, upstream of ever
+  load is entirely the application's responsibility, upstream of ever
   calling into this library.
 - **One dataclass, two functions.** `Plugin` describes a discoverable unit of
   Ink `EXTERNAL` bindings, optionally with a private per-session state slice.
@@ -85,11 +85,15 @@ callable, ...}` to the constructor (or `from_dict`) to make Python callables
 reachable from `EXTERNAL function_name(...)` calls in the Ink source. See
 `ink_engine/plugin.py` and `ink_engine/discovery.py` for the higher-level
 `Plugin`/`discover_plugins()` machinery that assembles this dict from a
-host application's own stateful plugins (inventory, quests, skills, etc. —
+application's own stateful plugins (inventory, quests, skills, etc. —
 see `ink_engine/engine_plugins/`), rather than building `engine_bindings` by
 hand.
 
 ## Limitations
+
+Coming from inkle's Ink? `docs/ink_engine_vs_standard_ink.md` is the
+high-level tour of what this engine adds and where it diverges. The list
+below is the canonical short form.
 
 - **Compiled Ink only — this library has no Ink compiler.** `ink-engine`
   reads the same JSON `inklecate`/Inky produce; it never parses `.ink`
@@ -105,16 +109,8 @@ hand.
   `load_list_defs()`) only needs parsed JSON and does not care what the
   file was named — inklecate's own default output extension is
   `.ink.json`, and that works identically if you load it yourself.
-- **Only the plain `[choice-only]` bracket form of a choice is
-  implemented** (`ChoicePoint`'s `has_start_content` flag). A
-  start-content-plus-choice-only combination compiles to weave/tunnel
-  machinery this interpreter does not implement.
-- **Function-call-frame whitespace trimming is not implemented.**
-  `OutputStream` implements the glue- and story-level newline-deduplication
-  rules from the real Ink engine's own algorithm, but not the additional
-  per-function-call trim the C# reference runtime applies.
 - **No async/threading model of its own.** `InkRuntimeState` is a plain
-  Python object with ordinary mutable attributes — a host application is
+  Python object with ordinary mutable attributes — a application is
   responsible for whatever concurrency safety its own environment needs
   around a shared instance.
 

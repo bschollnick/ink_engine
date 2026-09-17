@@ -20,7 +20,7 @@ record rather than in an entry — carries the manifest's own hash.
 **What this proves, and what it does not.** It detects any modification
 after a bundle was built. It does NOT prove a bundle is safe: an attacker
 who rewrites an archive recomputes all three and produces something
-self-consistent. Trust needs an out-of-band record (a host's trust store,
+self-consistent. Trust needs an out-of-band record (a application's trust store,
 a published readme) saying which hash was approved.
 """
 
@@ -42,9 +42,30 @@ STORY_SHA256_FIELD = "STORY_SHA256"
 #: Manifest field holding the archive directory's SHA-256.
 BUNDLE_DIRECTORY_SHA256_FIELD = "BUNDLE_DIRECTORY_SHA256"
 
-#: Prefix of the archive comment carrying the manifest's own SHA-256.
-#: A comment is free text, so the prefix is what makes it parseable.
+#: Prefixes of the archive-comment lines carrying each SHA-256. A comment
+#: is free text, so the prefix is what makes each line parseable.
+#:
+#: All three are written, which makes a bundle self-describing: what it
+#: claims to be is readable from the End of Central Directory record
+#: alone, with no YAML parse and no entry reads (`unzip -z` shows it).
+#: That is a CONVENIENCE for tooling, not a verification source -- the
+#: comment is inside the artifact, so anything that can rewrite the
+#: bundle can rewrite the comment in the same pass. `verify_bundle()`
+#: reads the manifest, which stays the single authority.
 MANIFEST_COMMENT_PREFIX = "manifest_sha256="
+STORY_COMMENT_PREFIX = "story_sha256="
+DIRECTORY_COMMENT_PREFIX = "directory_sha256="
+BUNDLE_VERSION_COMMENT_PREFIX = "bundle_version="
+
+#: The archive layout this bundler writes: how entries are arranged, what
+#: the comment carries, and what each hash is computed over. Distinct from
+#: `MANIFEST_VERSION` (the manifest's own schema) and `GAME_VERSION` (the
+#: game's content release) -- those version the contents, this versions
+#: the container.
+#:
+#: 0.5: all three hashes in the comment, directory hash excluding the
+#: manifest entry. Pre-1.0 while the format settles.
+BUNDLE_VERSION = "0.5"
 
 
 class IntegrityError(Exception):
@@ -93,6 +114,57 @@ def manifest_entry_name(archive: zipfile.ZipFile) -> str | None:
     return None
 
 
+def build_archive_comment(*, manifest_sha256: str, story_sha256: str, directory_sha256: str) -> bytes:
+    """Return the archive comment: the bundle's version and three hashes.
+
+    Args:
+        manifest_sha256: The manifest entry's own hash.
+        story_sha256: The compiled story's hash.
+        directory_sha256: The central-directory hash.
+
+    Returns:
+        The encoded comment, one `name=value` line each.
+    """
+    return "\n".join(
+        (
+            f"{BUNDLE_VERSION_COMMENT_PREFIX}{BUNDLE_VERSION}",
+            f"{MANIFEST_COMMENT_PREFIX}{manifest_sha256}",
+            f"{STORY_COMMENT_PREFIX}{story_sha256}",
+            f"{DIRECTORY_COMMENT_PREFIX}{directory_sha256}",
+        )
+    ).encode("utf-8")
+
+
+def read_bundle_version(archive: zipfile.ZipFile) -> str | None:
+    """Return the archive layout version the bundle declares, or None.
+
+    None means a bundle built before the version was recorded. A consumer
+    treats that, and any version it does not recognise, as a reason to
+    **warn** rather than refuse: the layout is backward-compatible so far,
+    and refusing to open a game over an unfamiliar container version would
+    be a worse answer than reading it and saying so.
+
+    Args:
+        archive: The open archive.
+
+    Returns:
+        The declared version, or None when the comment carries none.
+    """
+    return _read_comment_field(archive, BUNDLE_VERSION_COMMENT_PREFIX)
+
+
+def _read_comment_field(archive: zipfile.ZipFile, prefix: str) -> str | None:
+    """Return one `prefix=value` line's value from the archive comment."""
+    try:
+        comment = archive.comment.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    for line in comment.splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix) :].strip()
+    return None
+
+
 def read_comment_hash(archive: zipfile.ZipFile) -> str | None:
     """Return the manifest hash recorded in the archive comment, or None.
 
@@ -103,21 +175,14 @@ def read_comment_hash(archive: zipfile.ZipFile) -> str | None:
         The hex digest, or None when the comment is absent, undecodable,
         or does not carry one.
     """
-    try:
-        comment = archive.comment.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
-    for line in comment.splitlines():
-        if line.startswith(MANIFEST_COMMENT_PREFIX):
-            return line[len(MANIFEST_COMMENT_PREFIX) :].strip()
-    return None
+    return _read_comment_field(archive, MANIFEST_COMMENT_PREFIX)
 
 
 def recorded_hashes(bundle_path: Path) -> dict[str, str]:
     """Return the three integrity hashes a bundle records about itself.
 
     These are what the bundle claims, not what it is: `verify_bundle()`
-    answers whether the claims hold. A host stores them to detect a
+    answers whether the claims hold. An application stores them to detect a
     bundle changing underneath it later.
 
     Args:
@@ -144,6 +209,32 @@ def recorded_hashes(bundle_path: Path) -> dict[str, str]:
             }
     except (OSError, zipfile.BadZipFile, UnicodeDecodeError, yaml.YAMLError) as error:
         raise GameSourceError(f"cannot read bundle '{bundle_path.name}': {error}") from error
+
+
+def unrecognized_bundle_version(bundle_path: Path) -> str | None:
+    """Return the bundle's layout version when this reader does not know it.
+
+    For a consumer to warn on. A bundle declaring a version this reader
+    has never heard of still opens -- the layout has stayed
+    backward-compatible -- but the consumer should say so, because
+    anything it cannot see is by definition unaccounted for.
+
+    Args:
+        bundle_path: The `.zip` bundle.
+
+    Returns:
+        The unrecognised version string, or None when the bundle declares
+        the version this reader writes (or declares none at all, which is
+        a bundle built before versioning).
+    """
+    try:
+        with zipfile.ZipFile(bundle_path) as archive:
+            declared = read_bundle_version(archive)
+    except (OSError, zipfile.BadZipFile):
+        return None
+    if declared is None or declared == BUNDLE_VERSION:
+        return None
+    return declared
 
 
 def verify_bundle(bundle_path: Path) -> list[str]:

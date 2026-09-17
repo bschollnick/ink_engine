@@ -158,3 +158,33 @@ class MultipleThreadsTests(SimpleTestCase):
         state.choose(1)
         text = state.continue_story()
         self.assertEqual(text, "Sunset awaits.\n")
+
+
+class FunctionEmittedTextTests(SimpleTestCase):
+    """A function that prints, called from inside a line's `{...}`.
+
+    The body's text is output, not an operand, even though it arrives at
+    eval-run depth like one — the open call frame is what separates them.
+    Its trailing newline is dropped as the frame pops (C#'s
+    functionTrimIndex) so the caller's line survives the call, while a
+    newline *inside* the body is kept. Both halves were wrong: the text
+    was dropped entirely, printing "Before after.". Transcript captured
+    from the local inklecate build's -p output.
+    """
+
+    def setUp(self):
+        state = InkRuntimeState(load_story_root(_load("function_emits_text.json")))
+        self.text = state.continue_story()
+
+    def test_the_body_text_reaches_the_output(self):
+        self.assertIn("MIDDLE", self.text)
+
+    def test_the_call_does_not_break_the_caller_s_line(self):
+        self.assertIn("Before MIDDLE after.", self.text)
+
+    def test_a_newline_inside_the_body_is_kept(self):
+        """Only the trailing one is trimmed."""
+        self.assertIn("Line two A\nB end.", self.text)
+
+    def test_the_whole_transcript_matches(self):
+        self.assertEqual(self.text, "Before MIDDLE after.\nLine two A\nB end.\n")

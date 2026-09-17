@@ -259,9 +259,9 @@ class LocationGraph(StatefulPlugin[LocationSlot]):
         self.default_config = config
 
     def validate_config(self, config: Any) -> None:
-        """Validate a map, declared or host-attached.
+        """Validate a map, declared or application-attached.
 
-        An empty config means "none attached" -- a host's opt-in row with
+        An empty config means "none attached" -- a application's opt-in row with
         nothing in it -- and is always valid; the session then seeds from
         the map this instance was built with.
 

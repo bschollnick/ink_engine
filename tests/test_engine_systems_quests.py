@@ -326,6 +326,7 @@ class BindingTests(SimpleTestCase):
             [
                 "advance_quest",
                 "fail_quest",
+                "finish_quest",
                 "is_goal_met",
                 "is_quest_failed",
                 "is_quest_started",
@@ -367,3 +368,58 @@ class BindingTests(SimpleTestCase):
 
     def test_the_plugin_declares_its_own_state_slot(self):
         self.assertEqual(PLUGIN.state_key, "quests")
+
+
+class FinishQuestTests(SimpleTestCase):
+    """`finish_quest` ends a quest without the caller knowing its catalog."""
+
+    def test_it_meets_every_goal_and_reaches_the_final_stage(self):
+        slot = _slot()
+        QUESTS.finish_quest(slot, "subquest_x")
+        self.assertEqual(QUESTS.met_goals(slot, "subquest_x"), ["goal_3"])
+        self.assertEqual(QUESTS.quest_stage(slot, "subquest_x"), 10)
+
+    def test_the_quest_then_reports_complete(self):
+        slot = _slot()
+        self.assertTrue(QUESTS.finish_quest(slot, "subquest_x"))
+        self.assertTrue(QUESTS.is_complete(slot, "subquest_x"))
+
+    def test_a_stage_only_quest_needs_no_goals(self):
+        slot = _slot()
+        self.assertTrue(QUESTS.finish_quest(slot, "quest_b"))
+        self.assertEqual(QUESTS.quest_stage(slot, "quest_b"), 5)
+
+    def test_it_is_idempotent(self):
+        slot = _slot()
+        QUESTS.finish_quest(slot, "subquest_x")
+        self.assertTrue(QUESTS.finish_quest(slot, "subquest_x"))
+        self.assertEqual(QUESTS.met_goals(slot, "subquest_x"), ["goal_3"])
+
+    def test_it_does_not_finish_required_subquests(self):
+        """A questline ends when its parts do; finishing the parent alone
+        satisfies the parent's own goals and stage but not its children."""
+        slot = _slot()
+        self.assertFalse(QUESTS.finish_quest(slot, "quest_a"))
+        self.assertEqual(QUESTS.quest_stage(slot, "quest_a"), 100)
+        self.assertFalse(QUESTS.is_complete(slot, "quest_a"))
+
+    def test_a_parent_completes_once_its_children_are_finished(self):
+        slot = _slot()
+        QUESTS.finish_quest(slot, "quest_a")
+        QUESTS.finish_quest(slot, "subquest_x")
+        QUESTS.finish_quest(slot, "subquest_y")
+        self.assertTrue(QUESTS.is_complete(slot, "quest_a"))
+
+    def test_a_quest_with_no_stated_ending_is_left_alone(self):
+        """Matching is_complete()'s own refusal to call it finished."""
+        catalog = {"vague": QuestSpec(quest_id="vague")}
+        plugin = Quests(name="vague_catalog", catalog=catalog)
+        slot = plugin.init_state(None)
+        self.assertFalse(plugin.finish_quest(slot, "vague"))
+        self.assertFalse(plugin.is_complete(slot, "vague"))
+
+    def test_an_unknown_quest_answers_false(self):
+        self.assertFalse(QUESTS.finish_quest(_slot(), "no_such_quest"))
+
+    def test_it_is_published_to_ink(self):
+        self.assertIn("finish_quest", PLUGIN.bind(PLUGIN.init_state(), {}, {}))

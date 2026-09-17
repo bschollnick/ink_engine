@@ -13,7 +13,7 @@ plain shape, type or value comparison.
 **The validators themselves live with the plugins they describe.** Only
 what more than one of them needs is here: the error type and the scalar
 checks. A plugin points its own `Plugin.validate_config` at its own
-validator, and a host that stores config calls it.
+validator, and an application that stores config calls it.
 """
 
 from __future__ import annotations

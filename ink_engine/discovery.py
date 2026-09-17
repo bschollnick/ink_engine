@@ -1,4 +1,4 @@
-"""Plugin discovery: scan a flat, host-supplied list of sources and merge
+"""Plugin discovery: scan a flat, application-supplied list of sources and merge
 the `Plugin` objects each one exposes.
 
 **Every source given is scanned unconditionally.** Deciding WHICH
@@ -18,7 +18,7 @@ from types import ModuleType
 from ink_engine.plugin import Plugin
 
 #: The engine's own shipped plugin package — the generic, story-agnostic
-#: mechanics available to every game, whichever one is loaded. Hosts pass
+#: mechanics available to every game, whichever one is loaded. Applications pass
 #: this as a source rather than each computing the same directory path.
 ENGINE_PLUGIN_PACKAGE = "ink_engine.engine_plugins"
 
@@ -32,7 +32,7 @@ def make_game_folder_importable(game_dir: Path) -> str:
     parent cost one entry.
 
     This is packaging, not permission: whether `game_dir` is safe to
-    import is the host's decision, made before calling.
+    import is the application's decision, made before calling.
 
     Prefer `mount_game()`, which releases what it adds. This function
     leaves its entry on `sys.path` for the life of the process, so a
