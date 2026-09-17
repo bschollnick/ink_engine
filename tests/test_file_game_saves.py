@@ -123,7 +123,7 @@ class TestGameIdValidation:
 
     @pytest.mark.parametrize(
         "good_id",
-        ["thehauntedhouse", "the-haunted-house", "the_haunted_house", "game.v2", "ASFA", "a1b2c3", "0"],
+        ["thehauntedhouse", "the-haunted-house", "the_haunted_house", "game.v2", "UPPERCASE", "a1b2c3", "0"],
         ids=["plain", "hyphen", "underscore", "dot", "uppercase", "alphanumeric", "digit"],
     )
     def test_an_ordinary_folder_name_is_accepted(self, game_saves_directory: GameSavesDirectory, good_id: str) -> None:
