@@ -1,0 +1,55 @@
+name: tests
+
+# Runs automatically on a push to main and on a pull request aimed at it.
+# `workflow_dispatch` also puts a "Run workflow" button in the Actions tab,
+# for re-running by hand without pushing a commit.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # Run the whole job once per Python version, in parallel.
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Install dependencies
+        run: poetry install
+
+      - name: Run the test suite
+        run: poetry run python -m pytest tests/ -q
+
+      - name: Check types
+        run: poetry run mypy ink_engine/ if_session/
+
+      # Errors only (see [tool.ruff.lint] in pyproject.toml): undefined
+      # names, unused imports, broken syntax. Formatting belongs to black
+      # and isort, so no style family is selected here.
+      - name: Lint
+        run: poetry run ruff check ink_engine/ if_session/
+
+      # --check reports and fails; it never rewrites a file in CI.
+      - name: Check formatting
+        run: poetry run black --check ink_engine/ if_session/ tests/ benchmarks/
+
+      - name: Check import order
+        run: poetry run isort --check-only ink_engine/ if_session/ tests/ benchmarks/

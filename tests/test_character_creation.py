@@ -10,7 +10,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
 from if_session.character_creation import answers_to_globals
 
 
@@ -79,9 +78,7 @@ class TestCheckboxField:
         An application collecting answers itself must send `"on"` or omit
         the key: `"true"` resolves False.
         """
-        assert answers_to_globals([checkbox_field(default=True)], {"hard_mode": "true"}, story_defaults={}) == {
-            "hard_mode": False
-        }
+        assert answers_to_globals([checkbox_field(default=True)], {"hard_mode": "true"}, story_defaults={}) == {"hard_mode": False}
 
 
 class TestLinkedVars:
@@ -110,9 +107,7 @@ class TestRadioImageField:
         assert result == {"starting_role": "sailor"}
 
     def test_one_option_can_set_several_variables(self) -> None:
-        field = radio_field(
-            options=[{"value": {"role": "keeper", "home": "lighthouse"}, "label": "Keeper", "image": "a.png"}]
-        )
+        field = radio_field(options=[{"value": {"role": "keeper", "home": "lighthouse"}, "label": "Keeper", "image": "a.png"}])
         assert answers_to_globals([field], {"starting_role": "0"}, story_defaults={}) == {
             "role": "keeper",
             "home": "lighthouse",

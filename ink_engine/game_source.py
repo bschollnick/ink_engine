@@ -15,8 +15,8 @@ and a game may not read outside itself.
 from __future__ import annotations
 
 import hashlib
-import re
 import posixpath
+import re
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path

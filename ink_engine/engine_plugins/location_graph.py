@@ -19,7 +19,8 @@ instance.
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from collections.abc import Callable
+from typing import Any, ClassVar, TypedDict
 
 from ink_engine.engine_config_schemas import (
     SystemConfigValidationError,
@@ -239,7 +240,7 @@ class LocationGraph(StatefulPlugin[LocationSlot]):
     display_name = "Location graph"
     state_key = STATE_KEY
     slot_type = LocationSlot
-    fields = {"known": list, "declared": list, "details": dict, "visits": dict, "place_records": dict}
+    fields: ClassVar[dict[str, Callable[[], Any]]] = {"known": list, "declared": list, "details": dict, "visits": dict, "place_records": dict}
 
     def __init__(self, *, name: str | None = None, display_name: str | None = None, state_key: str | None = None, config: Any = None) -> None:
         """Build a map plugin, optionally over a game's declared map.

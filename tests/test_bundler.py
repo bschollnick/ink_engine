@@ -134,9 +134,7 @@ class ManifestDrivenSelectionTests(SimpleTestCase):
             included = {str(p) for p in select_bundle_contents(game).included}
 
             self.assertIn("Images/cover.png", included)
-            self.assertEqual(
-                included & {"Images/._cover.png", "__MACOSX/Images/._cover.png"}, set()
-            )
+            self.assertEqual(included & {"Images/._cover.png", "__MACOSX/Images/._cover.png"}, set())
 
     def test_a_sidecar_beside_a_module_is_not_bundled_as_one(self):
         """`*.py` also matches `._sidebar.py`, which would otherwise ship

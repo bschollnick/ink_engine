@@ -31,9 +31,10 @@ it fires, not when the save loads.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, TypedDict
+from typing import Any, ClassVar, TypedDict
 
 from ink_engine.plugin import EngineState
 from ink_engine.plugin_base import StatefulPlugin, external, query
@@ -348,8 +349,8 @@ class Scheduling(StatefulPlugin[SchedulingSlot]):
     display_name = "Scheduling"
     state_key = STATE_KEY
     slot_type = SchedulingSlot
-    fields = {"clock": int, "pending": list}
-    stateless_bindings = {
+    fields: ClassVar[dict[str, Callable[[], Any]]] = {"clock": int, "pending": list}
+    stateless_bindings: ClassVar[dict[str, Callable[..., Any]]] = {
         "is_day": is_day,
         "is_morning": is_morning,
         "is_afternoon": is_afternoon,

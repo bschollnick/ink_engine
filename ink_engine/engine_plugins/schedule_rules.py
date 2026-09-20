@@ -105,10 +105,10 @@ class Condition:
 
     kind: ConditionKind
     payload: dict[str, Any] = field(default_factory=dict)
-    clauses: tuple["Condition", ...] = ()
+    clauses: tuple[Condition, ...] = ()
 
     @classmethod
-    def flag_is_set(cls, flag: str) -> "Condition":
+    def flag_is_set(cls, flag: str) -> Condition:
         """Build a FLAG condition.
 
         Args:
@@ -120,7 +120,7 @@ class Condition:
         return cls(kind=ConditionKind.FLAG, payload={"flag": flag})
 
     @classmethod
-    def minute_in_range(cls, minute_low: int, minute_high: int) -> "Condition":
+    def minute_in_range(cls, minute_low: int, minute_high: int) -> Condition:
         """Build a MINUTE_IN_RANGE condition.
 
         Args:
@@ -138,7 +138,7 @@ class Condition:
         return cls(kind=ConditionKind.MINUTE_IN_RANGE, payload={"minute_low": minute_low, "minute_high": minute_high})
 
     @classmethod
-    def query(cls, state_key: str, query: str, *args: Any, operator: str = "==", value: Any = True, missing: Any = False) -> "Condition":
+    def query(cls, state_key: str, query: str, *args: Any, operator: str = "==", value: Any = True, missing: Any = False) -> Condition:
         """Build a QUERY condition — ask a plugin a question it publishes.
 
         Preferred over `engine_state()`: naming a question rather than a
@@ -169,7 +169,7 @@ class Condition:
         )
 
     @classmethod
-    def story_rule(cls, rule_name: str) -> "Condition":
+    def story_rule(cls, rule_name: str) -> Condition:
         """Build a STORY_RULE condition.
 
         `rule_name` resolves to whatever the CALLING STORY defines; the
@@ -188,7 +188,7 @@ class Condition:
         return cls(kind=ConditionKind.STORY_RULE, payload={"rule_name": rule_name})
 
     @classmethod
-    def story_value(cls, value_name: str, operator: str, value: int | str) -> "Condition":
+    def story_value(cls, value_name: str, operator: str, value: int | str) -> Condition:
         """Build a STORY_VALUE condition.
 
         Args:
@@ -213,7 +213,7 @@ class Condition:
         return cls(kind=ConditionKind.STORY_VALUE, payload={"value_name": value_name, "operator": operator, "value": value})
 
     @classmethod
-    def engine_state(cls, state_key: str, path: tuple[str, ...], operator: str = "==", value: Any = True, missing: Any = False) -> "Condition":
+    def engine_state(cls, state_key: str, path: tuple[str, ...], operator: str = "==", value: Any = True, missing: Any = False) -> Condition:
         """Build an ENGINE_STATE condition — a read of another plugin's state.
 
         Every other kind answers from something the caller hands in; this
@@ -255,7 +255,7 @@ class Condition:
         )
 
     @classmethod
-    def all_of(cls, *clauses: "Condition") -> "Condition":
+    def all_of(cls, *clauses: Condition) -> Condition:
         """Build an AND condition.
 
         Args:
@@ -267,7 +267,7 @@ class Condition:
         return cls(kind=ConditionKind.AND, clauses=clauses)
 
     @classmethod
-    def any_of(cls, *clauses: "Condition") -> "Condition":
+    def any_of(cls, *clauses: Condition) -> Condition:
         """Build an OR condition.
 
         Args:
@@ -279,7 +279,7 @@ class Condition:
         return cls(kind=ConditionKind.OR, clauses=clauses)
 
     @classmethod
-    def negate(cls, clause: "Condition") -> "Condition":
+    def negate(cls, clause: Condition) -> Condition:
         """Build a NOT condition.
 
         Args:
@@ -357,7 +357,7 @@ def engine_query_registry() -> QueryRegistry:
     }
 
 
-def _run_query(context: "EvalContext", state_key: str, query: str, args: tuple[Any, ...]) -> Any:
+def _run_query(context: EvalContext, state_key: str, query: str, args: tuple[Any, ...]) -> Any:
     """Ask one plugin a question it publishes.
 
     Raises:

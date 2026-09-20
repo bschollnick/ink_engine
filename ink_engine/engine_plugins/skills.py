@@ -17,8 +17,9 @@ pure function of (skill state, RNG state).
 from __future__ import annotations
 
 import random
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import Any, ClassVar, TypedDict
 
 from ink_engine.plugin_base import StatefulPlugin, external, query
 
@@ -77,7 +78,7 @@ class Skills(StatefulPlugin[SkillSlot]):
     display_name = "Skills"
     state_key = STATE_KEY
     slot_type = SkillSlot
-    fields = {"skill_levels": dict, "rng_seed": int, "last_roll": int, "last_effective_target": int}
+    fields: ClassVar[dict[str, Callable[[], Any]]] = {"skill_levels": dict, "rng_seed": int, "last_roll": int, "last_effective_target": int}
 
     @query
     @external

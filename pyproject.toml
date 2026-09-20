@@ -51,7 +51,8 @@ dev = [
     "black (>=26,<27)",
     "isort (>=6.0.0)",
     "pylint (>=4.0.5,<5.0.0)",
-    "types-pyyaml (>=6.0.12.20260906,<7.0.0.0)"
+    "types-pyyaml (>=6.0.12.20260906,<7.0.0.0)",
+    "ruff (>=0.16.8,<0.17.0)"
 ]
 
 [tool.black]
@@ -63,7 +64,8 @@ src_paths = ["ink_engine", "tests"]
 skip_gitignore = true
 
 [tool.mypy]
-python_version = "3.14"
+# No python_version pin: mypy then analyses for whichever interpreter it
+# runs under, so the CI matrix checks each supported version for real.
 explicit_package_bases = true
 pretty = true
 color_output = true
@@ -73,6 +75,16 @@ mypy_path = "."
 [tool.pylint]
 max-line-length = 150
 
+
+
+[tool.ruff]
+line-length = 150
+
+[tool.ruff.lint]
+# E (pycodestyle) and F (pyflakes) only: real errors -- undefined names,
+# unused imports, broken syntax. The style families ruff also offers
+# disagree with black and isort, which own formatting here.
+select = ["E", "F"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

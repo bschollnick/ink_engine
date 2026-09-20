@@ -50,7 +50,7 @@ def make_game_folder_importable(game_dir: Path) -> str:
     return game_dir.name
 
 
-def mount_game(game: Path) -> "MountedGame":
+def mount_game(game: Path) -> MountedGame:
     """Make a game importable, releasably.
 
     Takes either a game folder or a `.zip` bundle: a bundle goes on
@@ -143,7 +143,7 @@ class MountedGame:
             self._added_entry = False
         importlib.invalidate_caches()
 
-    def __enter__(self) -> "MountedGame":
+    def __enter__(self) -> MountedGame:
         return self
 
     def __exit__(self, *_exception: object) -> None:

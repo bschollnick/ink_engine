@@ -29,7 +29,8 @@ is written, so a refused operation leaves the slot exactly as it was.
 
 from __future__ import annotations
 
-from typing import TypedDict
+from collections.abc import Callable
+from typing import Any, ClassVar, TypedDict
 
 from ink_engine.engine_plugins.containers import (
     ContainerRecord,
@@ -166,7 +167,7 @@ class Inventory(StatefulPlugin[InventorySlot]):
     display_name = "Inventory"
     state_key = "inventory"
     slot_type = InventorySlot
-    fields = {
+    fields: ClassVar[dict[str, Callable[[], Any]]] = {
         "item_locations": dict,
         "holder_items": dict,
         "capacities": dict,

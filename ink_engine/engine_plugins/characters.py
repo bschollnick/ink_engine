@@ -19,7 +19,8 @@ cannot collide.
 
 from __future__ import annotations
 
-from typing import TypedDict
+from collections.abc import Callable
+from typing import Any, ClassVar, TypedDict
 
 from ink_engine.engine_plugins.character_occupancy import (
     STATE_KEY as _OCCUPANCY_STATE_KEY,
@@ -61,7 +62,7 @@ class Characters(StatefulPlugin[CharacterSlot]):
     display_name = "Characters"
     state_key = STATE_KEY
     slot_type = CharacterSlot
-    fields = {"records": dict, "known": list}
+    fields: ClassVar[dict[str, Callable[[], Any]]] = {"records": dict, "known": list}
 
     @query
     @external

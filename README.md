@@ -2,7 +2,7 @@
 
 **Date Created:** 2026-09-15  
 **Last Updated:** 2026-09-20  
-**Last Reviewed:** 2026-09-19
+**Last Reviewed:** 2026-09-20
 
 A standalone Ink interactive-fiction interpreter and plugin engine, with no
 web framework or database of its own.
@@ -29,6 +29,27 @@ If you're looking to actually play an Ink story, or ship one:
 Both are real applications built on top of `ink-engine`'s public API;
 this repository is where you'd start if you're building a *third* one, or
 contributing to the interpreter itself.
+
+## Installation
+
+```bash
+pip install ink-engine
+```
+
+Python 3.12 to 3.14. This installs the `ink_engine` and `if_session`
+packages and the `ink-bundle` command.
+
+## What you get
+
+| | |
+|---|---|
+| **Ink support** | Compiled Ink (`"inkVersion": 21`) — knots, stitches, weave, tunnels, threads, `LIST`s, functions, sequences, glue and tags |
+| **Plugins** | 8 shipped, publishing 61 Ink-callable bindings: inventory, quests, skills, characters, character occupancy, a location graph, costs, and a clock with scheduled effects |
+| **Plugin helpers** | 3 more modules a plugin calls rather than a story: `containers.py` (allows items in the world to hold inventory items, e.g. a chest, a glass box, a locker, a shed), `item_text.py` (which description an item shows), `schedule_rules.py` ("if this holds, they are here" rules, checked in order). They publish no bindings of their own |
+| **Saves** | Whole-playthrough save and restore, including mid-tunnel and mid-function positions, the RNG seed, and every plugin's state |
+| **Distribution** | `ink-bundle` packs a game folder into one `.zip` the engine plays without unpacking, with three integrity hashes |
+| **Dependencies** | One: `pyyaml`. The interpreter itself is stdlib-only |
+| **Tests** | 1065, at 93% coverage, with expected output captured from real `inklecate` runs |
 
 ## Design
 
@@ -98,6 +119,27 @@ reachable from `EXTERNAL function_name(...)` calls in the Ink source. See
 application's own stateful plugins (inventory, quests, skills, etc. —
 see `ink_engine/engine_plugins/`), rather than building `engine_bindings` by
 hand.
+
+## Documentation
+
+Start with whichever matches what you are doing.
+
+| Guide | For |
+|---|---|
+| [Plugin and binding guide](docs/ink_engine_bindings_guide.md) | Calling Python from a story, and writing plugins. The main guide for embedding the engine. |
+| [Writing a game manifest](docs/game_manifest_guide.md) | Every `manifest.yaml` field, and what each one does. |
+| [Building a game bundle](docs/building_a_game_bundle.md) | Packing a finished game into a distributable `.zip`. |
+| [ink_engine vs. standard Ink](docs/ink_engine_vs_standard_ink.md) | What this engine adds and where it diverges, for anyone coming from inkle's Ink. |
+| [Ink: when it compiles but is wrong](docs/ink_when_it_compiles_but_is_wrong.md) | Ink that compiles cleanly and does not do what you meant. |
+| [Miscellaneous notes](docs/misc_notes.md) | Runtime facts about the interpreter, for working on it rather than with it. |
+
+Also: [`examples/`](examples/README.md) for a runnable story,
+[`if_session/`](if_session/README.md) for the session library, and
+[`tests/`](tests/README.md) for how the suite is built.
+
+inkle's own Ink documentation is vendored under
+[`docs/inkles-ink-standard/`](docs/inkles-ink-standard/README.md) as a
+pinned snapshot, and is not edited here.
 
 ## Limitations
 
@@ -231,6 +273,49 @@ print(state.done)
 
 ---
 
+## Development
+
+```bash
+git clone https://github.com/bschollnick/ink_engine.git
+cd ink_engine
+poetry install
+```
+
+Run the suite:
+
+```bash
+poetry run python -m pytest tests/ -q
+```
+
+```
+1064 passed, 1 skipped, 270 subtests passed
+```
+
+One test is skipped by default: it asks whether inkle has revised the
+documentation this engine was written against, which needs the network.
+Two are opt-in:
+
+```bash
+# Has inkle's documentation moved since the pinned snapshot?
+INK_ENGINE_CHECK_UPSTREAM=1 poetry run python -m pytest \
+    tests/test_vendored_standard_is_current.py -q
+
+# Sweep container paths over a large story of your own
+INK_ENGINE_SWEEP_STORY=/path/to/story.inkj poetry run python -m pytest \
+    tests/test_engine_path_sweep.py -q
+```
+
+Coverage, type checking and linting:
+
+```bash
+poetry run python -m pytest tests/ --cov=ink_engine --cov=if_session
+poetry run mypy ink_engine/
+poetry run python -m pylint ink_engine/
+```
+
+[`tests/README.md`](tests/README.md) describes how the suite is built and
+what each file protects.
+
 ## A note on this project
 
 I am not an Ink author. Any mistakes in the code or the documentation are
@@ -240,3 +325,11 @@ errors.
 This library has no connection to inkle. It is entirely reverse engineered
 from the inkle standard documentation and from comparing the results of
 compiled Ink run through both engines.
+
+## Licence
+
+BSD 3-Clause. See [LICENSE](LICENSE).
+
+inkle's own Ink documentation is vendored under
+`docs/inkles-ink-standard/` as a pinned snapshot, under inkle's own MIT
+licence, which travels with it.

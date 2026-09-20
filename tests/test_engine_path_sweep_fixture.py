@@ -22,7 +22,13 @@ import json
 from pathlib import Path as FilePath
 from unittest import TestCase
 
-from ink_engine.engine import Container, Path, _container_path, load_story_root, resolve_path
+from ink_engine.engine import (
+    Container,
+    Path,
+    _container_path,
+    load_story_root,
+    resolve_path,
+)
 
 FIXTURES = FilePath(__file__).parent / "fixtures"
 

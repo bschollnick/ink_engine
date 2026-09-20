@@ -32,11 +32,7 @@ class OneWayDependencyTests(SimpleTestCase):
     """A cycle here is what turns a future relocation into a rewrite."""
 
     def test_the_engine_never_imports_the_session_library(self):
-        offenders = [
-            module.relative_to(ENGINE.parent)
-            for module in sorted(ENGINE.rglob("*.py"))
-            if "if_session" in _imported_modules(module)
-        ]
+        offenders = [module.relative_to(ENGINE.parent) for module in sorted(ENGINE.rglob("*.py")) if "if_session" in _imported_modules(module)]
         self.assertEqual(offenders, [], f"the interpreter must not depend on its tenant: {offenders}")
 
     def test_the_session_library_reaches_the_engine_narrowly(self):

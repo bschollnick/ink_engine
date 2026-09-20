@@ -25,7 +25,8 @@ the story had declared those costs itself.
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from collections.abc import Callable
+from typing import Any, ClassVar, TypedDict
 
 from ink_engine.engine_config_schemas import (
     SystemConfigValidationError,
@@ -112,7 +113,7 @@ class CostTable(StatefulPlugin[CostSlot]):
     display_name = "Cost table"
     state_key = STATE_KEY
     slot_type = CostSlot
-    fields = {"costs": dict}
+    fields: ClassVar[dict[str, Callable[[], Any]]] = {"costs": dict}
 
     def __init__(self, *, name: str | None = None, display_name: str | None = None, state_key: str | None = None, config: Any = None) -> None:
         """Build a cost table, optionally with a game's declared prices.

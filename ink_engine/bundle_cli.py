@@ -20,15 +20,15 @@ from pathlib import Path
 
 from ink_engine.bundle_integrity import verify_bundle
 from ink_engine.bundler import (
+    PACKAGE_MARKER,
     BundleError,
     BundlePlan,
     build_bundle,
+    needs_package_marker,
     open_bundle_manifest,
     select_bundle_contents,
     stale_sources,
     verify_plan,
-    PACKAGE_MARKER,
-    needs_package_marker,
 )
 from ink_engine.game_folder import (
     MANIFEST_FILENAME,

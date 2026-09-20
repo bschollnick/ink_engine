@@ -78,10 +78,10 @@ class _TurnGuard:
 
     __slots__ = ("_state",)
 
-    def __init__(self, state: "InkRuntimeState") -> None:
+    def __init__(self, state: InkRuntimeState) -> None:
         self._state = state
 
-    def __enter__(self) -> "_TurnGuard":
+    def __enter__(self) -> _TurnGuard:
         return self
 
     def __exit__(self, *_exc: Any) -> None:
@@ -96,7 +96,7 @@ def _one_turn_at_a_time(method: Callable[..., Any]) -> Callable[..., Any]:
     """Refuse a call that overlaps a turn already running on this state."""
 
     @functools.wraps(method)
-    def guarded(self: "InkRuntimeState", *args: Any, **kwargs: Any) -> Any:
+    def guarded(self: InkRuntimeState, *args: Any, **kwargs: Any) -> Any:
         with self._claim_thread():  # pylint: disable=protected-access
             return method(self, *args, **kwargs)
 
@@ -122,7 +122,7 @@ class _Unresolved:  # pylint: disable=too-few-public-methods
 _UNRESOLVED = _Unresolved()
 
 
-def _container_path(container: "Container") -> str:
+def _container_path(container: Container) -> str:
     """Reconstruct a container's absolute dotted path string.
 
     Ports Object.path (ink-engine-runtime/Object.cs)'s container-side
@@ -185,7 +185,7 @@ class PathComponent:
         return self.name == self.PARENT_NAME
 
     @staticmethod
-    def parse(raw: str) -> "PathComponent":
+    def parse(raw: str) -> PathComponent:
         """Parse a single dotted-path segment into index or name form.
 
         Args:
@@ -220,7 +220,7 @@ class Path:
 
     @staticmethod
     @functools.lru_cache(maxsize=PATH_CACHE_SIZE)
-    def parse(raw: str) -> "Path":
+    def parse(raw: str) -> Path:
         """Parse a dotted Ink path string into a Path.
 
         Cached: a compiled story repeats the same few path strings tens of
@@ -499,7 +499,7 @@ class ListValue:
     origin_names: tuple[str, ...] = ()
 
     @staticmethod
-    def single(origin: str, item: str, value: int, origin_names: tuple[str, ...] | None = None) -> "ListValue":
+    def single(origin: str, item: str, value: int, origin_names: tuple[str, ...] | None = None) -> ListValue:
         """Build a single-item ListValue, e.g. for a bare `Coins` reference.
 
         Args:
@@ -575,7 +575,7 @@ class Container:
 
     def __init__(self, name: str | None = None) -> None:
         self.name = name
-        self.parent: "Container | None" = None
+        self.parent: Container | None = None
         self.content: list[Any] = []
         self.named_content: dict[str, Any] = {}
         self.count_flags: int = 0
@@ -1229,7 +1229,7 @@ class OutputStream:
         self.tokens: list[str] = []
 
     @classmethod
-    def from_tokens(cls, tokens: list[str]) -> "OutputStream":
+    def from_tokens(cls, tokens: list[str]) -> OutputStream:
         """Build a stream over an existing token list.
 
         The sanctioned way `tokens` shrinks from outside `push()`; see
@@ -1970,12 +1970,12 @@ class Pointer:
             return None
         return self.container.content[self.index]
 
-    def copy(self) -> "Pointer":
+    def copy(self) -> Pointer:
         """Return a shallow copy: a new Pointer with the same container and index."""
         return Pointer(self.container, self.index)
 
     @staticmethod
-    def start_of(container: Container) -> "Pointer":
+    def start_of(container: Container) -> Pointer:
         """Build a pointer to the first content item of container.
 
         Args:
@@ -2381,7 +2381,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         return resolve_path(holder, Path(components=components, is_relative=True))
 
     def _resolve_target_cached(
-        self, owner: "Divert | ChoicePoint | FunctionCall | ReadCountTarget | DivertTargetValue", holder: Container, path: Path
+        self, owner: Divert | ChoicePoint | FunctionCall | ReadCountTarget | DivertTargetValue, holder: Container, path: Path
     ) -> Any | None:
         """Resolve `owner.target_path` (== `path`), memoized on `owner` itself.
 
@@ -3594,7 +3594,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         self._visit_changed_containers_due_to_divert()
         return True
 
-    def _claim_thread(self) -> "_TurnGuard":
+    def _claim_thread(self) -> _TurnGuard:
         """Refuse a turn that overlaps one already running on this state.
 
         Detects overlap, not ownership: handing a state between threads
@@ -3712,7 +3712,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         # it, so the original output is kept and only the choices are new.
         self.last_turn_text, self.output = text, output
 
-    def _restore_from(self, other: "InkRuntimeState") -> None:
+    def _restore_from(self, other: InkRuntimeState) -> None:
         """Adopt another state's position and variables, in place.
 
         Args:
@@ -3961,7 +3961,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         engine_bindings: dict[str, Callable[..., Any]] | None = None,
         *,
         strict_externals: bool = False,
-    ) -> "InkRuntimeState":
+    ) -> InkRuntimeState:
         """Rebuild an InkRuntimeState from a to_dict() result.
 
         Args:

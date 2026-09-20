@@ -16,15 +16,15 @@ from ink_engine.bundle_integrity import (
     STORY_SHA256_FIELD,
     directory_hash,
     hash_bytes,
-    read_comment_hash,
     read_bundle_version,
+    read_comment_hash,
     recorded_hashes,
     unrecognized_bundle_version,
     verify_bundle,
 )
 from ink_engine.bundle_readme import render_readme
-from ink_engine.game_source import GameSourceError
 from ink_engine.bundler import build_bundle, select_bundle_contents
+from ink_engine.game_source import GameSourceError
 
 MANIFEST = "MAIN_STORY_FILE: story.inkj\nGAME_TITLE: Demo\nMEDIA_DIRECTORIES: [Images]\n# an author's comment\n"
 

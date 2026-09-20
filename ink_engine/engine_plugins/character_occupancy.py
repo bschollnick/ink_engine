@@ -28,7 +28,8 @@ member and has no serialization, so there is no JSON shape to validate.
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from collections.abc import Callable
+from typing import Any, ClassVar, TypedDict
 
 from ink_engine.engine_plugins.location_graph import STATE_KEY as _LOCATION_STATE_KEY
 from ink_engine.engine_plugins.schedule_rules import (
@@ -152,7 +153,7 @@ class CharacterOccupancy(StatefulPlugin[OccupancySlot]):
     display_name = "Character occupancy"
     state_key = STATE_KEY
     slot_type = OccupancySlot
-    fields = {"locations": dict}
+    fields: ClassVar[dict[str, Callable[[], Any]]] = {"locations": dict}
 
     def place(
         self,

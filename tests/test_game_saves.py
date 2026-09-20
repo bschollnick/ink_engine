@@ -11,7 +11,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
 from if_session.game_saves import (
     DEFAULT_LABEL_CHARACTER_LIMIT,
     QUICKSAVE_LABEL,
@@ -106,28 +105,35 @@ class TestSaveGame:
 
     def test_turn_count_is_lifted_out_of_the_state(self, game_saves_in_memory: GameSavesInMemory) -> None:
         """No implementation should have to know where turn_count lives."""
-        written = save_game(
-            GAME, 0, a_state(turn_count=99), "x", saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN
-        )
+        written = save_game(GAME, 0, a_state(turn_count=99), "x", saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN)
         assert written["turn_count"] == 99
 
     def test_a_state_without_a_turn_count_saves_with_none(self, game_saves_in_memory: GameSavesInMemory) -> None:
         written = save_game(
-            GAME, 0, {"save_format_version": SAVE_FORMAT_VERSION}, "x",
-            saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN,
+            GAME,
+            0,
+            {"save_format_version": SAVE_FORMAT_VERSION},
+            "x",
+            saves_in=game_saves_in_memory,
+            maximum_gamesave_slots=MAX_SLOTS,
+            saved_at=WHEN,
         )
         assert written["turn_count"] is None
 
     def test_a_long_label_is_truncated(self, game_saves_in_memory: GameSavesInMemory) -> None:
-        written = save_game(
-            GAME, 0, a_state(), "x" * 500, saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN
-        )
+        written = save_game(GAME, 0, a_state(), "x" * 500, saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN)
         assert len(written["label"]) == DEFAULT_LABEL_CHARACTER_LIMIT
 
     def test_the_label_limit_can_be_lowered(self, game_saves_in_memory: GameSavesInMemory) -> None:
         written = save_game(
-            GAME, 0, a_state(), "x" * 50, saves_in=game_saves_in_memory,
-            maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN, label_character_limit=10,
+            GAME,
+            0,
+            a_state(),
+            "x" * 50,
+            saves_in=game_saves_in_memory,
+            maximum_gamesave_slots=MAX_SLOTS,
+            saved_at=WHEN,
+            label_character_limit=10,
         )
         assert written["label"] == "x" * 10
 
@@ -190,7 +196,10 @@ class TestLoadGameSave:
         which an application shows with its own dedicated UI.
         """
         game_saves_in_memory.saves[(GAME, 0)] = {
-            "gamesave_slot": 0, "label": "", "saved_at": WHEN, "turn_count": 1,
+            "gamesave_slot": 0,
+            "label": "",
+            "saved_at": WHEN,
+            "turn_count": 1,
             "state": {"save_format_version": SAVE_FORMAT_VERSION + 1},
         }
         with pytest.raises(SaveFormatError):
@@ -212,23 +221,35 @@ class TestListGameSaves:
     def test_an_empty_slot_reports_none_for_everything_else(self, game_saves_in_memory: GameSavesInMemory) -> None:
         entry = list_game_saves(GAME, saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS)[0]
         assert entry == {
-            "gamesave_slot": 0, "used": False, "label": None,
-            "saved_at": None, "turn_count": None, "game_build": "",
+            "gamesave_slot": 0,
+            "used": False,
+            "label": None,
+            "saved_at": None,
+            "turn_count": None,
+            "game_build": "",
         }
 
     def test_an_occupied_slot_reports_its_own_summary(self, game_saves_in_memory: GameSavesInMemory) -> None:
         save_game(GAME, 2, a_state(turn_count=12), "Here", saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN)
         entry = list_game_saves(GAME, saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS)[2]
         assert entry == {
-            "gamesave_slot": 2, "used": True, "label": "Here",
-            "saved_at": WHEN, "turn_count": 12, "game_build": "",
+            "gamesave_slot": 2,
+            "used": True,
+            "label": "Here",
+            "saved_at": WHEN,
+            "turn_count": 12,
+            "game_build": "",
         }
 
     def test_gaps_stay_in_place(self, game_saves_in_memory: GameSavesInMemory) -> None:
         save_game(GAME, 0, a_state(), "A", saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN)
         save_game(GAME, 4, a_state(), "E", saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN)
         assert [e["used"] for e in list_game_saves(GAME, saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS)] == [
-            True, False, False, False, True,
+            True,
+            False,
+            False,
+            False,
+            True,
         ]
 
     def test_the_quicksave_never_appears(self, game_saves_in_memory: GameSavesInMemory) -> None:
@@ -282,9 +303,7 @@ class TestExportGameSave:
 
     def test_metadata_is_carried_verbatim(self, game_saves_in_memory: GameSavesInMemory) -> None:
         save_game(GAME, 0, a_state(), "x", saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN)
-        envelope = export_game_save(
-            GAME, 0, saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS, metadata={"ink_version": "21"}
-        )
+        envelope = export_game_save(GAME, 0, saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS, metadata={"ink_version": "21"})
         assert envelope["metadata"] == {"ink_version": "21"}
 
     def test_an_empty_slot_is_refused(self, game_saves_in_memory: GameSavesInMemory) -> None:
@@ -328,31 +347,43 @@ class TestImportGameSave:
         assert written["saved_at"] == "2026-09-16T13:00:00Z"
 
     def test_the_envelopes_own_label_is_used_by_default(self, game_saves_in_memory: GameSavesInMemory) -> None:
-        written = import_game_save(
-            GAME, 0, self.an_envelope(), saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN
-        )
+        written = import_game_save(GAME, 0, self.an_envelope(), saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN)
         assert written["label"] == "From a file"
 
     def test_a_supplied_label_overrides_the_envelopes(self, game_saves_in_memory: GameSavesInMemory) -> None:
         """QuickBBS posts a label alongside the file; that one must win."""
         written = import_game_save(
-            GAME, 0, self.an_envelope(), saves_in=game_saves_in_memory,
-            maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN, label="My own name",
+            GAME,
+            0,
+            self.an_envelope(),
+            saves_in=game_saves_in_memory,
+            maximum_gamesave_slots=MAX_SLOTS,
+            saved_at=WHEN,
+            label="My own name",
         )
         assert written["label"] == "My own name"
 
     def test_an_empty_supplied_label_still_overrides(self, game_saves_in_memory: GameSavesInMemory) -> None:
         """An empty string is a choice; only None means 'use the envelope'."""
         written = import_game_save(
-            GAME, 0, self.an_envelope(), saves_in=game_saves_in_memory,
-            maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN, label="",
+            GAME,
+            0,
+            self.an_envelope(),
+            saves_in=game_saves_in_memory,
+            maximum_gamesave_slots=MAX_SLOTS,
+            saved_at=WHEN,
+            label="",
         )
         assert written["label"] == ""
 
     def test_a_long_label_is_truncated(self, game_saves_in_memory: GameSavesInMemory) -> None:
         written = import_game_save(
-            GAME, 0, self.an_envelope(label="y" * 500), saves_in=game_saves_in_memory,
-            maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN,
+            GAME,
+            0,
+            self.an_envelope(label="y" * 500),
+            saves_in=game_saves_in_memory,
+            maximum_gamesave_slots=MAX_SLOTS,
+            saved_at=WHEN,
         )
         assert len(written["label"]) == DEFAULT_LABEL_CHARACTER_LIMIT
 
@@ -368,8 +399,12 @@ class TestImportGameSave:
     def test_a_save_from_another_game_is_refused_by_name(self, game_saves_in_memory: GameSavesInMemory) -> None:
         with pytest.raises(GameSaveError, match="different game"):
             import_game_save(
-                GAME, 0, self.an_envelope(game_id="someothergame"),
-                saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN,
+                GAME,
+                0,
+                self.an_envelope(game_id="someothergame"),
+                saves_in=game_saves_in_memory,
+                maximum_gamesave_slots=MAX_SLOTS,
+                saved_at=WHEN,
             )
 
     def test_a_missing_state_is_refused(self, game_saves_in_memory: GameSavesInMemory) -> None:
@@ -523,22 +558,40 @@ class TestBuildComparison:
 
     def test_a_save_records_the_build_that_made_it(self, game_saves_in_memory: FakeGameSaves) -> None:
         written = save_game(
-            GAME, 0, a_state(), "x", saves_in=game_saves_in_memory,
-            maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN, game_build="aaaa1111",
+            GAME,
+            0,
+            a_state(),
+            "x",
+            saves_in=game_saves_in_memory,
+            maximum_gamesave_slots=MAX_SLOTS,
+            saved_at=WHEN,
+            game_build="aaaa1111",
         )
         assert written["game_build"] == "aaaa1111"
 
     def test_the_same_build_is_not_flagged(self, game_saves_in_memory: FakeGameSaves) -> None:
         written = save_game(
-            GAME, 0, a_state(), "x", saves_in=game_saves_in_memory,
-            maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN, game_build="aaaa1111",
+            GAME,
+            0,
+            a_state(),
+            "x",
+            saves_in=game_saves_in_memory,
+            maximum_gamesave_slots=MAX_SLOTS,
+            saved_at=WHEN,
+            game_build="aaaa1111",
         )
         assert is_from_another_build(written, "aaaa1111") is False
 
     def test_a_different_build_is_flagged(self, game_saves_in_memory: FakeGameSaves) -> None:
         written = save_game(
-            GAME, 0, a_state(), "x", saves_in=game_saves_in_memory,
-            maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN, game_build="aaaa1111",
+            GAME,
+            0,
+            a_state(),
+            "x",
+            saves_in=game_saves_in_memory,
+            maximum_gamesave_slots=MAX_SLOTS,
+            saved_at=WHEN,
+            game_build="aaaa1111",
         )
         assert is_from_another_build(written, "bbbb2222") is True
 
@@ -556,8 +609,14 @@ class TestBuildComparison:
 
     def test_an_exported_file_carries_the_build(self, game_saves_in_memory: FakeGameSaves) -> None:
         save_game(
-            GAME, 0, a_state(), "x", saves_in=game_saves_in_memory,
-            maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN, game_build="aaaa1111",
+            GAME,
+            0,
+            a_state(),
+            "x",
+            saves_in=game_saves_in_memory,
+            maximum_gamesave_slots=MAX_SLOTS,
+            saved_at=WHEN,
+            game_build="aaaa1111",
         )
         envelope = export_game_save(GAME, 0, saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS)
         assert envelope["game_build"] == "aaaa1111"
@@ -565,12 +624,21 @@ class TestBuildComparison:
     def test_an_imported_save_keeps_the_build_that_made_it(self, game_saves_in_memory: FakeGameSaves) -> None:
         """Importing copies a file; it does not re-make the save."""
         envelope = {
-            "if_save_version": SAVE_ENVELOPE_VERSION, "game_id": GAME, "label": "From a file",
-            "saved_at": WHEN, "metadata": {}, "game_build": "aaaa1111", "state": a_state(),
+            "if_save_version": SAVE_ENVELOPE_VERSION,
+            "game_id": GAME,
+            "label": "From a file",
+            "saved_at": WHEN,
+            "metadata": {},
+            "game_build": "aaaa1111",
+            "state": a_state(),
         }
         written = import_game_save(
-            GAME, 0, envelope, saves_in=game_saves_in_memory,
-            maximum_gamesave_slots=MAX_SLOTS, saved_at="2026-09-16T13:00:00Z",
+            GAME,
+            0,
+            envelope,
+            saves_in=game_saves_in_memory,
+            maximum_gamesave_slots=MAX_SLOTS,
+            saved_at="2026-09-16T13:00:00Z",
         )
         assert written["game_build"] == "aaaa1111"
         assert is_from_another_build(written, "bbbb2222") is True
@@ -578,11 +646,23 @@ class TestBuildComparison:
     def test_saving_again_brings_a_slot_up_to_date(self, game_saves_in_memory: FakeGameSaves) -> None:
         """The repair the caution tells a player about."""
         save_game(
-            GAME, 0, a_state(), "old", saves_in=game_saves_in_memory,
-            maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN, game_build="aaaa1111",
+            GAME,
+            0,
+            a_state(),
+            "old",
+            saves_in=game_saves_in_memory,
+            maximum_gamesave_slots=MAX_SLOTS,
+            saved_at=WHEN,
+            game_build="aaaa1111",
         )
         written = save_game(
-            GAME, 0, a_state(), "new", saves_in=game_saves_in_memory,
-            maximum_gamesave_slots=MAX_SLOTS, saved_at=WHEN, game_build="bbbb2222",
+            GAME,
+            0,
+            a_state(),
+            "new",
+            saves_in=game_saves_in_memory,
+            maximum_gamesave_slots=MAX_SLOTS,
+            saved_at=WHEN,
+            game_build="bbbb2222",
         )
         assert is_from_another_build(written, "bbbb2222") is False

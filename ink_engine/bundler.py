@@ -39,13 +39,13 @@ from ink_engine.bundle_integrity import (
 )
 from ink_engine.bundle_readme import render_readme
 from ink_engine.game_folder import (
-    COVER_IMAGE_FIELD,
-    PLUGIN_DENIED_SCREEN_FIELD,
-    PROSE_STYLES_FIELD,
     COMPILED_STORY_SUFFIX,
+    COVER_IMAGE_FIELD,
     EXTRA_FILES_FIELD,
     MANIFEST_FILENAME,
     MEDIA_DIRECTORIES_FIELD,
+    PLUGIN_DENIED_SCREEN_FIELD,
+    PROSE_STYLES_FIELD,
     REQUIRED_PLUGINS_FIELD,
     GameFolderError,
     read_manifest,
@@ -59,9 +59,7 @@ JUNK_FILENAMES: frozenset[str] = frozenset({".DS_Store", "Thumbs.db", "desktop.i
 #: caches that can appear anywhere and are never game content.
 #: `__MACOSX` is macOS's own: copying a tree to a non-native filesystem
 #: writes one, holding an AppleDouble sidecar per real file.
-JUNK_DIRECTORY_NAMES: frozenset[str] = frozenset(
-    {"__pycache__", ".mypy_cache", ".pytest_cache", ".git", "__MACOSX"}
-)
+JUNK_DIRECTORY_NAMES: frozenset[str] = frozenset({"__pycache__", ".mypy_cache", ".pytest_cache", ".git", "__MACOSX"})
 
 #: Filename prefix macOS gives an AppleDouble sidecar: `._name.png` beside
 #: `name.png`, carrying resource-fork and Finder metadata. Matched by
@@ -348,9 +346,7 @@ def needs_package_marker(plan: BundlePlan) -> bool:
     Returns:
         Whether `__init__.py` is required.
     """
-    ships_python = any(
-        relative.suffix.lower() == PYTHON_SUFFIX and relative.name != PACKAGE_MARKER for relative in plan.included
-    )
+    ships_python = any(relative.suffix.lower() == PYTHON_SUFFIX and relative.name != PACKAGE_MARKER for relative in plan.included)
     if ships_python:
         return True
     try:
@@ -491,9 +487,7 @@ def _write_archive(plan: BundlePlan, output_path: Path, progress: Callable[[Path
         )
         archive.writestr(manifest_arcname, manifest_text)
         manifest_digest = hash_bytes(manifest_text.encode("utf-8"))
-        archive.comment = build_archive_comment(
-            manifest_sha256=manifest_digest, story_sha256=story_digest, directory_sha256=directory_digest
-        )
+        archive.comment = build_archive_comment(manifest_sha256=manifest_digest, story_sha256=story_digest, directory_sha256=directory_digest)
         if progress is not None:
             progress(manifest_relative)
 

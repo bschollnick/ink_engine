@@ -20,8 +20,9 @@ raise.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import Any, ClassVar, TypedDict
 
 from ink_engine.plugin_base import StatefulPlugin, external, query
 
@@ -106,7 +107,7 @@ class JournalEntry:
     failed: bool
     met: tuple[str, ...]
     outstanding: tuple[str, ...]
-    children: tuple["JournalEntry", ...] = ()
+    children: tuple[JournalEntry, ...] = ()
 
 
 def unreachable_goals(catalog: dict[str, QuestSpec], reachable_goal_ids: set[str]) -> list[tuple[str, str]]:
@@ -138,7 +139,7 @@ class Quests(StatefulPlugin[QuestSlot]):
     display_name = "Quests"
     state_key = STATE_KEY
     slot_type = QuestSlot
-    fields = {"stages": dict, "met_goals": dict, "failed": list}
+    fields: ClassVar[dict[str, Callable[[], Any]]] = {"stages": dict, "met_goals": dict, "failed": list}
 
     def __init__(
         self,

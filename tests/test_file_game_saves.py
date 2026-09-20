@@ -13,11 +13,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from if_session.game_saves import (
     QUICKSAVE_SLOT,
-    GameSavesDirectory,
     GameSaveError,
+    GameSavesDirectory,
     GameSavesProtocol,
     has_quicksave,
     list_game_saves,
@@ -153,9 +152,7 @@ class TestUnreadableFiles:
         ["{not json", "", "null", "[1, 2, 3]", '"a string"', "42"],
         ids=["malformed", "empty", "null", "list", "string", "number"],
     )
-    def test_an_unreadable_file_reads_as_an_empty_slot(
-        self, game_saves_directory: GameSavesDirectory, tmp_path: Path, contents: str
-    ) -> None:
+    def test_an_unreadable_file_reads_as_an_empty_slot(self, game_saves_directory: GameSavesDirectory, tmp_path: Path, contents: str) -> None:
         self._write_raw(tmp_path, "gamesave0.json", contents)
         assert game_saves_directory.read_game_save(GAME, 0) is None
 
