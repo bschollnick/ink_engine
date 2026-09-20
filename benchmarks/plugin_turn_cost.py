@@ -8,14 +8,17 @@ The figures are absolute, not a comparison against an earlier tree, so
 nothing here gates a build. It records a baseline to measure later work
 against.
 
-The benchmark needs a real trusted compiled story, and the trust
-decision belongs to the application rather than the engine, so it runs
-under a Django application's settings rather than standalone:
+This benchmark is the one thing here that reads a consumer. The engine
+depends on nothing but PyYAML; QuickBBS depends on the engine, and holds
+the trusted compiled stories and the trust decision that says which may
+run. Measuring a real build therefore means importing that application,
+which in turn needs its Django settings loaded first:
 
     cd <application>/quickbbs && python -m benchmarks.plugin_turn_cost
 
 Run it from that directory, either as a module with this directory
-importable or by path.
+importable or by path. Nothing in `ink_engine` or `if_session` imports
+Django, or QuickBBS, or anything this file reaches for.
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ CALLS_PER_SAMPLE = 100
 
 
 def _setup_django() -> None:
-    """Start Django using the application's own settings.
+    """Start Django, which the consuming application needs before import.
 
     Raises:
         SystemExit: Django or the application is not importable.

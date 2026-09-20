@@ -1,7 +1,7 @@
 # ink-engine
 
-**Date Created:** 2026-09-15
-**Last Updated:** 2026-09-20
+**Date Created:** 2026-09-15  
+**Last Updated:** 2026-09-20  
 **Last Reviewed:** 2026-09-19
 
 A standalone Ink interactive-fiction interpreter and plugin engine, with no

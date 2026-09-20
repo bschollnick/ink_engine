@@ -1,20 +1,37 @@
  [project]
 name = "ink-engine"
-version = "0.9.0"
+version = "1.0.0"
 description = "A standalone Ink interactive-fiction interpreter and plugin engine, with no web framework or database of its own"
 readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
 authors = [
     {name = "Benjamin Schollnick",email = "Benjamin@schollnick.net"}
 ]
 requires-python = ">=3.12,<3.15"
 classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
     "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Games/Entertainment",
+    "Topic :: Software Development :: Interpreters",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
 ]
+
 dependencies = [
     "pyyaml (>=6.0.3,<7.0.0)"
 ]
+
+[project.urls]
+Homepage = "https://github.com/bschollnick/ink_engine"
+Repository = "https://github.com/bschollnick/ink_engine"
+Issues = "https://github.com/bschollnick/ink_engine/issues"
+Changelog = "https://github.com/bschollnick/ink_engine/blob/main/CHANGELOG.md"
 
 [tool.poetry]
 packages = [{ include = "ink_engine" }, { include = "if_session" }]
