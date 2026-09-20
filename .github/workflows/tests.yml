@@ -32,8 +32,13 @@ jobs:
       - name: Install Poetry
         run: pipx install poetry
 
+      # poetry.lock is not tracked, so resolve dependencies fresh here.
+      # A run can therefore fail because a dependency published a bad
+      # release, with nothing changed in this repository.
       - name: Install dependencies
-        run: poetry install
+        run: |
+          poetry lock
+          poetry install
 
       - name: Run the test suite
         run: poetry run python -m pytest tests/ -q
