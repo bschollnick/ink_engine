@@ -1,0 +1,29 @@
+#!/bin/sh
+# Vendored upstream documentation is read-only once committed.
+#
+# docs/inkles-ink-standard/ holds verbatim copies of inkle's own Ink
+# documentation. Its README.md is ours and may be edited; everything
+# else is a pinned snapshot that must match what was retrieved.
+#
+# Blocked : modifying, deleting or renaming anything inside a snapshot.
+# Allowed : adding a NEW retrieved-<date>/ directory, and editing the
+#           README that points at it -- the way a snapshot is refreshed.
+#
+# To override deliberately: git commit --no-verify
+
+VENDOR='docs/inkles-ink-standard/'
+EXEMPT='^docs/inkles-ink-standard/README\.md$'
+
+blocked=$(git diff --cached --name-status --diff-filter=MDR -- "$VENDOR" \
+          | cut -f2- | grep -v "$EXEMPT")
+
+if [ -n "$blocked" ]; then
+    echo "BLOCKED: vendored upstream documentation is read-only." >&2
+    echo "$blocked" | sed 's/^/    /' >&2
+    echo "" >&2
+    echo "These are verbatim copies of inkle's documentation. To take a newer" >&2
+    echo "upstream version, add a new retrieved-<date>/ directory beside the" >&2
+    echo "existing one and update docs/inkles-ink-standard/README.md." >&2
+    echo "If you really mean to change a pinned snapshot: git commit --no-verify" >&2
+    exit 1
+fi

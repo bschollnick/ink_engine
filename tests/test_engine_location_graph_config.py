@@ -1,8 +1,8 @@
 """The closed config schema `location_graph` declares for its own config.
 
-Covers the validator directly (a pure function, no host framework
-needed). A host application's own enforcement of when it runs -- on a
-model's save, say -- is that host's concern and is tested there.
+Covers the validator directly (a pure function, no application framework
+needed). An application's own enforcement of when it runs -- on a
+model's save, say -- is that application's concern and is tested there.
 """
 
 from __future__ import annotations

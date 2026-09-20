@@ -20,7 +20,7 @@ record rather than in an entry — carries the manifest's own hash.
 **What this proves, and what it does not.** It detects any modification
 after a bundle was built. It does NOT prove a bundle is safe: an attacker
 who rewrites an archive recomputes all three and produces something
-self-consistent. Trust needs an out-of-band record (a application's trust store,
+self-consistent. Trust needs an out-of-band record (an application's trust store,
 a published readme) saying which hash was approved.
 """
 

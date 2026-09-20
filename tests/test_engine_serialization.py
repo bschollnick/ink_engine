@@ -249,7 +249,7 @@ class MissingContainerDegradationTests(SimpleTestCase):
 class PersistedKeyContractTests(SimpleTestCase):
     """`to_dict()` output is a persisted format, not an internal detail.
 
-    A host stores it in a database column and in save files, so renaming
+    An application stores it in a database column and in save files, so renaming
     a key or changing a default silently invalidates every existing save.
     The other tests here all round-trip freshly built state, which cannot
     catch that: a key absent from BOTH halves round-trips perfectly while

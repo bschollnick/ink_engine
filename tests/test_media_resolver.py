@@ -1,9 +1,9 @@
 """The shared media-tag parser and the filesystem-backed resolver.
 
-A host with its own database-indexed resolver (not path-direct) covers
+An application with its own database-indexed resolver (not path-direct) covers
 that resolver separately in its own test suite, since it necessarily
-imports that host's own framework — nothing here needs a database or
-any host framework at all.
+imports that application's own framework — nothing here needs a database or
+any application framework at all.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from ink_engine.media_resolver import (
 
 
 class ParseMediaTagsTests(TestCase):
-    """The shared tag parser -- pure text processing, no host knowledge."""
+    """The shared tag parser -- pure text processing, no application knowledge."""
 
     def test_an_image_tag_is_recognised(self):
         self.assertEqual(parse_media_tags(["image: foo.jpg"]), [("image", "foo.jpg")])

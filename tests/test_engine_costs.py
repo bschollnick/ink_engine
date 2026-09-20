@@ -164,7 +164,7 @@ class BindingTests(SimpleTestCase):
 
 
 class HostConfigTests(SimpleTestCase):
-    """A host-attached price list is seeded into the slot at session start."""
+    """An application-attached price list is seeded into the slot at session start."""
 
     def test_a_host_config_is_declared_into_a_fresh_slot(self):
         engine_state: dict[str, Any] = {}

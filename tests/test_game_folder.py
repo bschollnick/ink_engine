@@ -109,8 +109,8 @@ class FindMainStoryFileTests(TestCase):
         The manifest was once `__init__.py`, and its safety rested on a
         promise never to import it. As YAML there is nothing to promise:
         Python source in the manifest is just a string that fails to
-        describe any field, and a game folder's `__init__.py` is an empty
-        package marker carrying no data."""
+        describe any field, and a game folder's `__init__.py` is Python's
+        package initialization file, carrying no data."""
         self._write("story_a.inkj", "{}")
         self._write("story_b.inkj", "{}")
         self._write("manifest.yaml", 'import os\nos.environ["SHOULD_NEVER_RUN"] = "1"\n')
@@ -225,7 +225,7 @@ class ReadRequiredPluginsTests(TestCase):
 
 class ReadModuleLiteralsTests(TestCase):
     """The general primitive every single-field/whole-file reader in this
-    module (and each host application's own manifest/mapping reader)
+    module (and each application's own manifest/mapping reader)
     builds on."""
 
     def setUp(self):

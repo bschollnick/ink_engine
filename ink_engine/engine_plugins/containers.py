@@ -8,7 +8,7 @@ be shut, whether it is shut now, and whether you can see in while it is.
 A holder must be marked a container explicitly; one is never inferred
 from having contents.
 
-This module holds the record's shape and the two questions asked of it;
+This module holds the record's fields and the two questions asked of it;
 the operations (declare, open, put in, take from) are `Inventory`'s own
 methods. **A holder with no record is always reachable and always shows
 its contents.**

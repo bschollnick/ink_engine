@@ -1,4 +1,8 @@
-# ink_engine: plugins and `EXTERNAL` bindings
+# Ink Engine — How to use Plugins & Python Functions from Ink
+
+**Date Created:** 2026-09-15  
+**Last Updated:** 2026-09-20  
+**Last Reviewed:** 2026-09-20
 
 How an Ink story reaches Python in this engine: the plugins that ship with
 it, how to use them from your `.ink`, and how to write your own.
@@ -6,20 +10,21 @@ it, how to use them from your `.ink`, and how to write your own.
 - **[section 1](#1-plugins-and-the-two-ways-to-use-them)** — what the plugins are for, and the two ways to reach them
 - **[section 2](#2-using-the-plugins-that-ship-with-the-engine)** — the eight plugins that ship, and how to extend one
 - **[section 3](#3-creating-a-plugin)** — writing a plugin of your own
-- **[Section 4](#4-testing-that-a-binding-is-really-wired) and [section 5](#5-runtime-notes-for-anyone-working-on-enginepy-itself)** — checking your wiring, and notes for anyone working on the
-  engine itself
-- **[section 6](#6-saving-a-game)** — saving and loading a game: save slots, labels, quicksave, and export files
-- **[section 7](#7-when-something-does-not-work)** — what to look at when something does not work
+- **[section 4](#4-refreshing-the-choices-after-a-plugin-changes-something)** — updating what the player is offered, without taking a turn
+- **[section 5](#5-saving-a-game)** — saving and loading a game: save slots, labels, quicksave, and export files
+- **[section 6](#6-when-something-does-not-work)** — what to look at when something does not work
+- **[section 7](#7-testing-that-a-binding-is-really-wired)** — proving a binding is wired, when the answer looks right but is not
 
-Companion to [`ink_pitfalls_and_debugging.md`](ink_pitfalls_and_debugging.md),
+Companion to [`ink_when_it_compiles_but_is_wrong.md`](ink_when_it_compiles_but_is_wrong.md),
 which covers the Ink language's own sharp edges; this document is about
-this engine's plugin machinery.
+this engine's plugin machinery. Assorted interpreter internals live in
+[`misc_notes.md`](misc_notes.md).
 
 **About the examples.** Every Python example here runs as printed, and
 every output shown was copied from running it. Claims about Ink's own
 behaviour are labelled **[Ink]** and were checked against the real
 `inklecate` binary (v1.2.1, compiled format `inkVersion` 21) rather than
-inferred — that label means "this is upstream Ink behaviour that
+inferred — that label means "this is standard Ink behaviour that
 `ink_engine` matches on purpose", never a divergence from it.
 
 ---
@@ -51,11 +56,11 @@ build yourself:
 - **It saves and restores correctly.** Whatever a plugin remembers is
   written into the save along with the story's own progress, and comes
   back intact. Save slots, labels and export files come with the engine
-  too -- see [section 6](#6-saving-a-game).
+  too -- see [section 5](#5-saving-a-game).
 - **Your program can read it.** A sidebar, a character sheet, a map
-  screen — all need to see the same state the story sees, without
+  screen — all need to read the same state the story reads, without
   interrogating the story to get it.
-- **Plugins can see each other.** Character locations are validated
+- **Plugins can read each other's state.** Character locations are validated
   against the map's own list of places, so a typo is caught rather than
   silently stored.
 
@@ -68,7 +73,7 @@ Every plugin can be reached from two directions:
 
 They are not two systems. Both read and write the same data for the same
 playthrough, so a place your application marks as discovered is
-immediately a place the story sees as known.
+immediately a place the story reads as known.
 
 The two are not equal in size. Ink can reach **58** of the shipped
 functions; Python can reach **116** — everything Ink can, and as much
@@ -100,8 +105,8 @@ Three things can happen when the story makes that call:
   condition on a choice.
 - **No plugin provides it, but your story does.** Ink lets you write an
   ordinary `=== function where_is(character) ===` alongside the
-  `EXTERNAL` declaration. That version is used instead. This is worth
-  doing deliberately: it lets a story stay playable on an application that
+  `EXTERNAL` declaration. That version is used instead. Write one when you
+  want a story to stay playable on an application that
   offers none of these plugins, falling back to a simple answer of your
   own.
 - **Neither provides it.** The story stops with an error naming the
@@ -145,7 +150,8 @@ plugin in turn, with runnable examples of both routes.
 Eight plugins ship with `ink_engine`, plus a ready-made answer for saving
 and loading. Most games never write one: you activate the ones you need,
 call their bindings from `.ink`, and give them your world's data as
-config. This section is that path. [section 4](#4-testing-that-a-binding-is-really-wired) is for when you
+config. Sections 2 through 5 cover that path.
+[section 7](#7-testing-that-a-binding-is-really-wired) is for when you
 need something nobody has written yet.
 
 | Plugin | For | Callable from `.ink` |
@@ -165,8 +171,8 @@ Activate a plugin by name and those bindings arrive in your story.
 **The `.ink` column is not the whole plugin.** Every one of these also has
 a Python side your application calls directly. That is how a sidebar or character
 sheet reads what the plugin knows, and how the application records things it
-notices rather than the story announcing them — marking a place discovered
-because the player walked there, say.
+notices rather than the story announcing them, such as marking a place
+discovered because the player walked there.
 
 `LocationGraph` is the clearest case: it publishes *nothing* to Ink, and is
 driven entirely from application code. Others are mostly symmetrical, with an
@@ -183,8 +189,16 @@ the ones your game uses, and you get back the functions your `.ink` can
 call:
 
 ```python
+import json
+from pathlib import Path
+
 from ink_engine.binding import resolve_bindings
 from ink_engine.discovery import discover_plugins
+from ink_engine.engine import InkRuntimeState, load_story_root, load_list_defs
+
+story_json = json.loads(Path("story.ink.json").read_text())
+root = load_story_root(story_json)
+list_defs = load_list_defs(story_json)
 
 plugins = discover_plugins(["ink_engine.engine_plugins"])
 
@@ -196,8 +210,13 @@ story_functions = resolve_bindings(   # what the story may call
     game_state,
 )
 
-InkRuntimeState(root, list_defs, engine_bindings=story_functions)
+state = InkRuntimeState(root, list_defs, engine_bindings=story_functions)
 ```
+
+`root` and `list_defs` come from the compiled story — the `.ink.json`
+that `inklecate` or Inky produced. A game folder resolves that filename
+from its manifest instead of hardcoding it; `find_main_story_file()` in
+`ink_engine/game_folder.py` is what the shipped players call.
 
 Those two calls do different jobs, and the arguments are worth naming.
 
@@ -207,14 +226,17 @@ Those two calls do different jobs, and the arguments are worth naming.
 package names and returns **every plugin it finds there**, as a dict keyed
 by plugin name. Discovery is only *finding* — nothing is switched on yet.
 
-The eight shipped plugins live in one package:
+The eight shipped plugins live in one package. Continuing from the
+imports above:
 
 ```python
 plugins = discover_plugins(["ink_engine.engine_plugins"])
 
-sorted(plugins)   # ['character_occupancy', 'characters', 'cost_table',
-                  #  'inventory', 'location_graph', 'quests',
-                  #  'scheduling', 'skills']
+print(sorted(plugins))
+```
+
+```
+['character_occupancy', 'characters', 'cost_table', 'inventory', 'location_graph', 'quests', 'scheduling', 'skills']
 ```
 
 Your own plugins are found the same way — add the module or package that
@@ -224,8 +246,13 @@ the path works exactly like the engine's own package:
 ```python
 plugins = discover_plugins(["ink_engine.engine_plugins", "mygame.plugins"])
 
-sorted(plugins)   # the same eight, plus 'weather'
+print(sorted(plugins))
+# ['character_occupancy', 'characters', 'cost_table', 'inventory',
+#  'location_graph', 'quests', 'scheduling', 'skills', 'weather']
 ```
+
+`mygame.plugins` stands in for your own package, so this one does not run
+as printed -- substitute a module of yours that defines a `PLUGIN`.
 
 A source is any importable dotted name, at whatever depth your game is
 laid out — `"mygame"` if the plugin modules sit at its root,
@@ -240,7 +267,7 @@ picked up with no registration step.
 raises `ValueError: Duplicate plugin name 'quests'` naming the source it
 came from, rather than one silently shadowing the other. To replace a
 shipped plugin rather than sit beside it, give yours its own name and
-activate that one instead ([section 2.9](#210-extending-a-plugin-for-your-own-game)).
+activate that one instead ([section 2.11](#211-extending-a-plugin-for-your-own-game)).
 
 #### Switching them on
 
@@ -274,9 +301,11 @@ and hand in; `resolve_bindings` fills it, giving each active plugin one key
 of its own. After the call above:
 
 ```python
-sorted(game_state)   # ['character_occupancy', 'characters', 'cost_table',
-                     #  'inventory', 'location_graph', 'quests',
-                     #  'scheduling', 'skills']
+print(sorted(game_state))
+```
+
+```
+['character_occupancy', 'characters', 'cost_table', 'inventory', 'location_graph', 'quests', 'scheduling', 'skills']
 ```
 
 That dict is this session's entire plugin state — the thing you persist
@@ -308,9 +337,8 @@ cheaper the second time you ask, or for a charmed shopkeeper — without
 that condition leaking into the price list.
 
 **How.** Prices go in config, not in the slot, so re-pricing an item
-reaches every save already in flight. It is deliberately **lookup, not
-charging**: it tells you the price and whether the player can meet it, and
-something else debits the purse. That split is what lets one price list
+reaches every save already in flight. It does not move money: it tells you the price and whether the player can
+meet it, and something else debits the purse. That split is what lets one price list
 serve a shop, a dialogue check and a travel menu without any of them
 knowing about the others.
 
@@ -358,15 +386,15 @@ print("7", game_state["cost_table"])
 ```
 
 `can_afford` compares a price against a number you supply (3, 4) — it
-never touches the player's purse, because the resource belongs to
+never touches the player's funds, because the resource belongs to
 whatever plugin owns it. **Variants** are the conditional case: the
 blessing costs a favour, or nothing for the devout (5).
 
 Look at what `game_state` holds afterwards (7): **only `rope`**, the one
 price this session changed. The lantern and the blessing are not there,
-because they are still exactly what `PRICES` says. That is worth knowing
-before you ship an update — re-price the lantern in a new release and
-every save already out there sees the new price, since no save ever
+because they are still exactly what `PRICES` says. This matters when you ship an update:
+re-price the lantern in a new release and
+every save already out there resolves the new price, since no save ever
 contained a copy of the old one.
 
 From a story:
@@ -376,6 +404,84 @@ The lantern is {cost_of("lantern")} coins.
 + { can_afford("lantern", purse) } [Buy it] -> bought
 + [Leave] -> street
 ```
+
+**A game can run more than one cost table.** One per shop, one for goods
+and one for spells — each is its own instance with its own prices. Give
+each a distinct `name` and a distinct `state_key`, so the two do not share
+one slot:
+
+```python
+SHOP_PRICES  = {"costs": {"rope":     {"resource": "coins", "amount": 4}}}
+SPELL_PRICES = {"costs": {"fireball": {"resource": "mana",  "amount": 8}}}
+
+shop   = CostTable(name="shop_costs", config=SHOP_PRICES)
+spells = CostTable(name="spell_costs", state_key="spell_costs", config=SPELL_PRICES)
+
+game_state = {}
+resolve_bindings({shop.name: shop.plugin(), spells.name: spells.plugin()},
+                 ["shop_costs", "spell_costs"], game_state)
+
+print("1", sorted(game_state))
+print("2", shop.cost_of(game_state["cost_table"], "rope"))
+print("3", spells.cost_of(game_state["spell_costs"], "fireball"))
+print("4", shop.is_priced(game_state["cost_table"], "fireball"))
+```
+
+```
+1 ['cost_table', 'spell_costs']
+2 4
+3 8
+4 False
+```
+
+The two tables are fully independent — line 4 shows the shop does not know
+the spell's price.
+
+**One limit, and it decides how you use this.** Binding names come from
+the method name, so every cost table publishes the same `cost_of`,
+`can_afford`, `is_priced` and `set_cost`. Activate two and **the one listed
+last wins those names** — the order you pass to `resolve_bindings()` is
+what decides, so put the table Ink should reach by the plain names last.
+Every other table is still fully usable from your application's Python, as
+above. To let Ink price from more than one, subclass to add a differently
+named binding — the subclass is for the new binding, not for the slot:
+
+```python
+from ink_engine.engine_plugins.costs import CostSlot
+from ink_engine.plugin_base import external, query
+
+
+class SpellCosts(CostTable):
+    """A cost table that also answers to a second, distinct Ink name."""
+
+    @query
+    @external
+    def spell_cost(self, slot: CostSlot, cost_key: str, variant: str = "",
+                   default: float = 0) -> float:
+        return self.cost_of(slot, cost_key, variant, default)
+
+
+shop   = CostTable(name="shop_costs", config=SHOP_PRICES)
+spells = SpellCosts(name="spell_costs", state_key="spell_costs", config=SPELL_PRICES)
+
+game_state = {}
+story_functions = resolve_bindings(
+    {shop.name: shop.plugin(), spells.name: spells.plugin()},
+    ["spell_costs", "shop_costs"],          # the shop last, so it wins `cost_of`
+    game_state,
+)
+
+print("cost_of(rope):", story_functions["cost_of"]("rope"))
+print("spell_cost(fireball):", story_functions["spell_cost"]("fireball"))
+```
+
+```
+cost_of(rope): 4
+spell_cost(fireball): 8
+```
+
+Ink calls `cost_of("rope")` for the shop and `spell_cost("fireball")` for
+spells.
 
 ### 2.2 `InventorySystem` — where things are
 
@@ -492,8 +598,8 @@ each joined to its neighbour. The **well** hangs below the square. The
 
 So from the road you can reach the market, the farm and the crypt — but
 not the square or the well, which are only reachable back through the
-market. That is the point of an explicit graph: adjacency on the page is
-not connection.
+market. Two places being near each other in the declaration does not connect
+them; only an edge does.
 
 The crypt is on the map but the player does not know it is there until
 someone tells them, and the tomb is deeper still.
@@ -596,13 +702,12 @@ after discovery.
 **Who is standing where is not this plugin's job.** The map knows places
 and routes; it never knows that the blacksmith is at the inn.
 `CharacterOccupancy` ([section 2.4](#24-characteroccupancy-who-is-where)) tracks that, and it builds directly on this
-data — every character's location is one of the place ids declared here,
-and placing someone anywhere else is refused. Draw the map first; [section 2.4](#24-characteroccupancy-who-is-where) has
+data — every character's location should be one of the place ids declared
+here, and the `set_location` binding refuses anything else. Draw the map first; [section 2.4](#24-characteroccupancy-who-is-where) has
 the examples.
 
-**How it fits with everything else.** It is deliberately
-**occupancy-free** — it knows places and edges, never who is standing
-where, so `CharacterOccupancy` ([section 2.4](#24-characteroccupancy-who-is-where)) layers on top without the map
+**How it fits with everything else.** The map knows places and edges,
+never who is standing where, so `CharacterOccupancy` ([section 2.4](#24-characteroccupancy-who-is-where)) layers on top without the map
 knowing characters exist.
 
 **Discovery is written, just not from Ink.** `set_known`, `set_all_known`,
@@ -717,6 +822,78 @@ Three behaviours worth knowing before you hit them:
   `UnknownLocationError` rather than stranding the player somewhere no
   check will ever match. This is the `LocationGraph` dependency doing its
   job: the map is the vocabulary, and occupancy is held to it.
+- **The Python-side `place()` checks only when asked.** Its
+  `known_locations` parameter defaults to `None`, which skips the check
+  so that a story tracking its map some other way still works. The
+  binding above passes it; application code calling `place()` directly
+  must pass it too, or that call is the one write path with no
+  vocabulary check. Nothing warns: the id is stored, and a character
+  placed at it is invisible to every later presence query, which reads
+  identically to them legitimately being elsewhere.
+
+#### Giving a character a schedule
+
+`set_location` places someone explicitly. A character who moves on their
+own instead gets a **schedule**: a tuple of `ScheduleRule`s, evaluated in
+declared order, first match wins. It is plain data — never a code string —
+so it serializes, and a story can carry one per character.
+
+```python
+from ink_engine.engine_plugins.scheduling import EIGHT_AM, SIX_PM
+from ink_engine.engine_plugins.schedule_rules import (
+    Condition, ScheduleRule, resolve_schedule,
+)
+
+BLACKSMITH = (
+    ScheduleRule(condition=Condition.flag_is_set("blacksmith_fled"), location_id=None),
+    ScheduleRule(condition=Condition.minute_in_range(EIGHT_AM, SIX_PM), location_id="forge"),
+    ScheduleRule(condition=None, location_id="tavern"),
+)
+
+resolve_schedule(BLACKSMITH, flags=frozenset(), clock=108)                       # 'forge'
+resolve_schedule(BLACKSMITH, flags=frozenset(), clock=240)                       # 'tavern'
+resolve_schedule(BLACKSMITH, flags=frozenset({"blacksmith_fled"}), clock=108)    # None
+```
+
+`location_id=None` means "not anywhere right now", which is how a
+character leaves the world without being placed somewhere fictional. A
+rule with `condition=None` always matches, so it is the fallback and
+belongs last.
+
+**`clock` is the story's own unit; condition ranges are minutes.** This
+catches people out: `resolve_schedule` converts with
+`minute_of_day = (clock % 288) * 5`, so `clock` counts **five-minute
+ticks** — 288 to a day, `clock=108` is 09:00 — while
+`minute_in_range` takes minutes-of-day (0–1439). Use `scheduling.py`'s
+named constants (`EIGHT_AM`, `SIX_PM`, `MINUTES_PER_DAY`) for the bounds
+rather than bare integers, and remember the two arguments are in
+different units.
+
+**The condition vocabulary is closed.** Build nodes with these
+classmethods rather than constructing `payload` by hand:
+
+| Builder | Asks |
+|---|---|
+| `Condition.flag_is_set(flag)` | Is this story flag currently set? |
+| `Condition.minute_in_range(low, high)` | Is the time of day in `[low, high)`? |
+| `Condition.story_rule(name)` | A boolean function of the clock that your story registers. |
+| `Condition.story_value(name, operator, value)` | Compare a story-registered value against a number or string. |
+| `Condition.engine_state(state_key, path, ...)` | Read another plugin's serialized state. |
+| `Condition.query(state_key, query, ...)` | Ask a question another active plugin publishes. |
+| `Condition.all_of(...)` / `any_of(...)` / `negate(...)` | AND, OR, NOT. |
+
+`story_rule` and `story_value` resolve against registries you pass to
+`resolve_schedule`, so the engine never evaluates a name of its own — the
+story owns every name. A `query` against a plugin that is not active
+raises rather than quietly answering False, because a schedule asking an
+absent plugin is a wiring mistake, not a condition that happens to be
+untrue.
+
+**This module has no `EXTERNAL` bindings**, and that is deliberate: a
+schedule is data your Python declares, not something Ink calls.
+`CharacterOccupancy` imports it to resolve where someone is; it never
+imports back, so a story can evaluate schedules with no occupancy store at
+all.
 
 ### 2.5 `Characters` — anything you want to remember about someone
 
@@ -760,9 +937,10 @@ answers with the default rather than raising, so a story can ask before
 anything has set it. `character_known` is separate because "have we met?"
 would otherwise be everyone's first attribute, asked constantly.
 
-Attributes are a *pattern*, not this plugin's private trick:
+Attributes are a *pattern* rather than this plugin's own invention:
 `LocationGraph` publishes its own `read_attribute` for the per-place
-equivalent — whether a door was opened, whether a shelf was read.
+equivalent — whether a room's door has been unlocked, whether its lamp is
+lit.
 
 **In practice.** 
 ```python
@@ -898,7 +1076,7 @@ which number counts.
 answering it needs the catalog rather than session state. A story asks
 the parts it can see: `quest_stage`, `is_goal_met`, `is_quest_failed`. A
 game that wants a single "is it done" test in `.ink` publishes one from a
-subclass ([section 2.9](#210-extending-a-plugin-for-your-own-game)).
+subclass ([section 2.11](#211-extending-a-plugin-for-your-own-game)).
 
 In a story:
 
@@ -912,8 +1090,9 @@ In a story:
 
 **What.** A number per character per skill — read it, set it, move it
 (`skill_level`, `set_skill_level`, `adjust_skill_level`); ask whether they
-have the skill at all (`knows_skill`, `add_skill`); or roll against it
-(`skill_check`, `last_skill_roll`, `last_skill_target`).
+have the skill at all (`knows_skill`, `add_skill`); and, if your game
+wants one, roll against it (`skill_check`, `last_skill_roll`,
+`last_skill_target`).
 
 **Why.** To keep track of what your characters can do and how well —
 whether a skill is known at all, and how good they are at it. The same
@@ -927,20 +1106,31 @@ the player has simply learned or not.
 declares (1-6, 1-20, 1-100). What it *means* is your choice, and the
 plugin supports three readings of the same stored value:
 
-- **Known or not.** `knows_skill` is any level above zero, and
-  `add_skill` grants one — returning `False` and **leaving an existing
-  level alone**, so a re-entered scene cannot reset hard-won progress. No
-  roll involved.
+- **Known or not.** `knows_skill` is any level above zero. `add_skill`
+  grants the skill and returns `True` the first time; called again for a
+  character who already has it, it returns `False` and leaves their
+  current level untouched, so a re-entered scene cannot reset hard-won
+  progress.
 - **A degree of capability.** Read `skill_level` and compare it yourself:
   gate a choice at 40, give the expert a different description at 80, let
   training move the number with `adjust_skill_level`.
-- **Something to roll against.** `skill_check` succeeds when a 1-100 roll
-  lands at or below the level plus any bonus; checks normalise internally
-  to a percentile, so your display range never touches the roll maths.
-  Afterwards `last_skill_roll` / `last_skill_target` let the story narrate
-  the near-miss rather than just reporting failure.
+- **Something to roll against, if your game rolls.** `skill_check`
+  succeeds when a 1-100 roll lands at or below the level plus any bonus;
+  checks normalise internally to a percentile, so your display range never
+  touches the roll maths. Afterwards `last_skill_roll` /
+  `last_skill_target` let the story narrate the near-miss rather than just
+  reporting failure.
 
-**In practice.** Levels first, then the two things built on them:
+**A skill is a stored level, not a dice mechanic.** Most games use this
+plugin without ever calling `skill_check`: a skill is a number you set,
+read and compare — known or not, and how capable. `skill_check` is one
+optional operation built on that number, included because it is a common
+way to use it, not because the plugin is built around it. A game that
+never rolls anything uses this plugin exactly as much as one that rolls
+constantly.
+
+**In practice.** Levels first (1-2), then the known/unknown question
+(3-6), and last the optional roll (7-9):
 
 ```python
 from ink_engine.binding import resolve_bindings
@@ -1000,6 +1190,9 @@ queued against it.
 - **Time of day** — `hour_of_day`, and the phase tests `is_morning`,
   `is_afternoon`, `is_evening`, `is_night`, `is_day`.
 - **The calendar** — `day_of_week` (0 = Monday), `is_weekday`.
+- **Timed events** — `schedule_person_flag` queues a change for later,
+  `event_pending` asks whether one is still waiting, `cancel_event_now`
+  un-arms it. See "Scheduling something to happen later" below.
 
 **Why.** To keep track of the time in your world, and what should happen
 when it reaches a certain point. Shops shut, ships sail, people go home —
@@ -1025,6 +1218,29 @@ Day phases divide the 24 hours between them, with no gaps:
 
 `is_day` is true for morning, afternoon and evening together — the
 daylight hours as one test.
+
+**If you know Python's `datetime`, you already know most of this.** That
+module answers the same questions about real time that a story needs to
+ask about game time, so the bindings are modelled on it:
+
+| `scheduling` | `datetime` |
+|---|---|
+| `clock()` | `datetime.now()` |
+| `advance_clock(90)` | `+ timedelta(minutes=90)` |
+| `set_clock(8 * 60)` | `.replace(hour=8, minute=0)` |
+| `hour_of_day(clock)` | `.hour` |
+| `day_of_week(clock)` | `.weekday()` — same numbering, 0 = Monday |
+
+**Only the common cases are here**, the ones a game turned out to need.
+There is no month, no year, no leap handling, no time zone, no formatting
+and no parsing — a story that needs a date on a letter formats its own
+from `clock()`. Add what your game needs rather than expecting the rest of
+`datetime` to be present.
+
+The phase tests are the part with no `datetime` counterpart. `is_morning`
+and its siblings answer a question real calendars leave to the caller,
+because in a story "is it evening?" is asked constantly and its boundaries
+are a setting, not a fact.
 
 **In practice.** 
 ```python
@@ -1081,6 +1297,170 @@ In a story:
 An hour passes.
 ```
 
+#### Scheduling something to happen later
+
+**What.** Queue an effect now that fires when the clock reaches it.
+
+- `schedule_person_flag(character_id, flag, value, minutes, event_id)` —
+  set a flag on someone, `minutes` from now. Returns the clock value it
+  will fire at.
+- `event_pending(event_id)` — is that event still waiting?
+- `cancel_event_now(event_id)` — un-arm it. Returns how many were
+  removed, `0` when nothing was queued under that name, which is not an
+  error.
+
+**Why.** Because "half an hour later, she calls you back" is a common
+pattern, and writing it by hand means storing the time you armed it and
+re-checking the arithmetic everywhere you care:
+
+```ink
+// the long way -- two of these three clauses are just computing elapsed time
++ { person_value_is_set_now("hannah", "call_armed_at")
+    and n_time_now() - person_value_now("hannah", "call_armed_at") >= 35
+    and not person_value_now("hannah", "call_answered") } [Answer the call] -> call
+```
+
+**Gate the action on a flag, not on the timer.** The scheduler sets
+state; your story reads that state. Have the event set a flag, then
+write the ordinary condition you would have written anyway:
+
+```ink
+// arm it when the story reaches the moment that starts the clock
+~ schedule_person_flag("hannah", "call_ready", true, 35, "hannah_call")
+
+// ...and gate on the flag, which is true only once it has fired
++ { person_value_now("hannah", "call_ready")
+    and not person_value_now("hannah", "call_answered") } [Answer the call] -> call
+```
+
+This is the pattern to reach for whenever a choice should appear after a
+delay: one `schedule_person_flag` at the arming site, one flag read at
+the gate, and no time arithmetic in between.
+
+**`minutes` is the engine's minutes, not your story's unit.** The clock
+counts minutes; a story with its own coarser tick converts at the
+boundary. Get this wrong and nothing errors — the event simply fires at
+the wrong time, which is the failure this whole facility exists to stop.
+Work it out once, from your own tick size, and write the arithmetic down:
+
+```python
+# a story whose tick is 5 minutes, and whose "hour" is 12 ticks
+MINUTES_PER_STORY_HOUR = 12 * 5     # -> 60
+
+# so a 24-hour delay is, with `story_functions` from section 2.8:
+story_functions["schedule_person_flag"](
+    "x", "ready", True, 24 * MINUTES_PER_STORY_HOUR, "x_ready")
+```
+
+Then check it against whatever your story uses to measure elapsed time:
+schedule an event, advance to one tick short of the threshold, and
+confirm the flag is still false — then advance one more and confirm it
+flipped.
+
+**`event_pending` answers "still waiting", never "has it happened."** A
+fired event leaves the queue, so testing it is how you ask whether a
+timer is *running* — to avoid arming a second one, or to show "you are
+waiting to hear back". It is not a substitute for the flag.
+
+**Naming an event lets you re-arm and cancel it.** Scheduling twice under
+the same `event_id` replaces the pending one rather than queuing a
+second, so a timer armed on every visit still fires once — and the NEW
+delay wins, so re-arming pushes the deadline back rather than keeping the
+original. Pass `""` for an event you never need to cancel or test.
+
+```ink
+// she leaves; the call she promised is no longer coming
+~ cancel_event_now("hannah_call")
+```
+
+**When.** A promised phone call, a spell that matures, a character who
+leaves in an hour, a shop delivery. Anything where the story arms
+something now and the payoff is later.
+
+**When a timer is NOT a scheduled event.** Four shapes look like timers
+but are not, and trying to convert them costs more than the poll:
+
+- **"Still within the window"** (`elapsed < N`, not `> N`). True at the
+  start and false later, so a fires-once flag cannot express it — you
+  would need a second event to clear the flag. Usually these are not
+  deferred actions at all, but the story asking "how recent is this?"
+  while rendering a line.
+- **One stamp read at several thresholds.** If the story asks "has it
+  been 24 hours?" and elsewhere "has it been 48?", one timestamp answers
+  both; scheduling needs one event per threshold, and the arming site
+  must know every threshold anyone tests.
+- **A timer that re-arms itself** inside its own gate. That is a
+  repeating timer; a one-shot event is the wrong tool.
+- **Arithmetic on the elapsed value** (`elapsed / 24` for whole days).
+  There is no threshold to cross, so there is nothing to schedule.
+
+Keep the timestamp for these. A stored time answers any question about
+duration; a scheduled event answers exactly one, at one moment.
+
+**What it cannot do.** The effect vocabulary is a closed set the engine
+applies to state — a person flag, a place flag, moving a character. A
+timed event cannot divert to a knot or print a line, because a game's
+own content must never schedule code to run. If your timer needs to tell
+a story rather than change a fact, have it set a flag and let the story
+react to that flag the next time the player is somewhere it matters.
+
+**One more thing your application must do.** The engine only REPORTS what
+came due — `advance()` returns the effects and hands them to you, because
+only your game knows what a "person flag" or a "place" means in your
+world. Apply each one through the same API a story choice would use:
+
+```python
+from ink_engine.binding import resolve_bindings
+from ink_engine.discovery import discover_plugins
+from ink_engine.engine_plugins.scheduling import SCHEDULING, EffectKind
+from ink_engine.engine_plugins.characters import CHARACTERS
+from ink_engine.engine_plugins.location_graph import LOCATION_GRAPH
+
+plugins = discover_plugins(["ink_engine.engine_plugins"])
+game_state = {}
+story_functions = resolve_bindings(
+    plugins,
+    ["scheduling", "characters", "location_graph", "character_occupancy"],
+    game_state,
+)
+
+SCHEDULING.schedule_person_flag(
+    game_state["scheduling"], "ada", "rested", True, 60, "ada_rested")
+
+for effect in SCHEDULING.advance(game_state["scheduling"], 90):
+    print(effect)
+    if effect.kind is EffectKind.SET_PERSON_FLAG:
+        CHARACTERS.set_attribute(game_state["characters"], effect.target,
+                                 effect.payload["flag"], effect.payload["value"])
+    elif effect.kind is EffectKind.SET_PLACE_FLAG:
+        LOCATION_GRAPH.set_attribute(game_state["location_graph"], effect.target,
+                                     effect.payload["flag"], effect.payload["value"])
+    elif effect.kind is EffectKind.MOVE_CHARACTER:
+        story_functions["set_location"](effect.target, effect.payload["place_id"])
+    else:
+        raise ValueError(f"no handler for scheduled effect kind {effect.kind!r}")
+
+print(CHARACTERS.read_attribute(game_state["characters"], "ada", "rested"))
+```
+
+```
+Effect(kind=<EffectKind.SET_PERSON_FLAG: 'set_person_flag'>, target='ada', payload={'flag': 'rested', 'value': True})
+True
+```
+
+The module-level `SCHEDULING`, `CHARACTERS` and `LOCATION_GRAPH` are the
+plugin objects themselves. `discover_plugins()` hands back the binding
+wrappers, which is what a story calls through; applying effects is your
+application's own code, so it reaches the methods directly.
+
+**Raise on a kind you do not handle, rather than skipping it.** A
+silently dropped effect is a scene that never happens, with nothing in
+any log to find later.
+
+**Ignoring the return value is the failure to watch for.** The queue
+fills, events come due, and nothing happens — no error, no warning. If
+scheduled events seem not to fire, check this loop first.
+
 ### 2.9 Game saves — save slots and quicksave
 
 Batteries included: save slots, labels, quicksave and export files come
@@ -1088,7 +1468,7 @@ with the engine, ready to use and replaceable where you need something
 different. It is not a plugin in the sense the rest of this section uses
 — nothing to discover, nothing to pass to `resolve_bindings()` — so it
 is listed here to make sure you find it.
-[Section 6](#6-saving-a-game) has the full set — a save menu, exporting
+[Section 5](#5-saving-a-game) has the full set — a save menu, exporting
 and importing, quicksave — and how to customize it.
 
 Saving is done by your program, so your story never calls this one. Give
@@ -1096,17 +1476,98 @@ it a folder to write to:
 
 ```python
 from pathlib import Path
-from if_session import GameSavesDirectory, save_game, load_game_save
+from if_session import GameSavesDirectory, save_game
 
 game_saves_directory = GameSavesDirectory(Path("saves"))
-save_game("thehauntedhouse", 0, state, "Before the bridge",
-          saves_in=game_saves_directory, maximum_gamesave_slots=5, saved_at=when)
+
+save_game("thehauntedhouse", 0, state.to_dict(), "Before the bridge",
+          saves_in=game_saves_directory, maximum_gamesave_slots=5,
+          saved_at="2026-09-19T10:00:00")
 ```
+
+`state` is the `InkRuntimeState` from [section 2.0](#20-turning-them-on);
+`to_dict()` is what turns a live session into the plain dictionary a save
+holds. `saved_at` is your own timestamp, as a string.
 
 The save covers the whole game world and everything in it: the story's
 own progress, and every plugin's state along with it.
 
-### 2.10 Extending a plugin for your own game
+### 2.10 The three helper modules
+
+`engine_plugins/` holds eleven modules but only eight plugins. The other
+three publish no `EXTERNAL` bindings and your story never calls them — a
+plugin calls them. You only need these when extending the plugin they
+belong to, or writing one like it.
+
+| Helper | Helps | Holds |
+|---|---|---|
+| `containers.py` | `inventory.py` | what makes a holder a container |
+| `item_text.py` | `inventory.py` | which description an item shows |
+| `schedule_rules.py` | `character_occupancy.py` | where a character is, as data |
+
+**`containers.py`** answers two questions about a container: can you reach
+in, and can you see in. A holder with no container record is an ordinary
+open holder.
+
+A container here is a thing in the game world that holds other things --
+a chest, a basket, a glass case. It is unrelated to inkle's
+`Runtime.Container`, which is the compiled node the Ink runtime builds
+knots and choices out of.
+
+```python
+from ink_engine.engine_plugins.containers import accepts_reach, reveals_contents
+
+accepts_reach({})                                              # True  -- a basket
+accepts_reach({"openable": True, "is_open": False})            # False -- a shut chest
+reveals_contents({"openable": True, "is_open": False})         # False
+
+# A shut glass case: you can see in, but not reach in.
+accepts_reach({"openable": True, "is_open": False, "transparent": True})      # False
+reveals_contents({"openable": True, "is_open": False, "transparent": True})   # True
+```
+
+**`item_text.py`** picks one description from three layers: the item's own
+authored text for that slot, then the game's template for the slot, then
+nothing. It holds no strings itself — the game supplies all of them.
+
+```python
+from ink_engine.engine_plugins.item_text import describe
+
+authored = {"held": "The lantern is warm in your hand."}
+defaults = {"held": "You are carrying {name}.", "ground": "{name} lies here."}
+
+describe("held",   authored=authored, defaults=defaults, name="a brass lantern")
+# 'The lantern is warm in your hand.'   -- the item's own text wins
+describe("ground", authored=authored, defaults=defaults, name="a brass lantern")
+# 'a brass lantern lies here.'          -- falls back to the template
+describe("shelf",  authored=authored, defaults=defaults, name="a brass lantern")
+# ''                                    -- no text for that slot
+```
+
+**`schedule_rules.py`** describes where a character is as ordered data,
+evaluated first-match-wins. It is plain data rather than code, so it
+serializes with a save.
+
+```python
+from ink_engine.engine_plugins.scheduling import EIGHT_AM, SIX_PM
+from ink_engine.engine_plugins.schedule_rules import (
+    Condition, ScheduleRule, resolve_schedule,
+)
+
+BLACKSMITH = (
+    ScheduleRule(condition=Condition.flag_is_set("blacksmith_fled"), location_id=None),
+    ScheduleRule(condition=Condition.minute_in_range(EIGHT_AM, SIX_PM), location_id="forge"),
+    ScheduleRule(condition=None, location_id="tavern"),
+)
+
+resolve_schedule(BLACKSMITH, flags=frozenset(), clock=108)   # 'forge'   (09:00)
+resolve_schedule(BLACKSMITH, flags=frozenset(), clock=240)   # 'tavern'  (20:00)
+```
+
+`character_occupancy` imports `schedule_rules`, never the other way
+round, so a story can evaluate schedules with no occupancy store at all.
+
+### 2.11 Extending a plugin for your own game
 
 #### Config versus session state
 
@@ -1117,7 +1578,7 @@ What one playthrough did to that world — a price it altered, a place it
 discovered — is what `game_state` records, as [section 2.1](#21-costtable-what-things-cost) showed.
 
 That split is what lets a new version of a game reach an existing save.
-Re-price a spell or add a map edge, and every save in flight sees the
+Re-price a spell or add a map edge, and every save in flight resolves the
 change, because no save ever contained a copy of the old value.
 
 **A game extends a shipped plugin by instantiating it with config, or by
@@ -1126,8 +1587,45 @@ subclassing it — and then activates the result, not both.**
 The simple case is config: the same plugin, holding your data.
 
 ```python
+from ink_engine.binding import resolve_bindings
+from ink_engine.engine_plugins.costs import CostTable
+
+MY_PRICES = {"costs": {
+    "healing_potion": {"resource": "gold", "amount": 25},
+    "fireball":       {"resource": "mana", "amount": 8, "variants": {"first": 12}},
+}}
+
 GAME_COSTS = CostTable(name="game_costs", config=MY_PRICES)
+
+game_state = {}
+story_functions = resolve_bindings(
+    {GAME_COSTS.name: GAME_COSTS.plugin()}, ["game_costs"], game_state)
+
+print("1", sorted(game_state))
+print("2", story_functions["cost_of"]("healing_potion"))
+print("3", story_functions["cost_of"]("fireball"))
+print("4", story_functions["cost_of"]("fireball", "first"))
+print("5", story_functions["is_priced"]("rope"))
 ```
+
+```
+1 ['cost_table']
+2 25
+3 8
+4 12
+5 False
+```
+
+`GAME_COSTS.plugin()` turns the configured instance into the plugin
+object `resolve_bindings()` takes, the same kind `discover_plugins()`
+returns. You activate it by its own name, `"game_costs"`.
+
+**The state key does not follow the name.** Line 1 shows
+`game_state` keyed by `cost_table`, not `game_costs` — naming an instance
+does not move its slot, so a save written by one configured copy is read
+by any other. Pass `state_key=` as well when you want a genuinely separate
+slot, as [section 2.1](#21-costtable-what-things-cost) shows for a second
+cost table.
 
 #### Bounty hunting: extending Quests with money
 
@@ -1141,11 +1639,9 @@ from ink_engine.binding import resolve_bindings
 from ink_engine.engine_plugins.quests import QuestSpec, Quests, QuestSlot
 from ink_engine.plugin_base import external, query
 
-
 class BountySlot(QuestSlot):
     """The engine's quest state, plus what this game pays for a job."""
     rewards: dict[str, int]
-
 
 class BountyQuests(Quests):
     name = "bounty_quests"
@@ -1173,7 +1669,6 @@ class BountyQuests(Quests):
             for quest_id, coins in slot.get("rewards", {}).items()
             if self.is_complete(slot, quest_id)
         )
-
 
 CATALOG = {
     "rescue":  QuestSpec(quest_id="rescue", final_stage=30),
@@ -1269,35 +1764,42 @@ Start here: everything later builds on this.
 
 #### The Quests plugin in full
 
+Quoted from `ink_engine/engine_plugins/quests.py`, with the docstrings
+and the rest of the bindings left out:
+
 ```python
+STATE_KEY = "quests"
+
 class QuestSlot(TypedDict):
     stages: dict[str, int]
     met_goals: dict[str, list[str]]
     failed: list[str]
 
-
 class Quests(StatefulPlugin[QuestSlot]):
     name = "quests"
     display_name = "Quests"
-    state_key = "quests"
+    state_key = STATE_KEY
     slot_type = QuestSlot
     fields = {"stages": dict, "met_goals": dict, "failed": list}
 
     @external
     def start_quest(self, slot: QuestSlot, quest_id: str, stage: int = 1) -> None:
-        """Begin a quest, or reset it to a starting stage."""
-        slot.setdefault("stages", {})[quest_id] = stage
+        if not self.is_quest_started(slot, quest_id):
+            slot.setdefault("stages", {})[quest_id] = stage
 
     @query
     @external
     def quest_stage(self, slot: QuestSlot, quest_id: str) -> int:
-        """Return the quest's current stage, 0 if never started."""
-        return slot.get("stages", {}).get(quest_id, 0)
-
+        return slot.get("stages", {}).get(quest_id, UNSTARTED_STAGE)
 
 QUESTS = Quests()
 PLUGIN = QUESTS.plugin()
 ```
+
+**`start_quest` is idempotent** — a scene the player can re-enter cannot
+reset progress by starting the quest again. `quest_stage` answers
+`UNSTARTED_STAGE` for a quest never started, rather than a bare `0`, so
+a story that uses 0 as a real stage still reads correctly.
 
 Those last two lines are what makes the plugin findable: `discover_plugins`
 ([section 2.0](#20-turning-them-on)) scans a module for a `PLUGIN` and picks up whatever it finds. The
@@ -1351,8 +1853,8 @@ the other.
 | Attribute | What it is |
 |---|---|
 | `name` | The plugin's unique name — what an application puts in `active_names` to switch it on. Two plugins may not share one. |
-| `display_name` | A human label, for a application's own settings UI or error messages. Never seen by a story, but not optional — omitting it fails when the plugin is built. |
-| `state_key` | Which key of `game_state` this plugin's slot lives under. Usually the same as `name`, but not always — a subclass keeps its parent's, which is how a save survives being renamed ([section 2.9](#210-extending-a-plugin-for-your-own-game)). |
+| `display_name` | A human label, for an application's own settings UI or error messages. Never seen by a story, but not optional — omitting it fails when the plugin is built. |
+| `state_key` | Which key of `game_state` this plugin's slot lives under. Usually the same as `name`, but not always — a subclass keeps its parent's, which is how a save survives being renamed ([section 2.11](#211-extending-a-plugin-for-your-own-game)). |
 | `slot_type` | The `TypedDict` above. |
 | `fields` | `{field_name: empty_value_factory}` for every key of `slot_type` — `dict` and `list` here, the *callables*, not `{}` and `[]`. |
 
@@ -1375,16 +1877,24 @@ at the top of your `.ink`, mark the Python method `@external`, and the two
 are joined — the method name *is* the Ink name, so there is no second
 place to keep in sync.
 
-Two rules it enforces, because Ink is stricter than Python about return
-values:
+Two rules it enforces about return values:
 
 - **You must say what the method returns.** Leaving the `-> bool` or
-  `-> None` off raises an error the moment the plugin is built, rather
-  than when a story eventually calls it.
-- **`-> None` is a real answer, not the absence of one.** Ink has no
-  concept of a function that returns nothing, so a method declared
-  `-> None` is published as returning a placeholder value instead. That is
-  what lets `~ start_quest("rescue")` work as a statement in a story.
+  `-> None` off raises `TypeError` as soon as the class body runs — at
+  import, before any instance exists, rather than when a story eventually
+  calls it. The message names the method and suggests `-> None` for a
+  writer.
+- **`-> None` is a real answer, not the absence of one.** Ink has no void
+  `EXTERNAL`: every bound function must return something, and a story
+  calling one with `~` discards it. So a method declared `-> None` is
+  published wrapped — it runs, then returns `plugin.VOID` in place of
+  Python's `None`. That is what lets `~ start_quest("rescue")` work as a
+  statement in a story.
+
+  The value itself is arbitrary and named once so a reader is not left
+  wondering whether one plugin returning `0` and another `1` meant
+  something. Do not confuse it with `engine.VOID`, a different marker for
+  an Ink function that falls off its own body without `~ return`.
 
 **`@query` has nothing to do with Ink.** It publishes the method to the
 *application* — the program running your game — so a sidebar, character sheet or
@@ -1398,7 +1908,7 @@ answers a question; none of them changes anything. `finish_quest` is
 business completing a quest behind the story's back.
 
 A method with neither decorator is internal — your other methods can call
-it, and neither the story nor the application can see it.
+it, and neither the story nor the application can call it.
 
 #### Why every method takes `slot` first
 
@@ -1419,7 +1929,7 @@ def quest_stage(self, slot, quest_id): ...
 never needs to know who it is serving, because whoever called it already
 handed over the right one.
 
-This is the trap worth knowing about. Writing `self.current_quest =
+This is the mistake worth knowing about. Writing `self.current_quest =
 quest_id` puts one player's progress onto the object everyone shares.
 Nothing complains, and it works perfectly while you are the only person
 playing — then two players see each other's quests. **Everything a
@@ -1441,31 +1951,42 @@ plugin's data safe across saves and shared cleanly between playthroughs.
 
 #### The Skills plugin in full
 
+Quoted from `ink_engine/engine_plugins/skills.py`, with the docstrings
+and the rest of the bindings left out:
+
 ```python
+STATE_KEY = "skills"
+
 class SkillSlot(TypedDict):
-    skill_levels: dict[str, float]
+    skill_levels: dict[str, dict[str, float]]
     rng_seed: int
     last_roll: int
     last_effective_target: int
 
-
 class Skills(StatefulPlugin[SkillSlot]):
     name = "skills"
     display_name = "Skills"
-    state_key = "skills"
+    state_key = STATE_KEY
     slot_type = SkillSlot
-    fields = {"skill_levels": dict, "rng_seed": int,
-              "last_roll": int, "last_effective_target": int}
+    fields = {"skill_levels": dict, "rng_seed": int, "last_roll": int, "last_effective_target": int}
 
     @external
     def skill_check(self, slot: SkillSlot, level: float, max_level: int, bonus: int = 0) -> bool:
-        """Roll against a skill; True on success."""
-        ...
-
+        return self.check(slot, level, max_level, bonus).success
 
 SKILLS = Skills()
 PLUGIN = SKILLS.plugin()
 ```
+
+`skill_levels` is nested two deep — `character_id` to `skill_name` to
+level — so one store holds every character's skills. The level is a
+number rather than strictly an integer, which lets a game use it as a
+staged counter (2.1, 2.2) on whatever range it chose.
+
+`skill_check` returns only the boolean, for Ink. `check()` underneath it
+returns a `CheckResult` carrying the roll and the target as well, which
+is what an application shows when it reports "you needed 40 or under,
+you rolled 62."
 
 #### Randomness belongs in the slot
 
@@ -1538,18 +2059,21 @@ on another without tying the two together permanently.**
 
 #### The CharacterOccupancy plugin in full
 
+Quoted from `ink_engine/engine_plugins/character_occupancy.py`, with the
+docstrings and the bindings left out:
+
 ```python
+STATE_KEY = "character_occupancy"
+
 class OccupancySlot(TypedDict):
     locations: dict[str, str]
-
 
 class CharacterOccupancy(StatefulPlugin[OccupancySlot]):
     name = "character_occupancy"
     display_name = "Character occupancy"
-    state_key = "character_occupancy"
+    state_key = STATE_KEY
     slot_type = OccupancySlot
     fields = {"locations": dict}
-
 
 CHARACTER_OCCUPANCY = CharacterOccupancy()
 PLUGIN = CHARACTER_OCCUPANCY.plugin()
@@ -1585,7 +2109,7 @@ The payoff is `set_location` refusing a place the map never declared,
 raising `UnknownLocationError` rather than storing a typo that will never
 match anything again. The map is the vocabulary; occupancy is held to it.
 
-That check is only possible because one plugin can see another's slot — and
+That check is only possible because one plugin can read another's slot — and
 only safe because it reads with a default, so a story that declares no map
 is unchecked rather than broken.
 
@@ -1596,12 +2120,15 @@ instead:
 
 ```python
     @external(needs_context=True)
-    def set_location(self, context: BindingContext[OccupancySlot], character: str, place_id: str) -> None:
-        declared = context.slot_of("location_graph").get("declared", [])
-        if place_id not in declared:
-            raise UnknownLocationError(place_id)
-        ...
+    def set_location(self, context: BindingContext[OccupancySlot], character_id: str, location_id: str) -> None:
+        known_locations = frozenset(context.slot_of(_LOCATION_STATE_KEY).get("declared", ()))
+        self.place(context.slot, character_id, location_id or None, known_locations)
 ```
+
+Quoted from `ink_engine/engine_plugins/character_occupancy.py`, without
+its docstring. `_LOCATION_STATE_KEY` is the `location_graph` module's own
+`STATE_KEY`, imported rather than written as a string, so renaming that
+key does not leave this reader pointing at nothing.
 
 `BindingContext` carries `slot`, `engine_state` and `list_defs`, and
 `slot_of(state_key)` reads another plugin's slot with a `{}` default. **Use
@@ -1614,12 +2141,14 @@ directly will KeyError on an old save.
 `list_defs` is the story's own compiled LIST tables, for a plugin that must
 answer in terms of real LIST members. It is passed as an argument rather
 than parked in `engine_state` so it cannot outlive the bind, be read late
-from a closure, or reach a application's persisted save.
+from a closure, or reach an application's persisted save.
 
 ### 3.5 The flat `Plugin` contract, and stateless plugins
 
 `StatefulPlugin.plugin()` produces the frozen dataclass everything
 downstream actually resolves:
+
+Quoted from `ink_engine/plugin.py`, without its docstring:
 
 ```python
 @dataclass(frozen=True)
@@ -1630,8 +2159,9 @@ class Plugin:
     validate_config: Callable[[Any], None] | None = None
     state_key: str | None = None
     init_state: Callable[[Any], dict[str, Any]] | None = None
+    bind: Callable[[dict[str, Any], EngineState, ListDefs], dict[str, Callable[..., Any]]] | None = None
+    queries: dict[str, StateQuery] = field(default_factory=dict)
     default_config: Any = None
-    bind: Callable[[dict, EngineState, ListDefs], dict[str, Callable]] | None = None
 ```
 
 A plugin with only `bindings` set is a **stateless** plugin: pure functions,
@@ -1642,17 +2172,18 @@ while the map's explored set is not. `state_key is not None` is the real
 test for "does this
 plugin own state" — not the presence of `bind`, which every plugin has.
 
-`ink_engine.discovery.discover_plugins(sources)` scans a application-supplied list
+`ink_engine.discovery.discover_plugins(sources)` scans an application-supplied list
 of sources (a `Path` to a directory of independent `.py` files, or a `str`
 naming an importable dotted module) and merges every `PLUGIN` /
-`PLUGINS` it finds into one dict keyed by name. **This function has no
-trust concept whatsoever** — every source given is scanned and imported
-unconditionally. Deciding which sources are even safe to pass is entirely
-the application's job, upstream of this call.
+`PLUGINS` it finds into one dict keyed by name. **Every source you pass is
+imported, without exception.** The engine has no way to judge which
+sources an application should be loading, so that decision stays with
+the application, upstream of this call.
 
 ### 3.6 Two-phase resolution: allocate, then bind
 
-`resolve_bindings(plugins, active_names, engine_state, configs=None)` runs
+`resolve_bindings(plugins, active_names, engine_state, *, list_defs=None,
+configs=None)` runs
 in two passes, and the split is what makes activation order stop mattering.
 
 #### Pass 1: allocate
@@ -1680,95 +2211,112 @@ a running session's data lives.
 Binds each active plugin and merges the results into the
 `dict[str, Callable]` that goes to `InkRuntimeState(engine_bindings=...)`.
 
-## 4. Testing that a binding is really wired
+## 4. Refreshing the choices after a plugin changes something
 
-A declared-but-unwired `EXTERNAL` falls through to its Ink fallback and
-answers whatever that fallback returns, forever — so "the tests pass" on
-its own proves very little. Two checks that do prove something:
+When a plugin changes the environment or the player — inventory, money,
+a skill, which exits are open — the choices already on screen were
+evaluated *before* that change. Their guards ran against the old state,
+so a choice the player should now be able to take is still greyed out,
+and one they can no longer afford is still offered.
 
-- **Assert each plugin's exact binding-name set.** Compare
-  `plugin.bindings.keys()` (or the keys returned by `plugin.bind(...)`)
-  against an explicit expected list in a test, so an accidental
-  addition/removal fails loudly rather than silently changing the surface
-  a story can call.
-- **Give the Ink fallback an impossible sentinel.** Have the story's own
-  fallback function return a value the real binding can never produce
-  (e.g. `-1` for a function that only ever returns a real count), then
-  assert the observed value during a real play-through is not that
-  sentinel. That distinguishes "the binding ran" from "the fallback ran" —
-  no ordinary assertion on the returned value alone can tell those apart
-  when the fallback's own default happens to overlap with a legitimate
-  real answer.
-- **Assert the slot stays JSON-safe and encapsulated.** `json.dumps()` the
-  slot after exercising the plugin's writers. A slot that will not
-  serialize is a save that will not persist, and the usual cause is a
-  definition object (a dataclass, an Enum) reaching state that should hold
-  only plain data. `init_state()` checks this for a *fresh* slot; only a
-  test covers what the writers put there later.
+`refresh_choices()` re-evaluates them **without advancing the clock or
+the turn**:
 
-## 5. Runtime notes — for anyone working on `engine.py` itself
+```python
+import json
+from pathlib import Path
 
-- **The output buffer is truncated per turn**, not accumulated forever.
-  `continue_story()` records `len(self.output.tokens)` at its own start and
-  slices only the new tokens for `last_turn_text` — serializing the whole
-  history instead would grow saved state without bound.
-- **Glue lookups are cached, not a rescan.** `_latest_glue_index()`
-  (`OutputStream`) only rescans the suffix appended since the last call,
-  not the whole turn's buffer.
-- **Every transient mid-dispatch flag is part of serialized state**
-  (`_eval_run_depth`, `_pending_thread`, `_in_tag`, `_tag_buffer`,
-  `_string_capture_stack`, and the rest of `to_dict()`'s own field list) —
-  omitting any of them from a save/resume path can leave a resumed session
-  in a state the live interpreter would never actually produce on its own
-  (e.g. a function-call return marker routed through the wrong branch).
-- **An application that writes state mid-turn calls `refresh_choices()`.** A panel
-  action that changes what a plugin's slot holds does not by itself change
-  the choices already evaluated for this turn; `refresh_choices()` replays
-  the turn from its own start so their guards see the new state. Nothing
-  advances — the turn count, the emitted text and the position are all
-  unchanged, and visit counts are carried across deliberately so the
-  replay cannot retire a once-only choice the player never took.
-- **[Ink] Tags are cleared per turn.** `current_tags` is reset at the start
-  of every `continue_story()` call, matching inkle's own documented
-  `currentTags` contract (`RunningYourInk.md`: scoped to "every time you
-  get content with `Continue()`") — an interpreter or application that skips this
-  leaves every tag ever seen "active" for the rest of the story.
-- **Shuffle seeding is a character-sum hash of the container's own path,
-  combined with the story's seed** — reproducing Ink's documented
-  shuffle/`shuffle once`/`shuffle stopping` behavior
-  (`WritingWithInk.md`), and reproducible only if the story seed itself is
-  pinned (real Ink seeds from the wall clock by default). `_shuffle_index`
-  notes in its own docstring which part of the port is unverified.
-- **[Ink] String operators are only `+`/`==`/`!=`**; `?`/`!?` are LIST-only.
-  Confirmed directly: `not` applied to a raw string (`not s`, not a
-  comparison result) raises `RUNTIME ERROR: ... Cannot perform operation
-  '!' on String`; `not` applied to the *result* of a string comparison
-  (`not (s == "world")`) works fine, since `==` already produces a boolean
-  (see [section 1.3 of the pitfalls guide](ink_pitfalls_and_debugging.md#13-not-binds-tighter-than-comparison)).
+from ink_engine.binding import resolve_bindings
+from ink_engine.discovery import discover_plugins
+from ink_engine.engine import InkRuntimeState, load_story_root, load_list_defs
 
-## 6. Saving a game
+story_json = json.loads(Path("story.ink.json").read_text())
+root = load_story_root(story_json)
+list_defs = load_list_defs(story_json)
+story_functions = resolve_bindings(
+    discover_plugins(["ink_engine.engine_plugins"]), ["inventory"], {})
+state = InkRuntimeState(root, list_defs, engine_bindings=story_functions)
+
+state.refresh_choices()
+```
+
+That one call is the whole API. What follows is what it does and when to
+reach for it.
+
+**What changes.** Only `current_choices`. The turn is replayed from its
+own start, so every choice's condition runs again and sees what your
+plugin just wrote.
+
+**What does not change:**
+
+- **The turn count and the player's position.** Nothing advances; this is
+  not a turn.
+- **The text already shown.** The replay re-emits this turn's prose, but
+  the original output is kept — the player does not see the scene twice.
+- **Your story's variables.** Globals are carried forward rather than
+  rolled back with the position. Whatever the plugin changed is the whole
+  point of replaying, so rolling it back would undo the change.
+- **Visit counts.** Carried across deliberately. Visit counts key on
+  object identity, so a naive replay would count this turn's containers a
+  second time and retire a once-only (`*`) choice the player never took.
+
+**When to call it.** After any application-side action that writes plugin
+state mid-turn: a panel button, an inventory screen, a spell menu — the
+kinds of thing `@query` and the panel API exist for. A binding called
+from the story itself does not need it, because the story is mid-turn
+already and its choices have not been evaluated yet.
+
+It does nothing before the first turn has run.
+
+---
+
+## 5. Saving a game
 
 A save covers the whole game world and everything in it: the story's own
 progress, and every plugin's state along with it. A restored game
 continues exactly where it stopped.
 
-### 6.1 Saving to a folder
+### 5.1 Saving to a folder
 
 Give it a folder to write to:
 
 ```python
+import json
 from pathlib import Path
+
+from ink_engine.binding import resolve_bindings
+from ink_engine.discovery import discover_plugins
+from ink_engine.engine import InkRuntimeState, load_story_root, load_list_defs
 from if_session import GameSavesDirectory, save_game, load_game_save, list_game_saves
+
+# The same session section 2.0 built, in full so this section stands alone.
+story_json = json.loads(Path("story.ink.json").read_text())
+root = load_story_root(story_json)
+list_defs = load_list_defs(story_json)
+story_functions = resolve_bindings(
+    discover_plugins(["ink_engine.engine_plugins"]), ["quests"], {})
+state = InkRuntimeState(root, list_defs, engine_bindings=story_functions)
 
 game_saves_directory = GameSavesDirectory(Path("saves"))
 
+saved_state = state.to_dict()
+when = "2026-09-19T10:00:00"            # your own timestamp, as a string
+
 # Save into slot 0, with a label the player chose.
-save_game("thehauntedhouse", 0, state, "Before the bridge",
+save_game("thehauntedhouse", 0, saved_state, "Before the bridge",
           saves_in=game_saves_directory, maximum_gamesave_slots=5, saved_at=when)
 
 # Later, read it back.
-state = load_game_save("thehauntedhouse", 0, saves_in=game_saves_directory, maximum_gamesave_slots=5)
+restored = load_game_save("thehauntedhouse", 0, saves_in=game_saves_directory, maximum_gamesave_slots=5)
+state = InkRuntimeState.from_dict(root, restored, list_defs, engine_bindings=story_functions)
 ```
+
+`load_game_save()` returns the state dictionary itself, not a wrapper
+around it -- the same thing `to_dict()` produced. `from_dict()` is a
+constructor rather than a method on a live session: it builds a new
+`InkRuntimeState` from that dictionary, so it needs `root`,
+`list_defs` and `story_functions` from [section 2.0](#20-turning-them-on)
+alongside it.
 
 There is no file opening, closing or folder creation to do: the folder is
 made when the first save is written. `"thehauntedhouse"` is whatever name
@@ -1779,7 +2327,8 @@ is your own decision: both shipped applications show the same slots
 numbered from 1, and convert at the edge.
 
 `list_game_saves()` gives you a save menu directly. It always returns one
-entry per slot, empty ones included, so nothing has to fill the gaps:
+entry per slot, empty ones included, so nothing has to fill the gaps.
+Continuing with the `game_saves_directory` from above:
 
 ```python
 for save in list_game_saves("thehauntedhouse", saves_in=game_saves_directory, maximum_gamesave_slots=5):
@@ -1789,21 +2338,39 @@ for save in list_game_saves("thehauntedhouse", saves_in=game_saves_directory, ma
         print(f'{save["gamesave_slot"]}: (empty)')
 ```
 
+```
+0: Before the bridge (turn -1)
+1: (empty)
+2: (empty)
+3: (empty)
+4: (empty)
+```
+
+`turn_count` is read out of the state you saved, under exactly that key.
+It is `-1` here because this session was saved before its first turn ran.
+A state with no `turn_count` at all lists as `None`, and nothing fails.
+
 The rest work the same way: `delete_game_save()` empties a slot,
 `quicksave()` and `quickload()` use a single reserved slot of their own
 that never disturbs a numbered one, and `has_quicksave()` answers whether
 there is one to load.
 
-### 6.2 Sharing a save between installations
+### 5.2 Sharing a save between installations
 
 `export_game_save()` returns a plain dictionary you can write to a file
-and a player can keep or send on. `import_game_save()` takes one back:
+and a player can keep or send on. `import_game_save()` takes one back.
+Still using the same `game_saves_directory` and `when`:
 
 ```python
+import json
+from pathlib import Path
+from if_session import export_game_save, import_game_save
+
 envelope = export_game_save("thehauntedhouse", 0, saves_in=game_saves_directory, maximum_gamesave_slots=5)
 Path("my-save.json").write_text(json.dumps(envelope))
 
 # Coming back the other way, from a file a player supplied.
+uploaded = Path("my-save.json").read_text()
 import_game_save("thehauntedhouse", 1, json.loads(uploaded), saves_in=game_saves_directory,
                  maximum_gamesave_slots=5, saved_at=when)
 ```
@@ -1813,33 +2380,78 @@ turns out to be damaged, or to belong to a different game, never
 overwrites the slot it was aimed at. A refusal raises `GameSaveError`
 with a message you can show the player.
 
-### 6.3 Keeping saves somewhere else
+### 5.3 Keeping saves somewhere else
 
 A game that stores saves in a database, or online, supplies its own
 answer instead of using `GameSavesDirectory`. Write a class with these
 five methods and pass it as `saves_in=`:
 
+The five methods, with what each must return. Fill in the bodies with
+whatever your storage needs -- this version keeps rows in a dictionary so
+the example below runs:
+
 ```python
+from if_session import save_game, load_game_save, list_game_saves
+
+
 class MyGameSavesLocation:
-    def read_game_save(self, game_id, gamesave_slot): ...
-    def write_game_save(self, game_id, game_save): ...
-    def delete_game_save(self, game_id, gamesave_slot): ...
-    def game_save_exists(self, game_id, gamesave_slot): ...
-    def summarize_game_saves(self, game_id): ...
+    """Stores each save row wherever your application keeps data."""
+
+    def __init__(self):
+        self.rows = {}
+
+    def read_game_save(self, game_id, gamesave_slot):
+        """Return the stored save dict, or None if that slot is empty."""
+        return self.rows.get((game_id, gamesave_slot))
+
+    def write_game_save(self, game_id, game_save):
+        """Store `game_save`, keyed by `game_save["gamesave_slot"]`."""
+        self.rows[(game_id, game_save["gamesave_slot"])] = game_save
+
+    def delete_game_save(self, game_id, gamesave_slot):
+        """Remove that slot. Do nothing if it is already empty."""
+        self.rows.pop((game_id, gamesave_slot), None)
+
+    def game_save_exists(self, game_id, gamesave_slot):
+        """Return whether that slot holds a save."""
+        return (game_id, gamesave_slot) in self.rows
+
+    def summarize_game_saves(self, game_id):
+        """Return every stored save dict for this game, in any order."""
+        return [row for (stored_id, _), row in self.rows.items() if stored_id == game_id]
+
+
+saves = MyGameSavesLocation()
+saved_state = {"turn_count": 42}        # `state.to_dict()` in a real game
+
+save_game("thehauntedhouse", 0, saved_state, "Before the bridge",
+          saves_in=saves, maximum_gamesave_slots=5,
+          saved_at="2026-09-19T10:00:00")
+
+print(list_game_saves("thehauntedhouse", saves_in=saves, maximum_gamesave_slots=5)[0])
+print(load_game_save("thehauntedhouse", 0, saves_in=saves, maximum_gamesave_slots=5))
 ```
 
-Everything above still applies unchanged -- slots, labels, exporting and
-quicksave are the same work whatever is underneath. A game save is a
-plain dictionary, so a database can store it as a JSON column without
-converting anything.
+```
+{'gamesave_slot': 0, 'used': True, 'label': 'Before the bridge', 'saved_at': '2026-09-19T10:00:00', 'turn_count': 42, 'game_build': ''}
+{'turn_count': 42}
+```
 
-## 7. When something does not work
+`saves_in=` takes your object everywhere `GameSavesDirectory` would have
+gone. Everything above still applies unchanged -- slots, labels,
+exporting and quicksave are the same work whatever is underneath. A game
+save is a plain dictionary, so a database can store it as a JSON column
+without converting anything.
+
+## 6. When something does not work
 
 Most problems with plugin bindings show up as a scene that quietly does
 nothing — a choice that never appears, a check that always answers no.
-This is where to look.
+This is where to look. When the symptoms here do not settle it,
+[section 7](#7-testing-that-a-binding-is-really-wired) is how to prove
+whether a binding is wired at all.
 
-### 7.1 A binding answers, but always says no
+### 6.1 A binding answers, but always says no
 
 **The most common cause: the plugin was never switched on.**
 
@@ -1866,7 +2478,7 @@ list the application passes to `resolve_bindings` ([section
 2.0](#20-turning-them-on)), or in the game's
 `REQUIRED_PLUGINS`.
 
-### 7.2 The story stops with a missing-function error
+### 6.2 The story stops with a missing-function error
 
 `EXTERNAL greet(name)` with nothing to answer it — no plugin, and no
 `=== function greet(name) ===` in your story either — stops the story,
@@ -1881,7 +2493,7 @@ Two ways to avoid meeting it in front of a player:
   story and lists every `EXTERNAL` with no fallback, before anyone plays
   it.
 
-### 7.3 A plugin name that does not exist
+### 6.3 A plugin name that does not exist
 
 Asking the application to switch on a plugin nothing provides is reported
 immediately, by name, rather than leaving you to wonder why its functions
@@ -1891,7 +2503,7 @@ This is deliberately different from an `EXTERNAL` a story declares and
 never uses — that is ordinary and silent, because a story is free to ask
 for more than the application offers.
 
-### 7.4 Names that collide
+### 6.4 Names that collide
 
 **An `EXTERNAL` parameter may not share a name with a global `VAR`.**
 `inklecate` rejects it outright: *"argument 'x': name has already been
@@ -1899,7 +2511,7 @@ used for a var on line N"*. Worth checking across every file you compile
 together — a collision can exist only once `INCLUDE` has combined them,
 so a single-file test will not show it.
 
-### 7.5 A function that returns nothing
+### 6.5 A function that returns nothing
 
 A story's own Ink function that runs off its end without `~ return`
 produces Void, not `0`. Comparing it raises *"Attempting to perform == on
@@ -1910,3 +2522,53 @@ The same applies to a plugin binding: **return a real value on every
 path.** A binding marked `-> None` is fine — the engine publishes a
 placeholder for it ([section 3.1](#31-a-first-plugin-line-by-line-quests)) — but a binding that sometimes returns a value
 and sometimes falls off its end will surprise the story that called it.
+
+---
+
+## 7. Testing that a binding is really wired
+
+A declared-but-unwired `EXTERNAL` falls through to its Ink fallback and
+answers whatever that fallback returns, forever — so "the tests pass" on
+its own proves very little. Two checks that do prove something:
+
+- **Assert each plugin's exact binding-name set.** Compare
+  `plugin.bindings.keys()` (or the keys returned by `plugin.bind(...)`)
+  against an explicit expected list in a test, so an accidental
+  addition/removal fails loudly rather than silently changing the surface
+  a story can call.
+- **Give the Ink fallback an impossible sentinel.** Have the story's own
+  fallback function return a value the real binding can never produce
+  (e.g. `-1` for a function that only ever returns a real count), then
+  assert the observed value during a real play-through is not that
+  sentinel. That distinguishes "the binding ran" from "the fallback ran" —
+  no ordinary assertion on the returned value alone can tell those apart
+  when the fallback's own default happens to overlap with a legitimate
+  real answer.
+- **Assert the slot stays JSON-safe and encapsulated.** `json.dumps()` the
+  slot after exercising the plugin's writers. A slot that will not
+  serialize is a save that will not persist, and the usual cause is a
+  definition object (a dataclass, an Enum) reaching state that should hold
+  only plain data. `init_state()` checks this for a *fresh* slot; only a
+  test covers what the writers put there later.
+
+### 7.1 Guarantees you can rely on
+
+Each of these was verified against the shipped code. The reproduction is
+the point: a guarantee you cannot demonstrate is a guarantee you cannot
+depend on, and one that quietly stops holding is worse than none.
+
+| Guarantee | Reproduce it |
+|---|---|
+| `set_location` refuses a location the map never declared | `place(slot, "x", "nowhere", frozenset({"forge"}))` raises `UnknownLocationError` |
+| `place()` checks **only** when handed the vocabulary | the same call without the fourth argument stores `"nowhere"` silently |
+| A plugin whose `slot_type` and `fields` disagree will not build | declare them with different keys; `TypeError` names both key lists |
+| An `@external` method must declare its return type | omit `-> bool`; `TypeError` raises when the class body runs |
+| The engine reads a game's files and never writes them | record every file's mtime, call `read_manifest()`, compare |
+| A compiled story's filename is never checked | `load_story_root()` takes parsed JSON; `.inkj`, `.ink.json` and any other name load identically |
+| Listing saves creates nothing | `list_game_saves()` against an empty directory leaves it empty |
+
+The second row is the one that catches people. The vocabulary argument
+defaults to "do not check" so a story with no map still works, which means
+a caller that omits it has turned the guarantee off for that write path.
+The Ink-facing binding always passes it; application code calling `place()`
+directly must pass it too.

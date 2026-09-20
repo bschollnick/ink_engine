@@ -1,15 +1,18 @@
 """Resolving a game folder's own compiled story file and reading its manifest.
 
-A game needs a real, existing compiled `.inkj` file: this engine has no
-Ink compiler of its own.
+A game needs a real, existing compiled story: this engine has no Ink
+compiler of its own. `.inkj` and `.ink.json` are the same thing under
+different names — `inklecate` writes the latter, this layout prefers the
+former, and neither is enforced. `MAIN_STORY_FILE` is taken literally and
+checked only for existence.
 
 **The manifest is `manifest.yaml`** — plain data with no execution path.
 `read_manifest()` is the one reader every typed accessor here builds on,
 and it parses the file **once per call, not once per field**.
 
-A game folder is still an importable Python package: its `__init__.py`
-stays, as an empty package marker, so its plugins and `sidebar.py` load
-by ordinary import. It no longer carries data.
+A game folder is an importable Python package: its `__init__.py`,
+Python's package initialization file, is what lets its plugins and
+`sidebar.py` load by ordinary import.
 
 `read_module_literals()` remains for reading literal assignments out of a
 game's other `.py` files — via `ast`, **never imported or exec'd, since a
@@ -31,8 +34,9 @@ from ink_engine.game_source import (
     as_source,
 )
 
-#: The compiled-story file extension this engine plays. `.ink` (uncompiled
-#: source) is never accepted here — see this module's own docstring.
+#: The compiled-story extension this layout prefers. A convention, not a
+#: check: nothing here rejects another name, and `.ink.json` plays exactly
+#: the same. Used in an error message and in bundle fingerprinting.
 COMPILED_STORY_SUFFIX = ".inkj"
 
 #: A game folder's manifest. Plain data: unlike the `__init__.py` it
@@ -57,6 +61,9 @@ PLAY_LAYOUT_FIELD = "PLAY_LAYOUT"
 #: The manifest field naming which plugins a game wants active — a plain
 #: list of plugin names, e.g. `["scheduling", "occupancy"]`.
 REQUIRED_PLUGINS_FIELD = "REQUIRED_PLUGINS"
+
+#: Manifest field naming the questions a game asks before its first turn.
+NEW_GAME_FIELDS_FIELD = "NEW_GAME_FIELDS"
 
 #: The manifest schema's own version. Read before anything else in the
 #: file is interpreted, so the schema can change without a reader having
@@ -90,6 +97,15 @@ COVER_IMAGE_FIELD = "COVER_IMAGE"
 #: The game's prose stylesheet, relative to the game folder. Declaring it
 #: replaces the hardcoded `styles.css` convention.
 PROSE_STYLES_FIELD = "PROSE_STYLES"
+
+#: A game's own declaration that it loads something over the network --
+#: a CDN font, a remote image. Self-declared and advisory: nothing here
+#: verifies it, and nothing restricts what a game may reach. An
+#: application uses it to tell the player before they start.
+#:
+#: Absent means False, so a game that says nothing is treated as
+#: self-contained.
+USES_NETWORK_RESOURCES_FIELD = "USES_NETWORK_RESOURCES"
 
 #: A Markdown file, relative to the game folder, explaining what the
 #: game's plugins do and why running them needs permission. Shown when a
@@ -181,6 +197,25 @@ def find_main_story_file(game_dir: GameSource | Path) -> str:
     if not source.exists(main_story_file):
         raise GameFolderError(f"Game '{source.name}': MAIN_STORY_FILE '{main_story_file}' does not exist in it")
     return main_story_file
+
+
+def read_uses_network_resources(game_dir: GameSource | Path) -> bool:
+    """Read a game folder's own `USES_NETWORK_RESOURCES` declaration.
+
+    Self-declared and advisory. Nothing here checks whether it is true,
+    and nothing prevents a game from reaching the network whatever it
+    says — a game's stylesheet is handed to the application as CSS text,
+    and CSS can name a remote font.
+
+    Args:
+        game_dir: The game folder's real filesystem path.
+
+    Returns:
+        True only when the manifest declares the field as a YAML boolean
+        true. Absent, or any other value, answers False: a game that says
+        nothing is treated as self-contained.
+    """
+    return _read_manifest_field(game_dir, USES_NETWORK_RESOURCES_FIELD) is True
 
 
 def read_play_layout(game_dir: GameSource | Path) -> str | None:
@@ -343,6 +378,27 @@ def read_required_plugins(game_dir: GameSource | Path) -> list[str]:
         no manifest at all, or a non-list/non-string-list value).
     """
     return _read_manifest_string_list_field(game_dir, REQUIRED_PLUGINS_FIELD)
+
+
+def read_new_game_fields(game_dir: GameSource | Path) -> list[dict[str, Any]]:
+    """Read a game's own `NEW_GAME_FIELDS`, the questions it asks first.
+
+    Each entry names an Ink variable and how to ask for it. An
+    application renders them; `if_session.character_creation` turns the
+    answers into the variables the story reads.
+
+    Args:
+        game_dir: The game folder, or its source.
+
+    Returns:
+        The declared list, or `[]` when the manifest has no such field,
+        has no manifest at all, or declares something that is not a list
+        of mappings.
+    """
+    value = _read_manifest_field(game_dir, NEW_GAME_FIELDS_FIELD)
+    if not isinstance(value, list):
+        return []
+    return [entry for entry in value if isinstance(entry, dict)]
 
 
 #: Returned by `_read_manifest_field()` when the field is absent, the

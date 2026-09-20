@@ -114,7 +114,7 @@ class CostTable(StatefulPlugin[CostSlot]):
     slot_type = CostSlot
     fields = {"costs": dict}
 
-    def __init__(self, *, name: str | None = None, display_name: str | None = None, config: Any = None) -> None:
+    def __init__(self, *, name: str | None = None, display_name: str | None = None, state_key: str | None = None, config: Any = None) -> None:
         """Build a cost table, optionally with a game's declared prices.
 
         Args:
@@ -126,7 +126,7 @@ class CostTable(StatefulPlugin[CostSlot]):
         Raises:
             SystemConfigValidationError: `config` does not match the shape.
         """
-        super().__init__(name=name, display_name=display_name, config=config)
+        super().__init__(name=name, display_name=display_name, state_key=state_key, config=config)
         self._declared: dict[str, dict[str, Any]] = (
             {} if config is None else {cost_key: dict(cost) for cost_key, cost in config.get("costs", {}).items()}
         )
@@ -143,7 +143,7 @@ class CostTable(StatefulPlugin[CostSlot]):
         validate_cost_table(config)
 
     def seed(self, slot: CostSlot, config: Any) -> None:
-        """Declare a application-attached price list into a brand-new slot.
+        """Declare an application-attached price list into a brand-new slot.
 
         Args:
             slot: The fresh slot.

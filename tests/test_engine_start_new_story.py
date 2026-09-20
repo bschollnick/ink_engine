@@ -1,6 +1,6 @@
 """start_new_story() -- the shared new-game entry point (ink_engine.engine).
 
-Both hosts build a fresh game through this one helper, so the
+Both applications build a fresh game through this one helper, so the
 initial-globals seam is verified here once rather than in each consumer.
 """
 

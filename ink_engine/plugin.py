@@ -1,5 +1,9 @@
-"""The plugin contract: one dataclass, no trust concept, no application-UI
-awareness.
+"""The plugin contract: one dataclass describing a discoverable unit of Ink
+`EXTERNAL` bindings.
+
+Deciding which plugins are safe to load, and how they are presented, are
+both the embedding application's decisions — this module describes only
+what a plugin IS.
 """
 
 from __future__ import annotations
@@ -44,13 +48,16 @@ class Plugin:
     plugin stateful: it owns one named slice of the session's
     `EngineState`. Otherwise `bindings` is its complete surface.
 
-    ink_engine has no concept of trust, application UI, or config storage.
+    ink_engine holds no opinion about an application's user interface or
+    where it stores configuration, and does not decide which plugin
+    sources an application should load.
 
     Attributes:
         name: Unique, stable identifier, e.g. "scheduling". Must be
             unique across every source one `discover_plugins()` call
             scans.
-        display_name: Human-readable label for a application's own UI. Never
+        display_name: Human-readable label for an application's own user
+            interface. Never
             read by ink_engine.
         bindings: Stateless EXTERNAL functions, keyed by the Ink function
             name each implements.

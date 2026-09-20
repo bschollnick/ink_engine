@@ -27,6 +27,8 @@ from ink_engine.bundler import (
     select_bundle_contents,
     stale_sources,
     verify_plan,
+    PACKAGE_MARKER,
+    needs_package_marker,
 )
 from ink_engine.game_folder import (
     MANIFEST_FILENAME,
@@ -117,6 +119,53 @@ def _command_inspect(arguments: argparse.Namespace) -> int:
     return 1 if stale else 0
 
 
+def _offer_package_marker(plan: BundlePlan, *, assume_yes: bool) -> bool:
+    """Offer to create the missing `__init__.py`, and create it if allowed.
+
+    Only offered when this is the one thing standing between the game and
+    a playable bundle, and the game ships Python code. An existing
+    directory of that name is refused rather than written over.
+
+    Args:
+        plan: The plan whose game folder has no `__init__.py`.
+        assume_yes: Create it without asking.
+
+    Returns:
+        Whether `__init__.py` now exists.
+    """
+    marker = plan.game_dir / PACKAGE_MARKER
+    if marker.is_dir():
+        print(f"\n{PACKAGE_MARKER} exists but is a directory; Python needs it to be a file.", file=sys.stderr)
+        return False
+
+    if assume_yes:
+        answer = "y"
+    elif not sys.stdin.isatty():
+        print(f"\nThis game ships Python code but has no {PACKAGE_MARKER},", file=sys.stderr)
+        print("Python's package initialization file, so the folder cannot be imported.", file=sys.stderr)
+        print("Create it, or pass --create-package-marker to have it written for you.", file=sys.stderr)
+        return False
+    else:
+        print("\nThis game ships Python code, and Python imports a folder as a package")
+        print(f"only when it contains {PACKAGE_MARKER}, its package initialization file.")
+        try:
+            answer = input(f"Create {marker}? [y/N] ").strip().lower()
+        except EOFError:
+            answer = ""
+
+    if answer not in ("y", "yes"):
+        print("Not created.", file=sys.stderr)
+        return False
+
+    try:
+        marker.touch()
+    except OSError as error:
+        print(f"Could not create {marker}: {error}", file=sys.stderr)
+        return False
+    print(f"Created {marker}")
+    return True
+
+
 def _command_build(arguments: argparse.Namespace) -> int:
     """Write a bundle."""
     game_dir = Path(arguments.game_dir)
@@ -129,6 +178,12 @@ def _command_build(arguments: argparse.Namespace) -> int:
     if _report_staleness(plan) and not arguments.allow_stale:
         print("\nRefusing to build a bundle from a stale story.", file=sys.stderr)
         return 1
+
+    if needs_package_marker(plan) and Path(PACKAGE_MARKER) not in plan.included:
+        if not _offer_package_marker(plan, assume_yes=arguments.create_package_marker):
+            return 1
+        plan = select_bundle_contents(game_dir, package_name=arguments.package_name)
+
     if not arguments.quiet:
         print()
 
@@ -208,7 +263,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     for name, handler, help_text in (
-        ("inspect", _command_inspect, "report what a bundle would contain, writing nothing"),
+        ("inspect", _command_inspect, "report what a bundle would contain; writes no files"),
         ("build", _command_build, "write the bundle"),
     ):
         subparser = subparsers.add_parser(name, help=help_text)
@@ -217,6 +272,11 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "build":
             subparser.add_argument("-o", "--output", default=None, help="output path (default: <game_dir>/../<package>.zip)")
             subparser.add_argument("-q", "--quiet", action="store_true", help="print only the final result")
+            subparser.add_argument(
+                "--create-package-marker",
+                action="store_true",
+                help=f"write {PACKAGE_MARKER} without asking, when the game ships Python code",
+            )
             subparser.add_argument(
                 "--allow-stale",
                 action="store_true",

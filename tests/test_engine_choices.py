@@ -267,7 +267,7 @@ class InvisibleDefaultChoiceTests(SimpleTestCase):
 
 
 class RefreshChoicesTests(SimpleTestCase):
-    """`refresh_choices()` -- re-evaluating a turn's choices after a host
+    """`refresh_choices()` -- re-evaluating a turn's choices after an application
     changes state outside the story (an inventory panel, a spell menu)."""
 
     def setUp(self):

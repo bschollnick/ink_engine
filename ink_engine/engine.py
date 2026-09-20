@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import functools
 import math
+import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -51,6 +52,55 @@ PATH_CACHE_SIZE = 256
 
 class InkPathError(ValueError):
     """Raised when a path string cannot be resolved against a container tree."""
+
+
+class ConcurrentPlaythroughError(RuntimeError):
+    """Raised when a second thread drives one `InkRuntimeState`.
+
+    A state holds one whole playthrough and mutates it in place with no
+    internal locking, so two threads driving it corrupt the call stack --
+    sometimes raising from deep inside the interpreter, sometimes just
+    losing turns. This check turns that into an error naming the real
+    mistake, at the point it is made.
+
+    Give each playthrough its own state. A compiled story root is
+    read-only and may be shared by any number of them.
+    """
+
+
+class _TurnGuard:
+    """Releases a state when its outermost turn returns.
+
+    Nested because `refresh_choices()` calls `continue_story()`, and
+    `continue_story()` calls `to_dict()`: only the outermost exit clears
+    the running thread.
+    """
+
+    __slots__ = ("_state",)
+
+    def __init__(self, state: "InkRuntimeState") -> None:
+        self._state = state
+
+    def __enter__(self) -> "_TurnGuard":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        state = self._state
+        with state._turn_guard_lock:  # pylint: disable=protected-access
+            state._turn_depth -= 1  # pylint: disable=protected-access
+            if state._turn_depth == 0:  # pylint: disable=protected-access
+                state._running_thread = None  # pylint: disable=protected-access
+
+
+def _one_turn_at_a_time(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Refuse a call that overlaps a turn already running on this state."""
+
+    @functools.wraps(method)
+    def guarded(self: "InkRuntimeState", *args: Any, **kwargs: Any) -> Any:
+        with self._claim_thread():  # pylint: disable=protected-access
+            return method(self, *args, **kwargs)
+
+    return guarded
 
 
 class UnboundExternalError(ValueError):
@@ -285,6 +335,31 @@ class VariableReference:
     """
 
     name: str
+
+
+#: context_index for a temp in the outermost scope (self.temps), which no
+#: call frame owns. 0 already means "a global".
+OUTERMOST_TEMP_SCOPE = -2
+
+
+@dataclass
+class VariablePointer:
+    """A `{"^var": name, "ci": index}` pointer to a variable, not its value.
+
+    What a `ref` parameter binds. Assigning through one writes to the
+    variable it names rather than to a local copy, so the caller sees the
+    change.
+
+    Args:
+        name: The pointed-to variable's name.
+        context_index: Which scope owns it -- -1 while unresolved (the
+            compiler's own placeholder), 0 for a global,
+            OUTERMOST_TEMP_SCOPE for a temp held outside any call frame,
+            otherwise the 1-based call-frame index whose temps hold it.
+    """
+
+    name: str
+    context_index: int = -1
 
 
 @dataclass
@@ -1002,6 +1077,7 @@ _DICT_OBJECT_BUILDERS: list[tuple[str, Any]] = [
     ("->t->", lambda obj: Divert(target_path=Path.parse(str(obj["->t->"])), pushes_tunnel=True)),
     ("*", lambda obj: ChoicePoint(target_path=Path.parse(str(obj["*"])), flags=int(obj.get("flg", 0)))),
     ("VAR?", lambda obj: VariableReference(name=str(obj["VAR?"]))),
+    ("^var", lambda obj: VariablePointer(name=str(obj["^var"]), context_index=int(obj.get("ci", -1)))),
     (
         "VAR=",
         lambda obj: VariableAssignment(name=str(obj["VAR="]), is_global=True, is_new_declaration=not obj.get("re", False)),
@@ -1295,6 +1371,22 @@ class OutputStream:
         for piece in pieces:
             self.push(piece)
 
+    def get_string_value(self) -> str:
+        """Return the assembled text as a STRING VALUE, uncleaned.
+
+        The display-time whitespace pass (`get_text`) must not run here.
+        Ports Story.cs's `EndString` case, which builds the value with a
+        plain `sb.Append(c.ToString())` and no cleaning: a string being
+        pushed onto the evaluation stack is data, not output, so
+        `"A " + who` has to keep the space `CleanOutputWhitespace` would
+        drop from the end of a run.
+
+        Returns:
+            The assembled text with glue markers omitted and whitespace
+            left exactly as written.
+        """
+        return "".join(token for token in self.tokens if token != GLUE)
+
     def get_text(self) -> str:
         """Return the assembled visible text for everything pushed so far.
 
@@ -1442,12 +1534,19 @@ NATIVE_FUNCTION_ARITY = {
 # NativeFunctionCall operators: they are
 # ControlCommand.ListRange/ListRandom, dispatched from LIST_COMMANDS and
 # RNG_COMMANDS respectively.
+#: The compiled name for the intersection operator. A bare "^" would
+#: collide with the literal-text marker, so the compiler emits "L^".
+INTERSECTION_ALIASES = {"L^": "^"}
+
 LIST_NATIVE_FUNCTION_ARITY = {
     "+": 2,
     "-": 2,
     "?": 2,
     "!?": 2,
+    # The compiler emits the intersection operator as "L^", not "^" -- a bare
+    # "^" would collide with the literal-text marker. Both names are accepted.
     "^": 2,
+    "L^": 2,
     "==": 2,
     "!=": 2,
     ">": 2,
@@ -1524,13 +1623,16 @@ def _display_string(value: Any) -> str:
     Returns:
         value.to_display_string() for a ListValue (item names only, no
         Python repr/dataclass noise); "true"/"false" for a bool (Python's
-        str(bool) capitalizes, which real Ink never does); str(value) for
-        everything else.
+        str(bool) capitalizes, which real Ink never does); a whole-valued
+        float without its ".0" (`{POW(3,2)}` prints "9", not "9.0");
+        str(value) for everything else.
     """
     if isinstance(value, ListValue):
         return value.to_display_string()
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
     return str(value)
 
 
@@ -1626,7 +1728,8 @@ def _list_binary_op(name: str, first: ListValue, second: ListValue) -> Any:
         "&&": lambda: bool(first_map) and bool(second_map),
         "||": lambda: bool(first_map) or bool(second_map),
     }
-    op = ops.get(name)
+    # The compiler emits intersection as "L^"; ops defines it once as "^".
+    op = ops.get(INTERSECTION_ALIASES.get(name, name))
     if op is not None:
         return op()
     return _list_comparison_op(name, first, second)
@@ -1715,6 +1818,12 @@ def _list_unary_op(name: str, value: ListValue, list_defs: dict[str, dict[str, i
         return len(entries)
     if name == "LIST_VALUE":
         return entries[0][1] if entries else 0
+    if name == "!":
+        # `not <list>` is emptiness, as an int: real Ink prints 1 for an
+        # empty list and 0 for a non-empty one. Raising instead would be
+        # swallowed by _apply_operator_defensively, leaving the guard in a
+        # recursive list traversal with nothing to test.
+        return 1 if not entries else 0
     if name in ("LIST_ALL", "LIST_INVERT"):
         held = value.as_dict()
         result: dict[tuple[str, str], int] = {}
@@ -2010,6 +2119,9 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         self.story_seed = self.random_engine(time_seed()).next() % 100
         self.previous_random = 0
         self.last_turn_text = ""
+        self._turn_guard_lock = threading.Lock()
+        self._running_thread: int | None = None
+        self._turn_depth = 0
         self._register_list_item_globals()
         self._run_global_decl()
 
@@ -2141,6 +2253,86 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             return self.globals[name]
         return 0
 
+    def _resolve_variable_pointer(self, pointer: VariablePointer) -> VariablePointer:
+        """Return `pointer` with its context_index bound to a real scope.
+
+        Ports Story.ResolveVariablePointer. An already-resolved pointer is
+        returned unchanged, so re-pushing one (passing a `ref` parameter
+        straight on to another `ref` parameter) keeps pointing at the
+        original variable rather than at the intermediate name.
+
+        Args:
+            pointer: The pointer as loaded, usually with context_index -1.
+
+        Returns:
+            A pointer whose context_index is 0 for a global, or the
+            1-based call-frame index whose temps hold the name.
+        """
+        if pointer.context_index != -1:
+            return pointer
+        existing = self._current_temps.get(pointer.name)
+        if isinstance(existing, VariablePointer):
+            # Passing a `ref` parameter straight on to another `ref`
+            # parameter forwards the ORIGINAL pointer. Re-resolving to the
+            # current frame instead would move the target one level deeper
+            # per recursion, so upstream's pop()/reach() pair would write
+            # to a fresh scope each time and never drain its list.
+            return self._resolve_variable_pointer(existing)
+        # Otherwise bind to the scope holding the name right now: the
+        # caller's, since the callee's frame is not pushed until after its
+        # arguments are evaluated.
+        if pointer.name in self._current_temps:
+            # A temp held outside any call frame needs its own marker: 0
+            # already means "a global", and the frame indices start at 1.
+            scope = len(self.call_stack) or OUTERMOST_TEMP_SCOPE
+            return VariablePointer(name=pointer.name, context_index=scope)
+        return VariablePointer(name=pointer.name, context_index=0)
+
+    def _pointer_scope(self, pointer: VariablePointer) -> dict[str, Any]:
+        """Return the variable dict a resolved pointer addresses.
+
+        Args:
+            pointer: A pointer whose context_index has been resolved.
+
+        Returns:
+            self.globals for context_index 0, self.temps for the outermost
+            temp scope, otherwise that call frame's own temps (falling back
+            to globals if the frame has since been popped).
+        """
+        if pointer.context_index == OUTERMOST_TEMP_SCOPE:
+            return self.temps
+        if pointer.context_index <= 0:
+            return self.globals
+        index = pointer.context_index - 1
+        if index < len(self.call_stack):
+            return self.call_stack[index].temps
+        return self.globals
+
+    def _read_through_pointer(self, value: Any) -> Any:
+        """Return the pointed-to value if `value` is a pointer, else `value`.
+
+        Args:
+            value: Anything just read out of a variable.
+
+        Returns:
+            The referenced variable's current value for a VariablePointer;
+            `value` unchanged otherwise.
+        """
+        if not isinstance(value, VariablePointer):
+            return value
+        resolved = self._resolve_variable_pointer(value)
+        return self._pointer_scope(resolved).get(resolved.name, 0)
+
+    def _write_through_pointer(self, pointer: VariablePointer, value: Any) -> None:
+        """Store `value` in the variable `pointer` addresses.
+
+        Args:
+            pointer: The `ref` parameter's pointer.
+            value: The value to store in the pointed-to variable.
+        """
+        resolved = self._resolve_variable_pointer(pointer)
+        self._pointer_scope(resolved)[resolved.name] = value
+
     def _write_variable(self, assignment: VariableAssignment, value: Any) -> None:
         """Store a value under a VariableAssignment's target name.
 
@@ -2149,6 +2341,14 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
                 a global VAR= or a local temp=).
             value: The value popped off eval_stack to store.
         """
+        existing = self._current_temps.get(assignment.name)
+        if isinstance(existing, VariablePointer) and not assignment.is_new_declaration:
+            # `existing` is a bound `ref` parameter and this is a
+            # REASSIGNMENT ("re": true), so it writes to the caller's
+            # variable. The initial `{"temp=": name}` that binds the
+            # parameter has no "re" and must store the pointer itself.
+            self._write_through_pointer(existing, value)
+            return
         if assignment.is_global:
             self.globals[assignment.name] = value
         else:
@@ -2649,7 +2849,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         if content == STRING_END:
             captured = self._string_capture_stack.pop()
             self._string_capture_eval_depth.pop()
-            self.eval_stack.append(captured.get_text())
+            self.eval_stack.append(captured.get_string_value())
             return True
         if self._string_capture_stack:
             # A tag written inside a choice's own brackets (`* [Go #
@@ -2733,7 +2933,9 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             return True
         if content == EVAL_OUTPUT:
             if self.eval_stack:
-                value = self._pop_eval_stack()
+                # A `ref` parameter on the stack is a pointer; printing it
+                # prints the variable it addresses.
+                value = self._read_through_pointer(self._pop_eval_stack())
                 if not isinstance(value, Void):
                     # The innermost active capture context wins. A
                     # `{var}`/`{expr}` interpolation inside an active
@@ -3105,7 +3307,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         arity = NATIVE_FUNCTION_ARITY[name]
         if len(self.eval_stack) < arity:
             return
-        args = [self.eval_stack.pop() for _ in range(arity)]
+        args = [self._read_through_pointer(self.eval_stack.pop()) for _ in range(arity)]
         args.reverse()
         try:
             result = apply_native_function(name, args, self.list_defs)
@@ -3284,7 +3486,16 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             # number or list outside "ev".."/ev", so it can only legally
             # appear inside an eval run.
             self.eval_stack.append(content)
+        elif isinstance(content, VariablePointer):
+            # A `ref` argument: push the pointer, not the value. ci == -1
+            # is the compiler's unresolved placeholder, so bind it to the
+            # scope that actually holds the name at the moment of the call.
+            self.eval_stack.append(self._resolve_variable_pointer(content))
         elif isinstance(content, VariableReference):
+            # A name bound to a `ref` parameter pushes the POINTER, not the
+            # value: passing it on to another `ref` parameter must forward
+            # the original target. Operators and output dereference it at
+            # the point a value is actually needed.
             self.eval_stack.append(self._read_variable(content.name))
         elif isinstance(content, VariableAssignment):
             self._write_variable(content, self._pop_eval_stack())
@@ -3383,6 +3594,33 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         self._visit_changed_containers_due_to_divert()
         return True
 
+    def _claim_thread(self) -> "_TurnGuard":
+        """Refuse a turn that overlaps one already running on this state.
+
+        Detects overlap, not ownership: handing a state between threads
+        sequentially (a worker pool, `asyncio.to_thread`) is fine, and
+        only a turn entered while another is still running is refused.
+
+        Returns:
+            A context manager that releases the state on exit.
+
+        Raises:
+            ConcurrentPlaythroughError: Another turn is already running.
+        """
+        caller = threading.get_ident()
+        with self._turn_guard_lock:
+            running = self._running_thread
+            if running is not None and running != caller:
+                raise ConcurrentPlaythroughError(
+                    f"a turn is already running on this InkRuntimeState (thread {running}); "
+                    f"thread {caller} must use its own state "
+                    "(the compiled story root is safe to share)"
+                )
+            self._running_thread = caller
+            self._turn_depth += 1
+        return _TurnGuard(self)
+
+    @_one_turn_at_a_time
     def continue_story(self) -> str:
         """Advance the story until the next stopping point.
 
@@ -3431,6 +3669,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         self.output.tokens = new_tokens
         return self.last_turn_text
 
+    @_one_turn_at_a_time
     def refresh_choices(self) -> None:
         """Re-evaluate this turn's choices against state changed mid-turn.
 
@@ -3481,6 +3720,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         """
         self.__dict__.update(other.__dict__)
 
+    @_one_turn_at_a_time
     def choose(self, index: int) -> None:
         """Select one of the currently offered choices and follow its target.
 
@@ -3537,9 +3777,10 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         """Convert one globals/temps/eval_stack entry to a JSON-safe form.
 
         Args:
-            value: A bool/int/float/str/ListValue/ResolvedDivertTarget/Void
-                — every type this module's dispatch code can leave on
-                eval_stack or store in a variable.
+            value: A bool/int/float/str/ListValue/ResolvedDivertTarget/
+                VariablePointer/Void — every type this module's dispatch
+                code can leave on eval_stack or store in a variable. A
+                VariablePointer occurs while a `ref` parameter is bound.
 
         Returns:
             int/float/str unchanged; a tagged dict for
@@ -3560,6 +3801,12 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
                 "$type": "list",
                 "entries": [[list(key), val] for key, val in value.entries],
                 "origin_names": list(value.origin_names),
+            }
+        if isinstance(value, VariablePointer):
+            return {
+                "$type": "variable_pointer",
+                "name": value.name,
+                "context_index": value.context_index,
             }
         if isinstance(value, ResolvedDivertTarget):
             return {
@@ -3590,6 +3837,8 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         if data["$type"] == "list":
             entries = tuple((tuple(key), val) for key, val in data["entries"])
             return ListValue(entries=entries, origin_names=tuple(data["origin_names"]))
+        if data["$type"] == "variable_pointer":
+            return VariablePointer(name=data["name"], context_index=data["context_index"])
         if data["$type"] == "divert_target":
             return self._deserialize_divert_target(data)
         return None
@@ -3679,8 +3928,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             "previous_pointer": self._serialize_pointer(self.previous_pointer),
             "output_tokens": list(self.output.tokens),
             "current_choices": [
-                {"text": choice.text, "target_path": _container_path(choice.target), "tags": list(choice.tags)}
-                for choice in self.current_choices
+                {"text": choice.text, "target_path": _container_path(choice.target), "tags": list(choice.tags)} for choice in self.current_choices
             ],
             "visit_counts": self._id_keyed_dict_to_path_keyed(self.visit_counts, by_id),
             "visit_turns": self._id_keyed_dict_to_path_keyed(self.visit_turns, by_id),
@@ -3742,9 +3990,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             if isinstance(target, Container):
                 # A save written before choices carried tags has no "tags"
                 # key; it restores as an untagged choice rather than failing.
-                state.current_choices.append(
-                    Choice(text=str(choice_data["text"]), target=target, tags=list(choice_data.get("tags", [])))
-                )
+                state.current_choices.append(Choice(text=str(choice_data["text"]), target=target, tags=list(choice_data.get("tags", []))))
         state.visit_counts = state._path_keyed_dict_to_id_keyed(data.get("visit_counts", {}))
         state.visit_turns = state._path_keyed_dict_to_id_keyed(data.get("visit_turns", {}))
         state.current_tags = list(data.get("current_tags", []))

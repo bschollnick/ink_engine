@@ -2,9 +2,9 @@
 plugins from real importable sources, and binding resolution.
 
 These three modules (`plugin.py`, `discovery.py`, `binding.py`) are the
-library's whole plugin surface, and every host builds on them. Until this
+library's whole plugin surface, and every application builds on them. Until this
 file existed their only coverage lived in the consumers' own suites, so a
-contract change could pass here and break both hosts.
+contract change could pass here and break both applications.
 
 Discovery is exercised against real temporary packages on `sys.path`
 rather than mocks: the thing worth testing is that ordinary Python import
@@ -235,7 +235,7 @@ class DiscoverPluginsTests(TestCase):
         self.assertEqual(sorted(discover_plugins(["relative_game.entry"])), ["from_base"])
 
     def test_two_sources_declaring_the_same_plugin_name_raise(self):
-        """A silent winner here would mean the host cannot tell which
+        """A silent winner here would mean the application cannot tell which
         implementation a story actually got."""
         first = self._write_package(
             "clash_one",
@@ -253,14 +253,14 @@ class DiscoverPluginsTests(TestCase):
         self.assertEqual(discover_plugins([]), {})
 
     def test_an_unimportable_source_raises(self):
-        """A source naming something Python cannot import is a host
+        """A source naming something Python cannot import is an application
         misconfiguration, reported loudly rather than silently finding
         nothing."""
         with self.assertRaises(ModuleNotFoundError):
             discover_plugins(["no_such_package_anywhere"])
 
     def test_the_engines_own_plugin_package_is_discoverable_by_its_constant(self):
-        """`ENGINE_PLUGIN_PACKAGE` is what both hosts pass to get the
+        """`ENGINE_PLUGIN_PACKAGE` is what both applications pass to get the
         shipped generic plugins; it must actually resolve."""
         found = discover_plugins([ENGINE_PLUGIN_PACKAGE])
         self.assertIn("character_occupancy", found)
@@ -362,7 +362,7 @@ class ResolveBindingsTests(TestCase):
         self.assertEqual(resolved["where_is_now"](), "game")
 
     def test_an_undiscovered_active_name_raises(self):
-        """A host promising a plugin that discovery never found is a
+        """An application promising a plugin that discovery never found is a
         real misconfiguration, reported loudly rather than skipped."""
         with self.assertRaises(KeyError):
             resolve_bindings({}, ["never_discovered"], {})
@@ -374,7 +374,7 @@ class ListDefsArgumentTests(TestCase):
     Passing them directly rather than through `engine_state` is what makes
     the whole class of lifetime bugs unwritable: `list_defs` is a local,
     so it cannot outlive the call, cannot be read late from a closure, and
-    cannot reach a host's persisted save data.
+    cannot reach an application's persisted save data.
     """
 
     def _capturing_plugin(self, seen: dict[str, Any]) -> Plugin:
@@ -493,7 +493,7 @@ class ManifestCheckTests(TestCase):
     """The manifest is a check and balance: a plugin in use but not
     declared is an error, not a convenience.
 
-    Without this, the two can drift silently -- one host binds from a
+    Without this, the two can drift silently -- one application binds from a
     database row, another from the manifest, and the game plays
     differently on each with nothing raising.
     """

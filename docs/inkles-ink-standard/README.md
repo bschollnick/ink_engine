@@ -1,5 +1,9 @@
 # inkle's Ink Standard
 
+**Date Created:** 2026-09-08  
+**Last Updated:** 2026-09-20  
+**Last Reviewed:** UNREVIEWED
+
 **This is not our documentation.** It's a verbatim, unmodified copy of
 inkle's own Ink language/runtime docs (© inkle Ltd, MIT licensed — see
 `retrieved-2026-09-02/LICENSE.txt`), kept here so the standard is right in
@@ -51,6 +55,28 @@ d6f28dfd202ea471cc07255e95b247cf06b36a30ebb8d16ddf27b8ec0f8a3287  ArchitectureAn
 
 ### Refreshing
 
+### Checking whether a refresh is due
+
+Nothing announces an edit to inkle's documentation, so ask:
+
+```bash
+cd interactive_fiction
+INK_ENGINE_CHECK_UPSTREAM=1 python -m pytest tests/test_vendored_standard_is_current.py -q
+```
+
+It fetches each file from the URLs below and compares it with the pinned
+copy, reporting any that inkle has revised. It is skipped in an ordinary
+test run, and skipped rather than failed when the network is unreachable.
+It compares text rather than bytes: upstream serves CRLF and these copies
+are LF, so a byte comparison would report the largest file as changed on
+every run.
+
+A difference is not a defect — it means the standard moved and someone
+should read the upstream diff before deciding whether to pin a new
+snapshot.
+
+### Pulling a new snapshot
+
 Pull a new dated copy alongside the existing one — never overwrite a
 retrieved snapshot in place:
 
@@ -81,7 +107,7 @@ up-to-date with inkle's standard reference.
 
 ## Related reading — this project's own documents
 
-- **[`ink_pitfalls_and_debugging.md`](../ink_pitfalls_and_debugging.md)**
+- **[`ink_when_it_compiles_but_is_wrong.md`](../ink_when_it_compiles_but_is_wrong.md)**
   — standard Ink as actually encountered while building and testing this
   engine: the gotchas, exact compiler error messages, and behaviours
   verified by running `inklecate` rather than inferred. Complements the

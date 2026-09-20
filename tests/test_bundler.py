@@ -30,8 +30,8 @@ def _make_game(root: Path, *, manifest: str = DEFAULT_MANIFEST, extra: dict[str,
     game = root / "mygame"
     (game / "Images").mkdir(parents=True)
     (game / "manifest.yaml").write_text(manifest, encoding="utf-8")
-    # The empty package marker: data lives in the manifest, but the folder
-    # must still import so its plugins and sidebar load.
+    # Python's package initialization file: it holds nothing here, but the
+    # folder must import so its plugins and sidebar load.
     (game / "__init__.py").write_text("", encoding="utf-8")
     (game / "story.inkj").write_text(STORY_JSON, encoding="utf-8")
     (game / "Images" / "a.jpg").write_bytes(b"\xff\xd8" + b"x" * 200)
@@ -80,7 +80,7 @@ class ManifestDrivenSelectionTests(SimpleTestCase):
 
     def test_every_sibling_python_module_ships(self):
         """The package's modules import each other, and `sidebar.py` is
-        imported lazily by a host -- so reachability would wrongly drop it."""
+        imported lazily by an application -- so reachability would wrongly drop it."""
         with tempfile.TemporaryDirectory() as tmp:
             game = _make_game(Path(tmp), extra={"sidebar.py": "", "skills.py": ""})
             included = {str(p) for p in select_bundle_contents(game).included}
@@ -117,6 +117,36 @@ class ManifestDrivenSelectionTests(SimpleTestCase):
             game = _make_game(Path(tmp), extra={"Images/.DS_Store": "", "Images/__pycache__/x.pyc": ""})
             included = {str(p) for p in select_bundle_contents(game).included}
             self.assertEqual(included & {"Images/.DS_Store", "Images/__pycache__/x.pyc"}, set())
+
+    def test_macos_sidecar_files_are_skipped(self):
+        """Copying a game to a non-native filesystem leaves an AppleDouble
+        sidecar beside every real file, and a `__MACOSX` tree holding
+        more. Both carry Finder metadata, never game content."""
+        with tempfile.TemporaryDirectory() as tmp:
+            game = _make_game(
+                Path(tmp),
+                extra={
+                    "Images/._cover.png": "",
+                    "Images/cover.png": "",
+                    "__MACOSX/Images/._cover.png": "",
+                },
+            )
+            included = {str(p) for p in select_bundle_contents(game).included}
+
+            self.assertIn("Images/cover.png", included)
+            self.assertEqual(
+                included & {"Images/._cover.png", "__MACOSX/Images/._cover.png"}, set()
+            )
+
+    def test_a_sidecar_beside_a_module_is_not_bundled_as_one(self):
+        """`*.py` also matches `._sidebar.py`, which would otherwise ship
+        inside the game's own importable package."""
+        with tempfile.TemporaryDirectory() as tmp:
+            game = _make_game(Path(tmp), extra={"sidebar.py": "", "._sidebar.py": ""})
+            included = {str(p) for p in select_bundle_contents(game).included}
+
+            self.assertIn("sidebar.py", included)
+            self.assertNotIn("._sidebar.py", included)
 
     def test_each_included_file_records_the_declaration_that_brought_it(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -168,15 +198,40 @@ class MissingDeclarationTests(SimpleTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(verify_plan(select_bundle_contents(_make_game(Path(tmp)))), [])
 
-    def test_a_bundle_needs_both_the_manifest_and_the_package_marker(self):
-        """They do different jobs: `manifest.yaml` carries the data, and
-        `__init__.py` makes the folder importable so its plugins and
-        sidebar load. Missing either is a real defect."""
+    def test_a_game_shipping_python_needs_the_package_marker(self):
+        """A game with a module of its own must import, or its plugins and
+        sidebar cannot load."""
+        with tempfile.TemporaryDirectory() as tmp:
+            game = _make_game(Path(tmp), extra={"sidebar.py": "x = 1\n"})
+            (game / "__init__.py").unlink()
+            problems = verify_plan(select_bundle_contents(game))
+            self.assertTrue(any("__init__.py" in p for p in problems), problems)
+
+    def test_a_game_declaring_plugins_needs_the_package_marker(self):
+        """REQUIRED_PLUGINS says a module will be imported from the bundle,
+        so the marker is needed even before one is written."""
+        with tempfile.TemporaryDirectory() as tmp:
+            game = _make_game(Path(tmp), manifest=DEFAULT_MANIFEST + "REQUIRED_PLUGINS: [my_plugin]\n")
+            (game / "__init__.py").unlink()
+            problems = verify_plan(select_bundle_contents(game))
+            self.assertTrue(any("__init__.py" in p for p in problems), problems)
+
+    def test_a_story_only_game_does_not_need_the_package_marker(self):
+        """A game that is a story and its media imports nothing, so
+        requiring a marker would demand a file it has no use for."""
         with tempfile.TemporaryDirectory() as tmp:
             game = _make_game(Path(tmp))
             (game / "__init__.py").unlink()
+            self.assertEqual(verify_plan(select_bundle_contents(game)), [])
+
+    def test_a_directory_named_like_the_marker_does_not_satisfy_it(self):
+        """`glob` matches a directory too; one cannot be imported."""
+        with tempfile.TemporaryDirectory() as tmp:
+            game = _make_game(Path(tmp), extra={"sidebar.py": "x = 1\n"})
+            (game / "__init__.py").unlink()
+            (game / "__init__.py").mkdir()
             problems = verify_plan(select_bundle_contents(game))
-            self.assertTrue(any("importable package" in p for p in problems), problems)
+            self.assertTrue(any("__init__.py" in p for p in problems), problems)
 
     def test_a_bundle_with_no_manifest_is_caught(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -254,7 +309,7 @@ class StaleSourceTests(SimpleTestCase):
 
 class BuildBundleTests(SimpleTestCase):
     def test_every_entry_lives_under_the_package_directory(self):
-        """A host puts the bundle on sys.path and imports the package, so
+        """An application puts the bundle on sys.path and imports the package, so
         a flat archive would not be importable."""
         with tempfile.TemporaryDirectory() as tmp:
             plan = select_bundle_contents(_make_game(Path(tmp)))
@@ -296,7 +351,7 @@ class BuildBundleTests(SimpleTestCase):
 
 
 class ReadBackTests(SimpleTestCase):
-    """A built bundle must be readable the way a host reads it."""
+    """A built bundle must be readable the way an application reads it."""
 
     def _build(self, tmp: str) -> Path:
         manifest = "MAIN_STORY_FILE: story.inkj\nGAME_TITLE: Demo\nREQUIRED_PLUGINS: [a, b]\nMEDIA_DIRECTORIES: [Images]\n"
@@ -339,3 +394,49 @@ class CommandLineTests(SimpleTestCase):
 
     def test_a_bundle_error_is_reported_not_raised(self):
         self.assertEqual(main(["inspect", "/nonexistent/game"]), 1)
+
+
+class PackageMarkerOfferTests(SimpleTestCase):
+    """`build` offers to create the `__init__.py` a game needs."""
+
+    def _game_shipping_python(self, root: Path) -> Path:
+        game = _make_game(root, extra={"sidebar.py": "x = 1\n"})
+        (game / "__init__.py").unlink()
+        return game
+
+    def test_the_flag_creates_the_marker_and_builds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            game = self._game_shipping_python(Path(tmp))
+            out = Path(tmp) / "built.zip"
+            status = main(["build", str(game), "-o", str(out), "-q", "--create-package-marker"])
+            self.assertEqual(status, 0)
+            self.assertTrue((game / "__init__.py").is_file())
+            self.assertEqual((game / "__init__.py").read_text(encoding="utf-8"), "")
+
+    def test_the_created_marker_is_in_the_bundle(self):
+        """The plan is rebuilt after creating it, or the file exists on
+        disk but never reaches the bundle."""
+        with tempfile.TemporaryDirectory() as tmp:
+            game = self._game_shipping_python(Path(tmp))
+            out = Path(tmp) / "built.zip"
+            main(["build", str(game), "-o", str(out), "-q", "--create-package-marker"])
+            with zipfile.ZipFile(out) as archive:
+                self.assertIn(f"{game.name}/__init__.py", archive.namelist())
+
+    def test_a_story_only_game_is_never_offered_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            game = _make_game(Path(tmp))
+            (game / "__init__.py").unlink()
+            out = Path(tmp) / "built.zip"
+            self.assertEqual(main(["build", str(game), "-o", str(out), "-q"]), 0)
+            self.assertFalse((game / "__init__.py").exists())
+
+    def test_a_directory_in_the_way_is_refused_rather_than_written_over(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            game = self._game_shipping_python(Path(tmp))
+            (game / "__init__.py").mkdir()
+            out = Path(tmp) / "built.zip"
+            status = main(["build", str(game), "-o", str(out), "-q", "--create-package-marker"])
+            self.assertEqual(status, 1)
+            self.assertTrue((game / "__init__.py").is_dir())
+            self.assertFalse(out.exists())

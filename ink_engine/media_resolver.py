@@ -91,8 +91,8 @@ RESOLVE_TAG_HOOK = "resolve_tag"
 def find_prose_styles(game_dir: GameSource | Path) -> str | None:
     """Return a game folder's own prose-styling CSS, if it supplies one.
 
-    Looks for `styles.css` directly under `game_dir` — a fixed filename
-    convention, no manifest field. A story tags a span of prose with an
+    Uses the manifest's `PROSE_STYLES` when it names a file, and falls
+    back to `styles.css` directly under `game_dir` otherwise. A story tags a span of prose with an
     inline `<style=name>...</style>` marker (this project's own inline-tag
     convention, not part of the Ink language); this file is where a game
     defines what each `name` actually renders as (font, size, colour).

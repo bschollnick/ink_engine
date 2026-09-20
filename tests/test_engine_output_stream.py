@@ -175,3 +175,35 @@ class RealCompiledStoryTests(SimpleTestCase):
             "One Two Three, three glues on one line.\n"
         )
         self.assertEqual(stream.get_text(), expected)
+
+
+class StringValueKeepsItsWhitespaceTests(SimpleTestCase):
+    """A string being built as a VALUE is not cleaned like display text.
+
+    `CleanOutputWhitespace` collapses runs of inline spaces and, because
+    a run is only emitted once a non-space follows it, drops one that
+    ends the text. That is correct for display and wrong for a string
+    value: `"A " + who` has to keep the space before `who`.
+
+    Story.cs's `EndString` case builds the value with a plain
+    `sb.Append(c.ToString())` and no cleaning, which is what
+    `get_string_value()` ports. Verified against a real inklecate build:
+    `{"A " + "B"}` prints `A B`, not `AB`.
+    """
+
+    def test_a_trailing_space_survives_in_a_string_value(self):
+        stream = OutputStream()
+        stream.push_text("A ")
+        self.assertEqual(stream.get_string_value(), "A ")
+
+    def test_display_text_still_drops_it(self):
+        """The display pass is unchanged -- only the value path differs."""
+        stream = OutputStream()
+        stream.push_text("A ")
+        self.assertEqual(stream.get_text(), "A")
+
+    def test_an_interior_run_is_not_collapsed_in_a_value(self):
+        stream = OutputStream()
+        stream.push_text("A  B")
+        self.assertEqual(stream.get_string_value(), "A  B")
+        self.assertEqual(stream.get_text(), "A B")

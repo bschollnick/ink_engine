@@ -1,18 +1,29 @@
-# Ink Pitfalls and Debugging
+# Ink: when it compiles but is wrong
 
-Standard Ink pitfalls, exact compiler/runtime error messages, and story
-verification technique — traps that hold for any Ink story, regardless of
-what you are writing or what runs it.
+**Date Created:** 2026-09-15  
+**Last Updated:** 2026-09-20  
+**Last Reviewed:** 2026-09-20
 
-**Every behavioural claim here was verified by running real `inklecate`**, not
-inferred from documentation. Where a claim is subtle, the test that proves it
-is included so it can be re-run.
+This document lists the issues that can arise when authoring Ink code.
+They were found while porting a game to Ink from another interactive
+fiction engine, so some may be edge cases. Most of what follows compiles
+cleanly and then misbehaves at play time — which is why it is collected
+here rather than left to the compiler to catch. Each entry describes the
+issue, includes sample Ink code when the behaviour is subtle, and gives
+the compiler or runtime error verbatim. The last part shows how to verify
+that a story behaves the way you meant.
+
+**Every behavioural claim here was verified by running real `inklecate`**,
+not inferred from documentation, and the sample code is what proved it --
+so any of it can be re-run.
 
 inkle's own reference (third-party, not ours) is vendored in this repo at
 [`inkles-ink-standard/`](inkles-ink-standard/) — read that for what
-Ink *does*; read this for what it does when you get it subtly wrong. (The
-headline case below, §1.1, is not covered upstream at
-all.)
+Ink *does*; read this for what it does when you get it subtly wrong. Where
+inkle's reference already covers something, the entry says so and cites it;
+what is left is the behaviour it does not describe. The headline case below,
+Section 1.1, is the sharpest of those: inkle documents the construct and
+recommends it, and never mentions what it does inside a loop.
 
 ```bash
 inklecate -o out.json story.ink            # compile
@@ -25,6 +36,17 @@ printf '1\n2\n' | inklecate -p story.ink   # feed choices; 1-INDEXED
 ## Part 1 — The language
 
 ### 1.1 Never write a choice inside a conditional block
+
+Inkle states that you can put options inside conditional blocks
+(WritingWithInk.md, "Conditional blocks"), and gives a worked example. Their
+only caveat is that gather points are not allowed inside them. This guide
+disagrees with that advice deliberately. Their example is a one-shot branch
+the story never re-enters, so it never reaches the failure described below.
+
+Inkle also states that "conditionals don't override the once-only behaviour
+of options". That is true, and it is about a *guard* on a choice
+(`* {cond} [Label]`). It does not extend to a choice *wrapped* in a
+conditional block.
 
 **A choice must never be written inside a conditional block.**
 
@@ -71,11 +93,11 @@ Hub.
 The guarded choice sitting on the very next line behaves correctly.
 
 Note it is `*` — a **once-only** choice — that loops. Marking a choice `*`
-gives no protection here; see §1.2.
+gives no protection here; see Section 1.2.
 
-This is worth banning outright rather than policing case by case: the guarded
-form is equivalent everywhere, so there is never a reason to write the wrapped
-one. A static check over the story text catches it in one pass.
+Ban the wrapped form outright rather than policing it case by case: the
+guarded form is equivalent everywhere, so there is never a reason to write
+the wrapped one. A static check over the story text catches it in one pass.
 
 > **Symptom to recognise:** the game stops responding at one specific
 > location, CPU pinned, no error, no output. Look for a wrapped choice in the
@@ -98,11 +120,11 @@ Choose.
 -> main
 ```
 
-After taking A once it is gone; B stays forever. This is why §1.1 is
+After taking A once it is gone; B stays forever. This is why Section 1.1 is
 surprising: the wrapped form defeats tracking that otherwise works fine.
 
 **`*` strands players.** A knot whose only exits are once-only leaves a
-returning player with nothing to click. Two sub-traps:
+returning player with nothing to click. This happens two ways:
 
 - **A gated `+` is not an unconditional exit.** If the `+` guard is false, the
   spent `*`s are all that remain and the knot has *no exit at all*:
@@ -169,8 +191,8 @@ unreachable with **no error at all**:
 = shop_floor          // becomes back_office.shop_floor — not what you meant
 ```
 
-**Ink has no bitwise operators.** The full arithmetic set is
-`+ - * / % mod`. If the game you are converting packs flags into integer
+**Ink has no bitwise operators.** The arithmetic set is
+`+ - * / % mod` plus `POW(x, y)`. If the game you are converting packs flags into integer
 bitfields, do not hand-roll bit arithmetic to preserve a memory-packing
 trick that has no meaning in Ink — port one flat named boolean per flag. The
 general principle: **port the content, not the storage mechanics.**
@@ -179,7 +201,7 @@ general principle: **port the content, not the storage mechanics.**
 `not present ? alice` is a compile-time error — inklecate names the exact
 fix: `Using 'not' or '!' here negates 'present' rather than the result of
 the '?' or 'has' operator. You need to add parentheses around the (A ? B)
-expression.` Unlike the string-comparison case in §1.3 above (which
+expression.` Unlike the string-comparison case in Section 1.3 above (which
 compiles fine and only fails at runtime, if it's ever reached), this one
 is caught immediately. Parenthesise: `not (present ? alice)`.
 
@@ -204,8 +226,9 @@ guide's own* test cases.)
 
 ### 1.5 Functions
 
-- A function **may not divert**, but it **may mutate a global** — that is the
-  escape hatch for side effects.
+- A function **cannot contain stitches, use diverts, or offer choices**
+  (inkle lists these limitations together), but it **may mutate a global**
+  — that is the escape hatch for side effects.
 - `~ temp x = ...` is scoped to the function/knot; globals are `VAR`.
 - **You do not need to capture a return value.** `~ do_thing()` is a valid
   statement even when `do_thing` returns something, and this holds for
@@ -213,12 +236,23 @@ guide's own* test cases.)
 - **A function that falls off its end returns Void, not `0`.** Interpolating
   it yields nothing: `[{nothing()}]` renders `[]`. An engine that substitutes
   `0` for Void will print a literal `"0"` into the prose.
+- **A misspelled function name can interpolate `0` instead of failing.** Real
+  Ink treats an unresolvable function call as a story error; this engine
+  degrades to `0` rather than crashing (`engine.py`, `_call_function`). So
+  `{caclulate_total()}` renders `0`, with no error — and `0` is a value a
+  working function could legitimately return.
+  If a `0` appears that you cannot account for, check the spelling of the
+  function names near it before debugging the arithmetic.
 
 ### 1.6 A story may not begin with a named knot
 
-If the literal first line of the story is `== knot ==`, the compiler is happy
-and the story produces **zero playable output** — the entry point is the
-top-level flow, and a leading named knot is never entered. Start the file with
+Inkle covers this under "a knottier 'hello world'" — content outside knots
+runs automatically, knots do not, so a file using knots must divert into one.
+The symptom: if the literal first line is `== knot ==`, the
+compiler is happy and the story produces **zero playable output**, because the
+entry point is the top-level flow and a leading named knot is never entered.
+**If a story compiles but prints nothing at all, check line 1 first.**
+Start the file with
 `-> start` (or with prose).
 
 If a story compiles but prints nothing at all, check line 1 first.
@@ -232,11 +266,16 @@ easy to write by accident:
 - `-> DONE` ends the **thread**; with nothing else running the runtime has
   zero choices, which a player sees as "The story has ended."
 
+Inkle states this distinction directly — "Using `-> END` in this case will
+not end the thread, but the whole story flow. (And this is the real reason for
+having two different ways to end flow.)" What follows is the authoring
+consequence, which it does not cover.
+
 Verified: a hub offering `+ [Leave via END] -> END` and
 `+ [Leave via DONE] -> DONE` produces no further output from either.
 
 An exit choice must divert to a real destination. The faithful target is
-usually "the place that hosts this scene" — but **it is per-scene, so a
+usually "the place that applications this scene" — but **it is per-scene, so a
 blanket substitution is wrong**: sending every scene back to a single shared
 hub can turn an "Exit" choice into a loop back into the very place it was
 meant to leave.
@@ -245,15 +284,26 @@ When auditing for this, **survey by what the choice does, not by its
 label**: exit-type choices are not all called "Leave" or "Exit" — they are
 also "Say goodbye to…", "Head home", "Step out", "Slip away".
 
-`-> END` used as a *placeholder* is the same bug wearing a different hat: an
+`-> END` used as a *placeholder* is the same bug in another form: an
 unfinished branch ending `-> END` makes that outcome an unconditional game
 over, with whatever should follow it unreachable.
 
 Legitimate uses: a real, named ending the story actually intends.
 
-**A choice with no label is not a usable choice.** `+ -> somewhere` renders as
-a blank entry (or, in `inklecate -p`, no entry at all — the player simply
-cannot take it).
+**An unlabelled choice is not a broken choice — it is a fallback.**
+`* -> somewhere` is Ink's documented *fallback choice* (WritingWithInk.md,
+"Fallback choices"): deliberately never shown to the player, and taken
+automatically when no other option is available. There is also a "choice then
+arrow" form (`* ->` with content beneath it).
+
+The mistake is writing one when you meant a visible choice: it renders as a blank
+entry, or under `inklecate -p` as no entry at all, so a choice you expected to
+offer simply is not there. Do not "fix" unlabelled choices by adding labels —
+that breaks every intentional fallback in the corpus. Check whether each one
+was meant to be visible.
+
+A fallback is also the standard cure for the stranding in Section 1.2: it
+gives an exhausted knot somewhere to go instead of running out of content.
 
 ### 1.8 Tunnels lose content silently
 
@@ -264,8 +314,16 @@ cannot take it).
 ->->             // return
 ```
 
-If the target ends in `-> END` (or any plain divert) instead of `->->`,
-**everything after the call site is silently dropped** — no error, no warning:
+Inkle warns about this in one sentence — "tunnel knots aren't declared as
+such, so the compiler won't check that tunnels really do end in `->->`
+statements, except at run-time. So you will need to write carefully to ensure
+that all the flows into a tunnel really do come out again." (It also sanctions
+finishing a tunnel on a normal divert where that is what you meant.)
+
+What the warning does not give you is the symptom. If the target ends in
+`-> END` (or a plain divert) instead of `->->`, **everything after the call
+site is dropped with nothing to announce it** — the loss is invisible rather
+than reported:
 
 ```
 Tunnel that forgets to return.
@@ -299,6 +357,14 @@ the story seed — so it is reproducible only if you pin the seed. A runtime
 that seeds from the wall clock (as real Ink's C# runtime does) gives different
 results for the same save.
 
+**Shuffle *order* may not match `inklecate` for the same seed.** This engine
+reproduces Ink's documented shuffle/shuffle-once/shuffle-stopping semantics,
+but its path hash has never been diffed against the C# source
+(`engine.py`, `_shuffle_index`). It matches at least one captured real
+transcript (`tests/test_engine_rng.py`); treat anything beyond that as
+unverified. Do not use a shuffle to derive a value that must agree with a
+run under a different runtime.
+
 ### 1.10 Conditionals, truthiness, LIST
 
 - `0` is falsy; a non-empty LIST is truthy.
@@ -306,8 +372,10 @@ results for the same save.
   `{ where_is("x"): ... }` reads directly as "is x somewhere".
 - `{cond: A|B}` is if/else inside text; `- else:` is the block form.
 - LIST: `?` tests membership, `LIST_COUNT()` sizes, `+=`/`-=` add and remove.
-- Interpolation does **not** work inside a function call's arguments — `{a:x|y}`
-  passed as an argument is not evaluated.
+- Interpolation **does** work inside a function call's arguments:
+  `{echo("{flag:X|Y}")}` renders `X`, the same as writing `{flag:X|Y}`
+  directly. (Verified against `inklecate` and this engine; an earlier
+  revision of this guide claimed the opposite.)
 
 **Numbers and strings compare equal across types.** `"5" == 5` is **true**,
 in both orders. So a function that returns `"0"` where the story expects `0`
@@ -315,7 +383,8 @@ compares equal and the type error never surfaces. Do not rely on a comparison
 to catch a wrong return type.
 
 **Floats and integers compare equal too:** `6.0 == 6` is true. That is
-usually what you want — a host binding returning a float still satisfies an
+usually what you want — an application binding returning a float still
+satisfies an
 integer gate — but it means a comparison will not tell you which type you
 actually got.
 
@@ -338,7 +407,9 @@ no `elif` inside `{...}`:
 {n==1:x|{n==2:y|z}}   // valid - must nest
 ```
 
-**Nesting then has a hard ceiling.** The compiler dies at **depth 23**:
+**Nesting then has a hard ceiling.** The compiler dies at **depth 23** — of
+*inline conditionals* specifically. Weave nesting is a separate mechanism and
+inkle states it has no depth limit.
 
 ```
 Unhandled exception. System.Exception: Stack overflow in parser state
@@ -379,7 +450,8 @@ that ignores that distinction over-reports badly.
 
 ### 1.13 `INCLUDE` has no scoping — everything is one namespace
 
-This catches people repeatedly, in three different ways:
+`INCLUDE` merges every file into one namespace. That surprises people in
+three different ways:
 
 - **VARs are corpus-wide.** There is no per-file scope. A scene that hardcodes
   a value believing another file's variable is "not cross-referenceable" is
@@ -411,6 +483,16 @@ permanently-false boolean.
 - **`RANDOM()` is wall-clock seeded**, matching real Ink's C# runtime — so
   two runs of the same test differ, and `inklecate -p` on an unseeded fixture
   differs run to run. Pin a seed or harness numbers are meaningless.
+- **A story has no fixed seed unless something pins one.** Three things do:
+  `SEED_RANDOM(n)` from the story itself; the application passing its own
+  `random_engine` when constructing the runtime; and **resuming a save** —
+  `story_seed` and `previous_random` are both serialized, so a restored save
+  continues the same sequence rather than re-rolling. (The C# caveat above is
+  about real Ink's runtime, not this one.)
+- **A wall-clock-seeded run here will not match a wall-clock-seeded
+  `inklecate` run**, even at the same instant: this engine reproduces only the
+  *nondeterminism* of C#'s clock seed, not its exact formula (`rng.py`,
+  `time_seed`). Pin the seed on both sides before comparing transcripts.
 
 ### 1.15 LIST gotchas
 
@@ -421,18 +503,23 @@ VAR here = ()                            // the subset currently true
 
 One global set re-valued as things move — never one list per location.
 
-**`?` against a group means "contains ALL of them", not "any".** This is the
-trap when mechanically replacing `a_here or b_here or c_here`:
+**`?` against a group means "contains ALL of them", not "any".** Inkle
+documents this — it is the subset operator, and `^` is the one for
+"any" (WritingWithInk.md, "Intersecting lists"). It is listed here only
+because it bites hard when mechanically replacing `a_here or b_here`:
 
 ```ink
 ~ here = (alice, bob)
-{ here ? (alice, bob, carol): ... }   // NO  - carol is missing
-{ (here ? alice) or (here ? carol): ... }   // YES - what you meant
+{ here ? (alice, bob, carol): ... }   // NO  - asks whether ALL three are here
+{ here ^ (alice, carol): ... }        // YES - intersection: any of them
+{ (here ? alice) or (here ? carol): ... }   // also correct, more verbose
 ```
 
-Convert to the explicit `or` chain first; only collapse to the group form
-after confirming the surrounding logic doesn't mix `and`/`not`. Parenthesise
-each `(here ? x)` — it is being dropped into a larger boolean expression.
+Use `^`. The `or` chain is worth knowing as the mechanical conversion of
+an existing `a_here or b_here`, and is what you need when the members
+being tested are not a fixed group — but reach for `^` first.
+Parenthesise each `(here ? x)` if you do write the chain: it is being
+dropped into a larger boolean expression.
 
 **A duplicate LIST member under two spellings compiles silently.** Unlike a
 duplicate function (a hard error), declaring both `guard_captain` and
@@ -464,16 +551,31 @@ Use the block form:
 It is easy to write this in bulk — a whole function's worth of conditional
 additions at once — and the whole function then fails to compile.
 
-### 1.17 LISTs cannot be iterated
+### 1.17 LISTs have no `for` loop — traverse them by recursion
 
-There is no "for each". Anything of the form "every member of this list does
-X" must be written as one explicit choice or block per member.
+There is no `for` loop, but a list **can** be traversed — by recursion.
+Inkle's own `reach()` function does exactly this: `pop()` a member, act on
+it, then call itself with what is left (WritingWithInk.md, in the extended
+LIST example).
+
+```ink
+=== function reach(statesToSet)
+   ~ temp x = pop(statesToSet)
+   { - not x: ~ return false
+     ...
+     ~ reach(statesToSet)     // recurse over the remainder
+   }
+```
+
+So "every member of this list does X" is a recursive function, not one block
+per member. Writing it out by hand is only necessary where each member needs
+*different* content — a per-member choice with its own text.
 
 Relatedly, **a plain divert cannot return to its caller** — that is what
-tunnels are for (§1.8). Where a scene must resume one of two different
+tunnels are for (Section 1.8). Where a scene must resume one of two different
 callers, either use a tunnel or carry an explicit "where to go back to" VAR.
 
-### 1.18 Threads inject choices ahead of the host's own
+### 1.18 Threads inject choices ahead of the application's own
 
 `<- other_knot` pulls another knot's choices into this one. The threaded
 choices are listed **first**:
@@ -490,8 +592,12 @@ Main choices.
 2: Own choice
 ```
 
-Ordering matters if anything (a test, a walkthrough, a piped `inklecate -p`
-script) selects choices by index.
+Inkle documents the ordering, with a numbered worked example: the first
+fork considered runs the threaded content and collects its options, then the
+other fork runs.
+
+Recorded here only because it bites anything that selects choices by index — a
+test, a walkthrough, a piped `inklecate -p` script.
 
 ---
 
@@ -502,7 +608,7 @@ script) selects choices by index.
 Drive the compiled story with random choices — say 40 runs of up to 600
 steps, fixed seeds — and report steps taken, dead ends and errors. It finds
 what unit tests do not: unreachable content, crashes deep in a branch, and
-the §1.1 hang. **Pin the story seed** (the runtime seeds from the wall clock
+the Section 1.1 hang. **Pin the story seed** (the runtime seeds from the wall clock
 by default) or failures are unreproducible.
 
 A **dead end** — no choices offered while text is still pending — is a real

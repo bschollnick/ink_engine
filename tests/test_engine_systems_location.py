@@ -1,7 +1,7 @@
 """The two independent LocationSystem layers (ink_engine.engine_plugins.
 location_graph, ink_engine.engine_plugins.character_occupancy).
 
-Pure-function coverage — no host framework needed. SimpleTestCase throughout.
+Pure-function coverage — no application framework needed. SimpleTestCase throughout.
 """
 
 from __future__ import annotations

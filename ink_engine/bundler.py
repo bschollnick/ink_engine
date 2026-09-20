@@ -4,8 +4,10 @@
 itself, the story it names, the game's Python package, the media
 directories it declares, and whatever `EXTRA_FILES` adds -- nothing else. A game
 folder also holds uncompiled `.ink` source, superseded build
-intermediates, test suites and editor caches, and none of it reaches a
-player because none of it is declared.
+intermediates, a `tests/` directory and editor caches, and none of it
+reaches a player because none of it is declared. Every top-level `.py`
+is the game's package, so a test file beside the manifest does ship --
+keep test files in a subdirectory.
 
 Declaring rather than excluding matters for the failure it prevents: with
 an exclusion list, a file type nobody anticipated ships silently, and the
@@ -44,6 +46,7 @@ from ink_engine.game_folder import (
     EXTRA_FILES_FIELD,
     MANIFEST_FILENAME,
     MEDIA_DIRECTORIES_FIELD,
+    REQUIRED_PLUGINS_FIELD,
     GameFolderError,
     read_manifest,
 )
@@ -54,7 +57,16 @@ JUNK_FILENAMES: frozenset[str] = frozenset({".DS_Store", "Thumbs.db", "desktop.i
 
 #: Directory names never bundled even inside a declared directory —
 #: caches that can appear anywhere and are never game content.
-JUNK_DIRECTORY_NAMES: frozenset[str] = frozenset({"__pycache__", ".mypy_cache", ".pytest_cache", ".git"})
+#: `__MACOSX` is macOS's own: copying a tree to a non-native filesystem
+#: writes one, holding an AppleDouble sidecar per real file.
+JUNK_DIRECTORY_NAMES: frozenset[str] = frozenset(
+    {"__pycache__", ".mypy_cache", ".pytest_cache", ".git", "__MACOSX"}
+)
+
+#: Filename prefix macOS gives an AppleDouble sidecar: `._name.png` beside
+#: `name.png`, carrying resource-fork and Finder metadata. Matched by
+#: prefix rather than by name because there is one per real file.
+APPLEDOUBLE_PREFIX = "._"
 
 #: Suffixes stored without compression. Already-compressed formats gain
 #: almost nothing from deflate and cost CPU on every read.
@@ -67,6 +79,9 @@ STORED_SUFFIXES: frozenset[str] = frozenset(
 #: an application rather than at package import, so reachability analysis would
 #: wrongly drop it.
 PYTHON_SUFFIX = ".py"
+
+#: The file that makes a game folder an importable Python package.
+PACKAGE_MARKER = "__init__.py"
 
 #: Uncompiled Ink source. Never bundled -- this engine plays compiled
 #: stories only -- but its modification time is what says whether the
@@ -122,7 +137,7 @@ class BundlePlan:
 
 def _is_junk(relative: Path) -> bool:
     """Return whether a path is an OS dropping or a cache directory's content."""
-    if relative.name in JUNK_FILENAMES:
+    if relative.name in JUNK_FILENAMES or relative.name.startswith(APPLEDOUBLE_PREFIX):
         return True
     return any(part in JUNK_DIRECTORY_NAMES for part in relative.parts)
 
@@ -207,7 +222,15 @@ def select_bundle_contents(game_dir: Path, *, package_name: str | None = None) -
         plan.included[Path(MANIFEST_FILENAME)] = "manifest"
 
     for module_path in sorted(game_dir.glob(f"*{PYTHON_SUFFIX}")):
-        plan.included[module_path.relative_to(game_dir)] = "game package"
+        # `*.py` also matches an AppleDouble sidecar (`._sidebar.py`),
+        # which would ship inside the importable package, and a directory
+        # that merely ends in `.py`, which would answer the package-marker
+        # check without importing.
+        if not module_path.is_file():
+            continue
+        relative = module_path.relative_to(game_dir)
+        if not _is_junk(relative):
+            plan.included[relative] = "game package"
 
     if main_story_file:
         story = game_dir / main_story_file
@@ -311,6 +334,32 @@ def stale_sources(game_dir: Path, main_story_file: str | None) -> list[Path]:
     return sorted(newer, key=lambda path: -path.stat().st_mtime)
 
 
+def needs_package_marker(plan: BundlePlan) -> bool:
+    """Return whether this game has to be an importable Python package.
+
+    True when the game ships a Python module of its own, or declares
+    `REQUIRED_PLUGINS` it expects to be imported from the bundle. A game
+    that is only a story and its media imports nothing and plays without
+    `__init__.py`.
+
+    Args:
+        plan: The plan to check.
+
+    Returns:
+        Whether `__init__.py` is required.
+    """
+    ships_python = any(
+        relative.suffix.lower() == PYTHON_SUFFIX and relative.name != PACKAGE_MARKER for relative in plan.included
+    )
+    if ships_python:
+        return True
+    try:
+        manifest = read_manifest(plan.game_dir)
+    except GameFolderError:
+        return False
+    return bool(manifest.get(REQUIRED_PLUGINS_FIELD))
+
+
 def verify_plan(plan: BundlePlan) -> list[str]:
     """Return every reason `plan` would produce an unplayable bundle.
 
@@ -327,8 +376,11 @@ def verify_plan(plan: BundlePlan) -> list[str]:
 
     if Path(MANIFEST_FILENAME) not in plan.included:
         problems.append(f"no {MANIFEST_FILENAME}: a bundle without a manifest cannot declare its story or plugins")
-    if Path("__init__.py") not in plan.included:
-        problems.append("no __init__.py: the game folder would not be an importable package, so its plugins and sidebar could not load")
+    if needs_package_marker(plan) and Path(PACKAGE_MARKER) not in plan.included:
+        problems.append(
+            f"no {PACKAGE_MARKER}: this game ships Python code, so it needs Python's "
+            "package initialization file for its plugins and sidebar to import"
+        )
 
     for declared, reason in plan.missing:
         problems.append(f"{reason}: '{declared}'")

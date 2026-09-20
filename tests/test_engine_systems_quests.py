@@ -312,7 +312,7 @@ class QuestUnreachableGoalAuditTests(SimpleTestCase):
 
 class BindingTests(SimpleTestCase):
     """The EXTERNAL surface a story actually calls -- the catalog-free
-    half. A host that holds the catalog calls `is_complete()` and
+    half. An application that holds the catalog calls `is_complete()` and
     `journal_entries()` directly in Python; Ink passes scalars, never a
     catalog."""
 

@@ -241,7 +241,7 @@ class LocationGraph(StatefulPlugin[LocationSlot]):
     slot_type = LocationSlot
     fields = {"known": list, "declared": list, "details": dict, "visits": dict, "place_records": dict}
 
-    def __init__(self, *, name: str | None = None, display_name: str | None = None, config: Any = None) -> None:
+    def __init__(self, *, name: str | None = None, display_name: str | None = None, state_key: str | None = None, config: Any = None) -> None:
         """Build a map plugin, optionally over a game's declared map.
 
         Args:
@@ -253,7 +253,7 @@ class LocationGraph(StatefulPlugin[LocationSlot]):
         Raises:
             SystemConfigValidationError: `config` does not match the shape.
         """
-        super().__init__(name=name, display_name=display_name, config=config)
+        super().__init__(name=name, display_name=display_name, state_key=state_key, config=config)
         # Seeded at allocation: a dependent plugin reads `declared` from
         # the session, not from this instance.
         self.default_config = config
@@ -261,7 +261,7 @@ class LocationGraph(StatefulPlugin[LocationSlot]):
     def validate_config(self, config: Any) -> None:
         """Validate a map, declared or application-attached.
 
-        An empty config means "none attached" -- a application's opt-in row with
+        An empty config means "none attached" -- an application's opt-in row with
         nothing in it -- and is always valid; the session then seeds from
         the map this instance was built with.
 

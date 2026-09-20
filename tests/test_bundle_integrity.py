@@ -84,7 +84,7 @@ class RecordedHashTests(BundleIntegrityTestCase):
 
 class RecordedHashReaderTests(BundleIntegrityTestCase):
     """`recorded_hashes()` reports what a bundle claims about itself, for
-    a host to store and compare against later."""
+    an application to store and compare against later."""
 
     def test_it_returns_all_three_digests(self):
         hashes = recorded_hashes(self.bundle)
@@ -103,7 +103,7 @@ class RecordedHashReaderTests(BundleIntegrityTestCase):
 
     def test_it_reports_what_a_tampered_bundle_claims_not_what_it_is(self):
         """The reader is not a verifier: an edited bundle still reports
-        its own stale claims, which is how a host detects the change."""
+        its own stale claims, which is how an application detects the change."""
         tampered = self._rebuild_with("mygame/story.inkj", b'{"inkVersion": 99}')
         self.assertEqual(recorded_hashes(tampered)["story"], recorded_hashes(self.bundle)["story"])
         self.assertNotEqual(verify_bundle(tampered), [])

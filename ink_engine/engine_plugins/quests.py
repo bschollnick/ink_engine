@@ -140,7 +140,14 @@ class Quests(StatefulPlugin[QuestSlot]):
     slot_type = QuestSlot
     fields = {"stages": dict, "met_goals": dict, "failed": list}
 
-    def __init__(self, *, name: str | None = None, display_name: str | None = None, catalog: dict[str, QuestSpec] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        name: str | None = None,
+        display_name: str | None = None,
+        state_key: str | None = None,
+        catalog: dict[str, QuestSpec] | None = None,
+    ) -> None:
         """Build a quest plugin over a catalog.
 
         Args:
@@ -150,7 +157,7 @@ class Quests(StatefulPlugin[QuestSlot]):
                 catalog-free operations (stages, goals, failures) are all
                 a story uses.
         """
-        super().__init__(name=name, display_name=display_name)
+        super().__init__(name=name, display_name=display_name, state_key=state_key)
         self.catalog: dict[str, QuestSpec] = dict(catalog or {})
 
     # -- stages ---------------------------------------------------------------

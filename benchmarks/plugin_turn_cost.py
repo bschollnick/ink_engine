@@ -1,24 +1,21 @@
 """Per-turn cost of the plugin layer, measured on a real game build.
 
-Reports absolute cost for the four things a turn actually pays for:
-building a session's binding dict, allocating its state slots, reading a
-hot binding, and round-tripping the state through JSON. The numbers are
-meant to be read against a request's total time -- a plugin layer costing
-a fraction of a millisecond on a build with this many bindings is not
-where a slow turn comes from.
+Measures the four things a turn pays for: building a session's binding
+dictionary, allocating its state slots, reading a hot binding, and
+round-tripping the state through JSON.
 
-The measurement is absolute, not a comparison: there is no "before" tree
-to run against (the conversion had already shipped when this was
-written), so nothing here gates anything. It is a baseline for future
-work.
+The figures are absolute, not a comparison against an earlier tree, so
+nothing here gates a build. It records a baseline to measure later work
+against.
 
-This benchmark needs a real, trusted, compiled story and the host that
-owns the trust decision, so it runs under that host's settings rather
-than standalone:
+The benchmark needs a real trusted compiled story, and the trust
+decision belongs to the application rather than the engine, so it runs
+under a Django application's settings rather than standalone:
 
-    cd <host>/quickbbs && python -m benchmarks.plugin_turn_cost
+    cd <application>/quickbbs && python -m benchmarks.plugin_turn_cost
 
-with this directory importable, or simply run it by path from there.
+Run it from that directory, either as a module with this directory
+importable or by path.
 """
 
 from __future__ import annotations
@@ -34,28 +31,28 @@ CALLS_PER_SAMPLE = 100
 
 
 def _setup_django() -> None:
-    """Start Django using the host application's own settings.
+    """Start Django using the application's own settings.
 
     Raises:
-        SystemExit: Django or the host application is not importable.
+        SystemExit: Django or the application is not importable.
     """
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "quickbbs.settings")
-    # Run by path from the host's working directory, that directory is not
-    # on sys.path -- only the script's own is.
+    # Run by path, only the script's own directory is on sys.path, not
+    # the working directory this needs to import the application from.
     if "" not in sys.path and os.getcwd() not in sys.path:
         sys.path.insert(0, os.getcwd())
     try:
         import django
     except ImportError:
-        sys.exit("This benchmark runs against a host application; Django was not importable.")
+        sys.exit("This benchmark runs against a Django application; Django was not importable.")
     django.setup()
 
 
 def _best_microseconds(statement, *, calls: int = CALLS_PER_SAMPLE) -> float:
     """Return the best per-call time in microseconds, best of REPEATS.
 
-    Best-of rather than mean: the fastest run is the one least disturbed
-    by other work on the machine.
+    The fastest sample is the one least disturbed by other work on the
+    machine.
 
     Args:
         statement: A zero-argument callable to time.
@@ -69,7 +66,11 @@ def _best_microseconds(statement, *, calls: int = CALLS_PER_SAMPLE) -> float:
 
 
 def main() -> None:
-    """Measure and print the per-turn plugin cost for the sample story."""
+    """Measure and print the per-turn plugin cost for one trusted story.
+
+    Raises:
+        SystemExit: No trusted, compiled story is in the database.
+    """
     _setup_django()
 
     from interactive_fiction.engine_services import bindings_for
@@ -87,15 +88,14 @@ def main() -> None:
     print(f"story: {story.slug}   bindings: {binding_count}   state slots: {slot_count}")
     print(f"best of {REPEATS}, {CALLS_PER_SAMPLE} calls per sample\n")
 
-    # A full turn's binding construction: allocate every slot, then bind.
+    # A fresh session: allocate every slot, then bind.
     print(f"{'bind a fresh session (allocate + bind)':<44}{_best_microseconds(lambda: bindings_for(story, {})):>9.1f} us")
 
-    # The same, onto state that already exists -- the resumed-save path,
-    # which is what every turn after the first actually runs.
+    # Onto state that already exists: the path every turn after the
+    # first runs.
     print(f"{'bind onto existing state (per turn)':<44}{_best_microseconds(lambda: bindings_for(story, engine_state)):>9.1f} us")
 
-    # A hot read through a real binding, if the build publishes one that
-    # takes no arguments.
+    # A hot read, only if the build publishes a zero-argument binding.
     hot_name = next((name for name in ("clock", "hour_of_day_now", "hour_of_day") if name in bindings), None)
     if hot_name is not None:
         hot = bindings[hot_name]

@@ -18,6 +18,7 @@ of this repo, not part of the interpreter:
    engine arrives.
 """
 
+from if_session.character_creation import answers_to_globals
 from if_session.game_saves import (
     DEFAULT_LABEL_CHARACTER_LIMIT,
     QUICKSAVE_LABEL,
@@ -57,6 +58,7 @@ __all__ = [
     "GameSavesProtocol",
     "SaveFormatError",
     "StoryEngine",
+    "answers_to_globals",
     "append_transcript_entry",
     "build_saved_state",
     "delete_game_save",

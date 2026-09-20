@@ -1,6 +1,6 @@
 """SchedulingSystem (ink_engine.engine_plugins.scheduling).
 
-No host framework needed. SimpleTestCase throughout.
+No application framework needed. SimpleTestCase throughout.
 """
 
 from __future__ import annotations
@@ -226,7 +226,10 @@ class BindingTests(SimpleTestCase):
 
     def test_the_bindings_are_published_under_the_method_names(self):
         slot = PLUGIN.init_state(None)
-        self.assertEqual(sorted(PLUGIN.bind(slot, {}, {})), ["advance_clock", "clock", "set_clock"])
+        self.assertEqual(
+            sorted(PLUGIN.bind(slot, {}, {})),
+            ["advance_clock", "cancel_event_now", "clock", "event_pending", "schedule_person_flag", "set_clock"],
+        )
         self.assertEqual(
             sorted(PLUGIN.bindings), ["day_of_week", "hour_of_day", "is_afternoon", "is_day", "is_evening", "is_morning", "is_night", "is_weekday"]
         )
@@ -241,3 +244,58 @@ class BindingTests(SimpleTestCase):
         self.assertEqual(bindings["set_clock"](5), 5)
         self.assertEqual(slot["a_co_tenant_key"], "belongs to another plugin")
         self.assertEqual(bindings["clock"](), 5)
+
+
+class NamedEventTests(SimpleTestCase):
+    """`event_id`, cancellation, and replace-on-rearm."""
+
+    def _slot(self) -> dict:
+        return {"clock": 0, "pending": []}
+
+    def _flag_effect(self) -> Effect:
+        return Effect(kind=EffectKind.SET_PERSON_FLAG, target="hannah", payload={"flag": "call_ready", "value": True})
+
+    def test_a_named_event_is_pending_until_it_fires(self):
+        slot = self._slot()
+        SCHEDULING.schedule_effect(slot, self._flag_effect(), 35, event_id="hannah_call")
+        self.assertTrue(SCHEDULING.event_is_pending(slot, "hannah_call"))
+        self.assertEqual(SCHEDULING.advance(slot, 20), [], "not due yet")
+        self.assertTrue(SCHEDULING.event_is_pending(slot, "hannah_call"))
+        fired = SCHEDULING.advance(slot, 20)
+        self.assertEqual([effect.target for effect in fired], ["hannah"])
+        self.assertFalse(SCHEDULING.event_is_pending(slot, "hannah_call"), "a fired event has left the queue")
+
+    def test_rearming_the_same_name_replaces_rather_than_duplicates(self):
+        """A timer armed twice must still fire once."""
+        slot = self._slot()
+        SCHEDULING.schedule_effect(slot, self._flag_effect(), 10, event_id="dup")
+        SCHEDULING.schedule_effect(slot, self._flag_effect(), 10, event_id="dup")
+        self.assertEqual(len(slot["pending"]), 1)
+
+    def test_replace_false_queues_both(self):
+        slot = self._slot()
+        SCHEDULING.schedule_effect(slot, self._flag_effect(), 10, event_id="dup")
+        SCHEDULING.schedule_effect(slot, self._flag_effect(), 10, event_id="dup", replace=False)
+        self.assertEqual(len(slot["pending"]), 2)
+
+    def test_cancelling_removes_it_and_reports_how_many(self):
+        slot = self._slot()
+        SCHEDULING.schedule_effect(slot, self._flag_effect(), 10, event_id="doomed")
+        self.assertEqual(SCHEDULING.cancel_event(slot, "doomed"), 1)
+        self.assertFalse(SCHEDULING.event_is_pending(slot, "doomed"))
+        self.assertEqual(SCHEDULING.cancel_event(slot, "doomed"), 0, "cancelling nothing is not an error")
+
+    def test_an_unnamed_event_still_fires_and_is_never_cancelled_by_name(self):
+        """Records written before named events existed have no id."""
+        slot = self._slot()
+        SCHEDULING.schedule_effect(slot, self._flag_effect(), 10)
+        self.assertNotIn("event_id", slot["pending"][0])
+        self.assertEqual(SCHEDULING.cancel_event(slot, ""), 0)
+        self.assertEqual(len(SCHEDULING.advance(slot, 10)), 1)
+
+    def test_a_pending_event_survives_a_save_round_trip(self):
+        slot = self._slot()
+        SCHEDULING.schedule_effect(slot, self._flag_effect(), 35, event_id="hannah_call")
+        restored = json.loads(json.dumps(slot))
+        self.assertTrue(SCHEDULING.event_is_pending(restored, "hannah_call"))
+        self.assertEqual([effect.target for effect in SCHEDULING.advance(restored, 35)], ["hannah"])

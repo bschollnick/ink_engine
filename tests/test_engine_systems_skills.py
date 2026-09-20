@@ -1,6 +1,6 @@
 """`engine_plugins.skills`: levels per character, and roll-under checks.
 
-No host framework needed. SimpleTestCase throughout.
+No application framework needed. SimpleTestCase throughout.
 """
 
 from __future__ import annotations

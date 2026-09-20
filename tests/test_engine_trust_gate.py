@@ -1,7 +1,7 @@
 """The trust-gate contract and `_call_function`'s real EXTERNAL dispatch
 branch.
 
-This module locks in the single most important behavior a host
+This module locks in the single most important behavior an application
 application relies on: an EXTERNAL call from an untrusted story must
 always run its Ink-side fallback, never a real Python callable,
 regardless of whether a binding happens to be registered somewhere. It
@@ -11,15 +11,15 @@ concurrent InkRuntimeState sessions calling the exact same registered
 Python callable never leak state into each other.
 
 `ink_engine` itself has NO trust concept at all — deciding which
-stories/sessions get real bindings is entirely a host application's own
+stories/sessions get real bindings is entirely an application's own
 adapter concern. What belongs here, and is genuinely portable, is the
 ENGINE's own half of the contract: `InkRuntimeState`'s dispatch is a
 pure function of whatever `engine_bindings` dict it is constructed
 with — a name present in that dict reaches Python, a name absent from it
 always falls through to the story's own Ink stub. `_bindings_for()`
-below is a trivial local stand-in for the trust decision a host
+below is a trivial local stand-in for the trust decision an application
 application's own adapter would make — this file needs no database and
-no host framework at all to prove the engine's own real, load-bearing
+no application framework at all to prove the engine's own real, load-bearing
 behavior.
 """
 
@@ -49,10 +49,10 @@ def _mark_ran_binding() -> bool:
 
 
 def _bindings_for(is_engine_trusted: bool) -> dict[str, object]:
-    """A trivial stand-in for the trust decision a real host application's
+    """A trivial stand-in for the trust decision a real application's
     own adapter owns — only ever returns real bindings when explicitly
     told the caller is trusted, mirroring where that decision really
-    lives (a host's own view/session layer, never the interpreter
+    lives (an application's own view/session layer, never the interpreter
     itself)."""
     return {"MARK_RAN": _mark_ran_binding} if is_engine_trusted else {}
 

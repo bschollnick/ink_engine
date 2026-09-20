@@ -61,7 +61,7 @@ class ExternalFallbackTests(SimpleTestCase):
     def test_uppercase_fallback_matches_real_transcript(self):
         """UPPERCASE's ink fallback ({txt}) is a stub that doesn't
         actually uppercase — matches the real transcript exactly,
-        including that non-transformation, since no real host function is
+        including that non-transformation, since no real application function is
         bound here (external_uppercase.ink)."""
         state = _run("external_uppercase.ink.json")
         text = state.continue_story()
@@ -144,7 +144,7 @@ class StrictExternalsTests(SimpleTestCase):
         self.assertEqual(state.globals.get("ran"), False)
 
     def test_strict_mode_survives_a_save_load_round_trip(self):
-        """The setting is host-supplied, not saved state -- `from_dict`
+        """The setting is application-supplied, not saved state -- `from_dict`
         takes it fresh, so a resumed session is as strict as it is told."""
         saved = self._state().to_dict()
         data = _load("external_dispatch_proof.ink.json")

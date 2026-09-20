@@ -1,6 +1,6 @@
 """The session library is a tenant of this repo, not part of the engine.
 
-It ships here because `ink_engine` is the one package both hosts already
+It ships here because `ink_engine` is the one package both applications already
 depend on. When a second IF engine appears it moves out, and that move
 must be a package relocation rather than an untangling -- which holds only
 while the dependency runs one way.

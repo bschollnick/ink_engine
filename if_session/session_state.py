@@ -150,8 +150,8 @@ def append_transcript_entry(
         chosen_label: The choice that led here, or None for the opening
             turn.
         cap: How many turns to keep. Passed in rather than read from a
-            module constant, so Django's own `MAX_TRANSCRIPT_TURNS`
-            setting stays a Django concern.
+            module constant, so how long a transcript runs stays the
+            embedding application's decision.
 
     Returns:
         A new list; the argument is not mutated.

@@ -50,7 +50,7 @@ class PanelContextTests(TestCase):
 
 class HookArgumentTests(TestCase):
     """Every hook is called by keyword, so its parameter ORDER is its own
-    business. This is the property that kept two hosts from disagreeing."""
+    business. This is the property that kept two applications from disagreeing."""
 
     def test_a_hook_declaring_an_unusual_order_still_receives_the_right_values(self):
         seen: dict[str, Any] = {}

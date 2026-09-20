@@ -1,7 +1,7 @@
 """The session library: save envelope, transcript, turn context.
 
 Each of these was written twice before this library existed, once per
-host. The tests that matter most here are the ones that catch the two
+application. The tests that matter most here are the ones that catch the two
 sides drifting apart again -- the round-trip and the layering guard.
 """
 
@@ -45,7 +45,7 @@ def _story(name: str = "basic.ink.json"):
 
 class StoryEngineProtocolTests(SimpleTestCase):
     def test_the_ink_runtime_satisfies_it(self):
-        """The interface is every member a host actually calls. If Ink
+        """The interface is every member an application actually calls. If Ink
         stopped satisfying it, a second engine's bar would have moved
         without anyone deciding to move it."""
         self.assertIsInstance(_story(), StoryEngine)

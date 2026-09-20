@@ -20,10 +20,10 @@ must see the whole session (another plugin's slot, the LIST tables) is
 marked `@external(needs_context=True)` and takes a `BindingContext` in
 place of the slot.
 
-Typing: a subclass declares its slot's shape as a `TypedDict` in
-`slot_type` and the matching empty-value factories in `fields`. The two
-are checked against each other at construction, so a field name typo
-fails at import.
+Typing: a subclass declares its slot's keys and their types as a
+`TypedDict` in `slot_type`, and the matching empty-value factories in
+`fields`. The two are checked against each other at construction, so a
+field name typo fails at import.
 """
 
 from __future__ import annotations
@@ -169,7 +169,7 @@ class StatefulPlugin(Generic[SlotT]):
             own name.
         display_name: Human-readable label. Overridable per instance.
         state_key: Where the slot lives in the session state.
-        slot_type: The `TypedDict` describing the slot's top-level shape.
+        slot_type: The `TypedDict` declaring the slot's top-level keys.
         fields: `{field_name: empty_value_factory}` for every key of
             `slot_type`. `init_state()` builds the slot from it and
             `bind()` re-applies it with `setdefault`, so a save written
@@ -196,12 +196,16 @@ class StatefulPlugin(Generic[SlotT]):
     default_config: Any = None
     stateless_bindings: ClassVar[dict[str, Callable[..., Any]]] = {}
 
-    def __init__(self, *, name: str | None = None, display_name: str | None = None, config: Any = None) -> None:
+    def __init__(self, *, name: str | None = None, display_name: str | None = None, state_key: str | None = None, config: Any = None) -> None:
         """Build one plugin definition.
 
         Args:
             name: Override the class's `name`.
             display_name: Override the class's `display_name`.
+            state_key: Override the class's `state_key`, so a second
+                configured copy of a plugin owns its own slot instead of
+                sharing the class's. A plugin that another plugin reads
+                by its module `STATE_KEY` constant must keep the default.
             config: This plugin's definition config, or None.
 
         Raises:
@@ -213,6 +217,8 @@ class StatefulPlugin(Generic[SlotT]):
             self.name = name
         if display_name is not None:
             self.display_name = display_name
+        if state_key is not None:
+            self.state_key = state_key
         self.config = config
         if config is not None:
             self.validate_config(config)
@@ -346,25 +352,19 @@ class StatefulPlugin(Generic[SlotT]):
         """
         slot_type = getattr(type(self), "slot_type", None)
         if slot_type is None:
-            raise TypeError(f"plugin '{self.name}': declare the slot's shape as `slot_type` (a TypedDict)")
+            raise TypeError(f"plugin '{self.name}': declare the slot's keys as `slot_type` (a TypedDict)")
         declared = set(getattr(slot_type, "__required_keys__", ())) | set(getattr(slot_type, "__optional_keys__", ()))
         if declared != set(self.fields):
             raise TypeError(f"plugin '{self.name}': `fields` keys {sorted(self.fields)} do not match `slot_type` keys {sorted(declared)}")
 
 
 def _marked_methods(plugin_class: type) -> dict[str, tuple[Callable[..., Any], ExternalMarker | None, bool]]:
-    """Return every marked method of a class, by attribute name.
+    """Return `{attribute_name: (function, external_marker, is_query)}`.
 
     The marker is taken from whichever class in the hierarchy declared
     it; the function is the most-derived definition. So a subclass that
     overrides a marked method keeps it published under the same Ink name
     without repeating the decorator, and cannot silently unpublish it.
-
-    Args:
-        plugin_class: The `StatefulPlugin` subclass.
-
-    Returns:
-        `{attribute_name: (function, external_marker, is_query)}`.
     """
     external_markers: dict[str, ExternalMarker] = {}
     query_names: set[str] = set()

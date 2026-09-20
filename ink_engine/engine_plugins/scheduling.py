@@ -54,6 +54,15 @@ class EffectKind(Enum):
     SET_PERSON_FLAG = "set_person_flag"
     SET_PLACE_FLAG = "set_place_flag"
 
+    # NOTE: An effect that must do SEVERAL things at once has no kind here
+    # on purpose. Adding one kind per operation (increment, append, clamp)
+    # is the wrong direction; the answer is a named handler a game
+    # registers, which keeps the SLOT free of code while letting the
+    # handler do the work. Designed but deliberately not built for a
+    # single call site -- see the "Deferred: a CALL_STORY_HANDLER effect
+    # kind" section of the scheduler-improvements plan for the design and
+    # the condition that should trigger building it.
+
 
 @dataclass(frozen=True)
 class Effect:
@@ -83,11 +92,17 @@ class EffectRecord(TypedDict):
     payload: dict[str, Any]
 
 
-class PendingRecord(TypedDict):
-    """One entry in the timed-event queue."""
+class PendingRecord(TypedDict, total=False):
+    """One entry in the timed-event queue.
+
+    `event_id` is optional: a record written before named events existed,
+    or scheduled without a name, has no id and can only be cancelled by
+    clearing the whole queue.
+    """
 
     due_time: int
     effect: EffectRecord
+    event_id: str
 
 
 class SchedulingSlot(TypedDict):
@@ -358,7 +373,7 @@ class Scheduling(StatefulPlugin[SchedulingSlot]):
         """
         return int(slot.get("clock", 0))
 
-    def schedule_effect(self, slot: SchedulingSlot, effect: Effect, minutes_from_now: int) -> None:
+    def schedule_effect(self, slot: SchedulingSlot, effect: Effect, minutes_from_now: int, *, event_id: str = "", replace: bool = True) -> None:
         """Queue an effect to fire `minutes_from_now` minutes after the current clock.
 
         A non-`eval` port of source's `startTimedEvent(evt, cnt)`
@@ -370,8 +385,53 @@ class Scheduling(StatefulPlugin[SchedulingSlot]):
             effect: The closed-vocabulary effect to fire once due.
             minutes_from_now: How many minutes from the clock until this
                 effect becomes due.
+            event_id: An optional name for this event, so it can be
+                cancelled or tested for later. Names are the caller's to
+                choose and mean nothing here.
+            replace: With an `event_id`, cancel any event already queued
+                under that name before queuing this one. Mirrors source's
+                own `reset` argument (`time.js:414`). Re-arming is the
+                common case -- a timer armed twice would otherwise fire
+                twice.
         """
-        slot.setdefault("pending", []).append({"due_time": self.clock(slot) + minutes_from_now, "effect": _record(effect)})
+        if replace and event_id:
+            self.cancel_event(slot, event_id)
+        record: PendingRecord = {"due_time": self.clock(slot) + minutes_from_now, "effect": _record(effect)}
+        if event_id:
+            record["event_id"] = event_id
+        slot.setdefault("pending", []).append(record)
+
+    def cancel_event(self, slot: SchedulingSlot, event_id: str) -> int:
+        """Remove every queued event named `event_id`.
+
+        A port of source's `removeTimedEvent(evt)` (`time.js:431`), which
+        likewise matches on the event's own name.
+
+        Args:
+            slot: This session's slot.
+            event_id: The name to cancel. Unnamed events never match.
+
+        Returns:
+            How many events were removed -- 0 when nothing was queued
+            under that name, which is not an error.
+        """
+        pending = slot.get("pending", [])
+        keep = [record for record in pending if record.get("event_id") != event_id]
+        slot["pending"] = keep
+        return len(pending) - len(keep)
+
+    def event_is_pending(self, slot: SchedulingSlot, event_id: str) -> bool:
+        """Return whether an event named `event_id` is queued and not yet due.
+
+        Args:
+            slot: This session's slot.
+            event_id: The name to look for.
+
+        Returns:
+            True while the event is waiting. False once it has fired, so
+            this answers "still waiting", never "has it happened".
+        """
+        return any(record.get("event_id") == event_id for record in slot.get("pending", []))
 
     def pending_effects(self, slot: SchedulingSlot) -> list[tuple[int, Effect]]:
         """Return every queued effect with its due time, in queue order.
@@ -432,6 +492,68 @@ class Scheduling(StatefulPlugin[SchedulingSlot]):
         """
         self.advance(slot, minutes)
         return self.clock(slot)
+
+    @external
+    def schedule_person_flag(self, slot: SchedulingSlot, character_id: str, flag: str, value: bool, minutes: int, event_id: str) -> int:
+        """EXTERNAL schedule_person_flag(character_id, flag, value, minutes, event_id).
+
+        Queue a SET_PERSON_FLAG to fire `minutes` from now. Re-arming the
+        same `event_id` replaces the pending one rather than queuing a
+        second, so a timer armed twice still fires once.
+
+        Ink cannot build the dict an `Effect` payload is, which is why
+        this takes flat arguments and assembles the effect here.
+
+        Args:
+            slot: This session's slot.
+            character_id: Whose flag to set. Never looked up here.
+            flag: The flag's name, the story's own word.
+            value: What to set it to once due.
+            minutes: How long from now, in the clock's own minutes.
+            event_id: A name for this event, for `event_pending`/
+                `cancel_event`. Pass "" for an event you never need to
+                cancel or test.
+
+        Returns:
+            The clock value at which it will fire.
+        """
+        self.schedule_effect(
+            slot,
+            Effect(kind=EffectKind.SET_PERSON_FLAG, target=character_id, payload={"flag": flag, "value": value}),
+            minutes,
+            event_id=event_id,
+        )
+        return self.clock(slot) + minutes
+
+    @external
+    def event_pending(self, slot: SchedulingSlot, event_id: str) -> bool:
+        """EXTERNAL event_pending(event_id); is that event still waiting?
+
+        Answers "still waiting", not "has it happened" -- a fired event
+        has left the queue. To gate a choice on a timer having elapsed,
+        have the event set a flag and test the flag.
+
+        Args:
+            slot: This session's slot.
+            event_id: The name given when it was scheduled.
+
+        Returns:
+            True while it is queued and not yet due.
+        """
+        return self.event_is_pending(slot, event_id)
+
+    @external
+    def cancel_event_now(self, slot: SchedulingSlot, event_id: str) -> int:
+        """EXTERNAL cancel_event_now(event_id); un-arm a scheduled event.
+
+        Args:
+            slot: This session's slot.
+            event_id: The name given when it was scheduled.
+
+        Returns:
+            How many were removed; 0 is not an error.
+        """
+        return self.cancel_event(slot, event_id)
 
     @external
     def set_clock(self, slot: SchedulingSlot, clock: int) -> int:

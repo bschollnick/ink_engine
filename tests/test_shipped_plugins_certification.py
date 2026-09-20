@@ -99,7 +99,7 @@ class ShippedPluginsDiscoveryTests(TestCase):
                 self.assertEqual(key, plugin.name)
 
     def test_every_plugin_declares_a_display_name(self):
-        """A host renders this; an empty one is a silent blank in a UI."""
+        """An application renders this; an empty one is a silent blank in a UI."""
         for name, plugin in SHIPPED_PLUGINS.items():
             with self.subTest(plugin=name):
                 self.assertTrue(plugin.display_name.strip(), f"'{name}' declares an empty display_name")
@@ -119,7 +119,7 @@ class ShippedPluginsStateTests(TestCase):
                 self.assertIn(plugin.state_key, state)
 
     def test_every_plugins_initial_state_is_json_safe(self):
-        """A host persists session state as JSON. A plugin whose fresh
+        """An application persists session state as JSON. A plugin whose fresh
         state holds a set or a dataclass breaks saving for every story
         that activates it, which no in-memory test would notice."""
         for name, plugin in SHIPPED_PLUGINS.items():
@@ -160,7 +160,7 @@ class ShippedPluginsBindingTests(TestCase):
     """Every shipped plugin binds, and the assembled surface is coherent."""
 
     def test_binding_every_shipped_plugin_at_once_succeeds(self):
-        """The combination is what a host actually activates; a plugin
+        """The combination is what an application actually activates; a plugin
         that binds alone but raises beside another is broken in practice."""
         resolve_bindings(SHIPPED_PLUGINS, list(SHIPPED_PLUGINS), {}, list_defs={})
 
@@ -244,7 +244,7 @@ class ShippedPluginsValidatorTests(TestCase):
     """A declared config validator must really validate."""
 
     def test_every_declared_validator_rejects_a_non_object_config(self):
-        """Config arrives as decoded JSON from a host's store. A validator
+        """Config arrives as decoded JSON from an application's store. A validator
         that accepts a list or a string is not closing the shape it
         exists to close."""
         for name, plugin in SHIPPED_PLUGINS.items():

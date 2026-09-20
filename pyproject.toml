@@ -1,7 +1,7 @@
  [project]
 name = "ink-engine"
 version = "0.9.0"
-description = "A standalone, Django-free Ink interactive-fiction interpreter and plugin engine"
+description = "A standalone Ink interactive-fiction interpreter and plugin engine, with no web framework or database of its own"
 readme = "README.md"
 authors = [
     {name = "Benjamin Schollnick",email = "Benjamin@schollnick.net"}
