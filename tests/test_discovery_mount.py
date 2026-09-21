@@ -89,10 +89,9 @@ class ReleaseTests(MountTestCase):
         self.assertNotIn(entry, sys.path)
 
     def test_an_exception_still_releases(self):
-        with self.assertRaises(RuntimeError):
-            with mount_game(self._folder("A")) as mounted:
-                entry = mounted.path_entry
-                raise RuntimeError("boom")
+        with self.assertRaises(RuntimeError), mount_game(self._folder("A")) as mounted:
+            entry = mounted.path_entry
+            raise RuntimeError("boom")
         self.assertNotIn(entry, sys.path)
 
 

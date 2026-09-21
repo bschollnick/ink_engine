@@ -60,7 +60,7 @@ line-length = 150
 
 [tool.isort]
 profile = "black"
-src_paths = ["ink_engine", "tests"]
+src_paths = ["ink_engine", "if_session", "tests"]
 skip_gitignore = true
 
 [tool.mypy]
@@ -81,10 +81,31 @@ max-line-length = 150
 line-length = 150
 
 [tool.ruff.lint]
-# E (pycodestyle) and F (pyflakes) only: real errors -- undefined names,
-# unused imports, broken syntax. The style families ruff also offers
-# disagree with black and isort, which own formatting here.
-select = ["E", "F"]
+# Errors, modernisation and correctness families. E501 is black's job and
+# W is pycodestyle style, so neither is selected.
+select = ["E4", "E7", "E9", "F", "UP", "RUF", "B", "SIM", "I", "PYI", "BLE", "S", "FURB"]
+
+[tool.ruff.lint.per-file-ignores]
+# S101: `assert` is how a test asserts.
+"tests/*" = ["S101"]
+# S101: every assert in these two is `x is not None` after logic that
+# already guarantees it -- narrowing for the type checker, never
+# validation, so stripping them under `python -O` changes nothing.
+"ink_engine/engine.py" = ["S101"]
+# BLE001/S110: `_binding_names` asks every plugin for its names on a
+# throwaway state. A plugin needing real state must not break the check,
+# so the failure is swallowed deliberately.
+"ink_engine/binding.py" = ["S101", "BLE001", "S110", "SIM105"]
+# BLE001: a game's own panel hook is application code; a failure is
+# logged and the panel treated as absent rather than ending the turn.
+"ink_engine/game_panel.py" = ["BLE001"]
+# S311: a skill roll is game randomness seeded from the save, so it
+# replays identically. Cryptographic randomness would break that.
+"ink_engine/engine_plugins/skills.py" = ["S311"]
+# BLE001: a thread body reports whatever it caught, which is the result
+# under test. S310: one opt-in test fetches inkle's published docs.
+"tests/test_engine_session_isolation.py" = ["S101", "BLE001"]
+"tests/test_vendored_standard_is_current.py" = ["S101", "S310"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

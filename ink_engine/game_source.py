@@ -118,9 +118,17 @@ class GameSource(Protocol):
         module gives it the right lifetime -- it belongs to one game, is
         freed with it, and is never shared between games or sessions.
 
-        The engine neither reads nor writes this; the shape is entirely
-        the resolver's own. Two games, or two concurrent sessions of one
-        game, each get their own.
+        The engine neither reads nor writes this; its contents are
+        entirely the resolver's own. Two games, or two concurrent
+        sessions of one game, each get their own.
+        """
+
+    def close(self) -> None:
+        """Release whatever the source holds open.
+
+        A bundle closes its archive; a directory holds nothing and
+        returns. Callers close every source rather than testing which
+        kind they were handed.
         """
 
 
@@ -200,6 +208,11 @@ class DirectoryGameSource:
             return self._resolve(relative).stat().st_mtime_ns
         except (OSError, GameSourceError):
             return 0
+
+    def close(self) -> None:
+        # A directory holds nothing open; the method exists so a caller
+        # need not ask which kind of source it has.
+        return
 
 
 class ZipGameSource:

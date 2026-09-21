@@ -33,12 +33,10 @@ import inspect
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar
 
 from ink_engine.engine_config_schemas import SystemConfigValidationError
 from ink_engine.plugin import VOID, EngineState, ListDefs, Plugin
-
-SlotT = TypeVar("SlotT", bound=Mapping[str, Any])
 
 #: Marker attribute set by `@external`; its value is an `ExternalMarker`.
 _EXTERNAL_MARKER = "_ink_external"
@@ -120,7 +118,7 @@ def query(method: Callable[..., Any]) -> Callable[..., Any]:
 
 
 @dataclass(frozen=True, slots=True)
-class BindingContext(Generic[SlotT]):
+class BindingContext[SlotT: Mapping[str, Any]]:
     """One session, as seen by a binding that needs more than its slot.
 
     Attributes:
@@ -156,7 +154,7 @@ def _call_returning_void(method: Callable[..., Any], *args: Any) -> Any:
     return VOID
 
 
-class StatefulPlugin(Generic[SlotT]):
+class StatefulPlugin[SlotT: Mapping[str, Any]]:
     """Base for a plugin that owns one JSON slot in the session state.
 
     Subclass, set the class attributes, write methods that take the slot,

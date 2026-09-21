@@ -14,6 +14,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
+from typing import Self
 
 from ink_engine.plugin import Plugin
 
@@ -143,7 +144,7 @@ class MountedGame:
             self._added_entry = False
         importlib.invalidate_caches()
 
-    def __enter__(self) -> MountedGame:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_exception: object) -> None:

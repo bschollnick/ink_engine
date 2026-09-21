@@ -39,7 +39,7 @@ import math
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Self
 
 from ink_engine.rng import NetRandom, RandomEngine, time_seed
 
@@ -81,10 +81,10 @@ class _TurnGuard:
     def __init__(self, state: InkRuntimeState) -> None:
         self._state = state
 
-    def __enter__(self) -> _TurnGuard:
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *_exc: Any) -> None:
+    def __exit__(self, *_exc: object) -> None:
         state = self._state
         with state._turn_guard_lock:  # pylint: disable=protected-access
             state._turn_depth -= 1  # pylint: disable=protected-access
@@ -1002,7 +1002,7 @@ def _load_object(obj: Any) -> Any:
     # str 66%, dict 23%, list 4%. The three are mutually exclusive, so the
     # order changes only how many checks a token costs, never its result.
     if isinstance(obj, str):
-        return obj[1:] if obj.startswith("^") else obj
+        return obj.removeprefix("^")
     if isinstance(obj, dict):
         return _load_dict_object(obj)
     if isinstance(obj, list):

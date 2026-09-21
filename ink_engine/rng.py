@@ -66,7 +66,7 @@ class NetRandom:  # pylint: disable=too-few-public-methods
         seed_array[55] = mj
         mk = 1
         ii = 0
-        for i in range(1, 55):
+        for _ in range(1, 55):
             ii += 21
             if ii >= 55:
                 ii -= 55

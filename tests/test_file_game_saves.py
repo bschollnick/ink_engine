@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from if_session.game_saves import (
     QUICKSAVE_SLOT,
     GameSaveError,

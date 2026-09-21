@@ -50,7 +50,7 @@ jobs:
       # names, unused imports, broken syntax. Formatting belongs to black
       # and isort, so no style family is selected here.
       - name: Lint
-        run: poetry run ruff check ink_engine/ if_session/
+        run: poetry run ruff check ink_engine/ if_session/ tests/ benchmarks/ examples/
 
       # --check reports and fails; it never rewrites a file in CI.
       - name: Check formatting

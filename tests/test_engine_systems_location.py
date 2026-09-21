@@ -7,6 +7,7 @@ Pure-function coverage — no application framework needed. SimpleTestCase throu
 from __future__ import annotations
 
 import json
+from typing import Any, ClassVar
 from unittest import TestCase as SimpleTestCase
 
 import ink_engine.engine_plugins.character_occupancy as character_occupancy_module
@@ -324,7 +325,7 @@ class EngineStateConditionTests(SimpleTestCase):
     it, instead of the story reading it out, passing its NAME in as a
     flag, and the schedule testing membership."""
 
-    STATE = {"characters": {"attributes": {"alice": {"deal_made": True, "stage": 3}}, "known": ["alice"]}}
+    STATE: ClassVar[dict[str, Any]] = {"characters": {"attributes": {"alice": {"deal_made": True, "stage": 3}}, "known": ["alice"]}}
 
     def _resolve(self, condition, engine_state=None):
         """Resolve a one-rule schedule under `condition`."""
@@ -629,7 +630,7 @@ class LayeredIndependenceTests(SimpleTestCase):
 class LocationDetailsTests(SimpleTestCase):
     """Declared details reach the session, and survive a round-trip."""
 
-    CONFIG = {
+    CONFIG: ClassVar[dict[str, Any]] = {
         "locations": {
             "cellar": {"known_by_default": True, "details": {"name": "The Cellar", "terrain": "indoor", "external_identifier": [12]}},
             "moor": {"details": {"terrain": "hills", "story_scene": "storm"}},

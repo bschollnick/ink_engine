@@ -85,7 +85,7 @@ class FindMainStoryFileTests(TestCase):
 
     def test_multiple_inkj_files_resolved_by_main_story_file_manifest_field(self):
         self._write("story_a.inkj", "{}")
-        real_story = self._write("story_b.inkj", "{}")
+        self._write("story_b.inkj", "{}")
         self._write("manifest.yaml", "MAIN_STORY_FILE: story_b.inkj\n")
         self.assertEqual(find_main_story_file(self.tmp), "story_b.inkj")
 
@@ -169,7 +169,7 @@ class ReadPlayLayoutTests(TestCase):
         """The shared helper correctly reads either field independently,
         proving genericity rather than an accidental MAIN_STORY_FILE-only
         implementation."""
-        story = self._write("story.inkj", "{}")
+        self._write("story.inkj", "{}")
         self._write("manifest.yaml", "MAIN_STORY_FILE: story.inkj\nPLAY_LAYOUT: three_column\n")
         self.assertEqual(find_main_story_file(self.tmp), "story.inkj")
         self.assertEqual(read_play_layout(self.tmp), "three_column")

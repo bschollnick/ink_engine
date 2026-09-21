@@ -165,7 +165,7 @@ class ConcurrentUseIsRefused(SimpleTestCase):
                     except ConcurrentPlaythroughError:
                         errors.append("refused")
                     except Exception as error:  # pylint: disable=broad-exception-caught
-                        errors.append(f"{type(error).__name__}: {error}")
+                        errors.append(f"{type(error).__name__}: {error}")  # noqa: B023  (`error` is the except binding, not the loop variable)
 
                 threads = [threading.Thread(target=drive) for _ in range(THREAD_COUNT)]
                 for thread in threads:

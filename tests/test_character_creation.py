@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+
 from if_session.character_creation import answers_to_globals
 
 

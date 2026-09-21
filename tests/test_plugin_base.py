@@ -9,7 +9,8 @@ from __future__ import annotations
 import copy
 import inspect
 import json
-from typing import Any, TypedDict
+from collections.abc import Callable
+from typing import Any, ClassVar, TypedDict
 from unittest import TestCase
 
 from ink_engine.binding import AmbiguousSlotConfigError, resolve_bindings
@@ -32,7 +33,7 @@ class Ledger(StatefulPlugin[LedgerSlot]):
     display_name = "Ledger"
     state_key = "ledger"
     slot_type = LedgerSlot
-    fields = {"balances": dict, "note": str}
+    fields: ClassVar[dict[str, Callable[[], Any]]] = {"balances": dict, "note": str}
 
     def validate_config(self, config: Any) -> None:
         if not isinstance(config, dict):
@@ -75,7 +76,7 @@ class ConstructionTests(TestCase):
 
     def test_fields_and_slot_type_must_agree(self):
         class Mismatched(Ledger):
-            fields = {"balances": dict}
+            fields: ClassVar[dict[str, Callable[[], Any]]] = {"balances": dict}
 
         with self.assertRaises(TypeError) as caught:
             Mismatched()
@@ -92,7 +93,7 @@ class ConstructionTests(TestCase):
 
     def test_a_definition_object_leaking_into_state_is_refused(self):
         class Leaky(Ledger):
-            fields = {"balances": dict, "note": object}
+            fields: ClassVar[dict[str, Callable[[], Any]]] = {"balances": dict, "note": object}
 
         with self.assertRaises(TypeError) as caught:
             Leaky()
@@ -111,7 +112,7 @@ class ConstructionTests(TestCase):
 
             class Unannotated(Ledger):
                 @external
-                def mystery(self, slot):  # noqa: ANN001
+                def mystery(self, slot):
                     return 1
 
     def test_a_bad_definition_config_fails_at_construction(self):
@@ -124,7 +125,7 @@ class ConstructionTests(TestCase):
             display_name = "Plain"
             state_key = "plain"
             slot_type = LedgerSlot
-            fields = {"balances": dict, "note": str}
+            fields: ClassVar[dict[str, Callable[[], Any]]] = {"balances": dict, "note": str}
 
         Plain().validate_config({})
         Plain().validate_config(None)
@@ -240,16 +241,16 @@ class AllocationTests(TestCase):
     def test_a_default_config_seeds_when_the_host_attaches_none(self):
         class Funded(Ledger):
             name = "funded"
-            default_config = {"cash": 50}
+            default_config: ClassVar[dict[str, int]] = {"cash": 50}
 
         engine_state: dict[str, Any] = {}
         resolve_bindings({"funded": Funded().plugin()}, ["funded"], engine_state)
         self.assertEqual(engine_state["ledger"]["balances"], {"cash": 50})
 
-    def test_an_empty_host_entry_defers_to_the_default_config(self):
+    def test_an_empty_application_entry_defers_to_the_default_config(self):
         class Funded(Ledger):
             name = "funded"
-            default_config = {"cash": 50}
+            default_config: ClassVar[dict[str, int]] = {"cash": 50}
 
         engine_state: dict[str, Any] = {}
         resolve_bindings({"funded": Funded().plugin()}, ["funded"], engine_state, configs={"funded": {}})
@@ -257,9 +258,8 @@ class AllocationTests(TestCase):
 
     def test_two_seeders_on_one_slot_are_refused_in_both_orders(self):
         for order in (["ledger", "seeded_ledger"], ["seeded_ledger", "ledger"]):
-            with self.subTest(order=order):
-                with self.assertRaises(AmbiguousSlotConfigError):
-                    resolve_bindings(self._plugins(), order, {}, configs={"ledger": {"cash": 1}, "seeded_ledger": {"cash": 2}})
+            with self.subTest(order=order), self.assertRaises(AmbiguousSlotConfigError):
+                resolve_bindings(self._plugins(), order, {}, configs={"ledger": {"cash": 1}, "seeded_ledger": {"cash": 2}})
 
     def test_a_host_config_is_validated_before_seeding(self):
         with self.assertRaises(SystemConfigValidationError):
@@ -282,14 +282,14 @@ class AllocationTests(TestCase):
             display_name = "Clock"
             state_key = "clock"
             slot_type = ClockSlot
-            fields = {"hour": lambda: 9}
+            fields: ClassVar[dict[str, Callable[[], Any]]] = {"hour": lambda: 9}
 
         seen: list[Any] = []
 
         class Watcher(Ledger):
             name = "watcher"
 
-            def bind(self, slot, engine_state, list_defs):  # noqa: ANN001
+            def bind(self, slot, engine_state, list_defs):
                 seen.append(engine_state.get("clock"))
                 return super().bind(slot, engine_state, list_defs)
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path as FilePath
+from typing import ClassVar
 from unittest import TestCase as SimpleTestCase
 
 from ink_engine.engine import (
@@ -49,7 +50,7 @@ class NetRandomTests(SimpleTestCase):
     # Each row: seed -> first 10 values from a real `new Random(seed)`,
     # calling `.Next()` ten times. Captured via a small dotnet console
     # program, not estimated or derived from documentation.
-    REFERENCE_SEQUENCES = {
+    REFERENCE_SEQUENCES: ClassVar[dict[int, list[int]]] = {
         0: [1559595546, 1755192844, 1649316166, 1198642031, 442452829, 1200195957, 1945678308, 949569752, 2099272109, 587775847],
         1: [534011718, 237820880, 1002897798, 1657007234, 1412011072, 929393559, 760389092, 2026928803, 217468053, 1379662799],
         -1: [534011718, 237820880, 1002897798, 1657007234, 1412011072, 929393559, 760389092, 2026928803, 217468053, 1379662799],

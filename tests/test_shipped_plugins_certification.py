@@ -35,6 +35,7 @@ from unittest import TestCase
 
 from ink_engine.binding import resolve_bindings
 from ink_engine.discovery import ENGINE_PLUGIN_PACKAGE, discover_plugins
+from ink_engine.engine_config_schemas import SystemConfigValidationError
 from ink_engine.plugin import Plugin
 
 SHIPPED_PLUGINS: dict[str, Plugin] = discover_plugins([ENGINE_PLUGIN_PACKAGE])
@@ -175,7 +176,7 @@ class ShippedPluginsBindingTests(TestCase):
     def test_each_plugin_binds_in_isolation(self):
         """A plugin reading another's slot must tolerate that slot being
         absent, since a story may activate it alone."""
-        for name, plugin in SHIPPED_PLUGINS.items():
+        for name in SHIPPED_PLUGINS:
             with self.subTest(plugin=name):
                 resolve_bindings(SHIPPED_PLUGINS, [name], {}, list_defs={})
 
@@ -250,6 +251,5 @@ class ShippedPluginsValidatorTests(TestCase):
         for name, plugin in SHIPPED_PLUGINS.items():
             if plugin.validate_config is None:
                 continue
-            with self.subTest(plugin=name):
-                with self.assertRaises(Exception):
-                    plugin.validate_config(["not", "an", "object"])
+            with self.subTest(plugin=name), self.assertRaises(SystemConfigValidationError):
+                plugin.validate_config(["not", "an", "object"])

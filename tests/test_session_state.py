@@ -20,7 +20,6 @@ from if_session import (
     read_saved_state,
     turn_context,
 )
-
 from ink_engine.engine import load_story_root, start_new_story
 
 FIXTURES = FilePath(__file__).parent / "fixtures"
@@ -74,7 +73,7 @@ class SaveEnvelopeTests(SimpleTestCase):
         """The defect this guards: `from_dict()` reads every field with a
         default, so a renamed key loads as a default rather than raising.
         Comparing the whole dict makes that loud."""
-        data = json.load(open(FIXTURES / "basic.ink.json", encoding="utf-8"))
+        data = json.loads((FIXTURES / "basic.ink.json").read_text(encoding="utf-8"))
         envelope = build_saved_state(self.state, None, [], {})
         from ink_engine.engine import InkRuntimeState
 

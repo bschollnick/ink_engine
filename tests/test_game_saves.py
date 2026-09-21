@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+
 from if_session.game_saves import (
     DEFAULT_LABEL_CHARACTER_LIMIT,
     QUICKSAVE_LABEL,
@@ -556,7 +557,7 @@ class TestBuildComparison:
     tells one build from another.
     """
 
-    def test_a_save_records_the_build_that_made_it(self, game_saves_in_memory: FakeGameSaves) -> None:
+    def test_a_save_records_the_build_that_made_it(self, game_saves_in_memory: GameSavesInMemory) -> None:
         written = save_game(
             GAME,
             0,
@@ -569,7 +570,7 @@ class TestBuildComparison:
         )
         assert written["game_build"] == "aaaa1111"
 
-    def test_the_same_build_is_not_flagged(self, game_saves_in_memory: FakeGameSaves) -> None:
+    def test_the_same_build_is_not_flagged(self, game_saves_in_memory: GameSavesInMemory) -> None:
         written = save_game(
             GAME,
             0,
@@ -582,7 +583,7 @@ class TestBuildComparison:
         )
         assert is_from_another_build(written, "aaaa1111") is False
 
-    def test_a_different_build_is_flagged(self, game_saves_in_memory: FakeGameSaves) -> None:
+    def test_a_different_build_is_flagged(self, game_saves_in_memory: GameSavesInMemory) -> None:
         written = save_game(
             GAME,
             0,
@@ -603,11 +604,11 @@ class TestBuildComparison:
         """A directory game has no build; comparison means nothing there."""
         assert is_from_another_build({"game_build": "aaaa1111"}, "") is False
 
-    def test_a_quicksave_records_its_build_too(self, game_saves_in_memory: FakeGameSaves) -> None:
+    def test_a_quicksave_records_its_build_too(self, game_saves_in_memory: GameSavesInMemory) -> None:
         written = quicksave(GAME, a_state(), saves_in=game_saves_in_memory, saved_at=WHEN, game_build="aaaa1111")
         assert is_from_another_build(written, "bbbb2222") is True
 
-    def test_an_exported_file_carries_the_build(self, game_saves_in_memory: FakeGameSaves) -> None:
+    def test_an_exported_file_carries_the_build(self, game_saves_in_memory: GameSavesInMemory) -> None:
         save_game(
             GAME,
             0,
@@ -621,7 +622,7 @@ class TestBuildComparison:
         envelope = export_game_save(GAME, 0, saves_in=game_saves_in_memory, maximum_gamesave_slots=MAX_SLOTS)
         assert envelope["game_build"] == "aaaa1111"
 
-    def test_an_imported_save_keeps_the_build_that_made_it(self, game_saves_in_memory: FakeGameSaves) -> None:
+    def test_an_imported_save_keeps_the_build_that_made_it(self, game_saves_in_memory: GameSavesInMemory) -> None:
         """Importing copies a file; it does not re-make the save."""
         envelope = {
             "if_save_version": SAVE_ENVELOPE_VERSION,
@@ -643,7 +644,7 @@ class TestBuildComparison:
         assert written["game_build"] == "aaaa1111"
         assert is_from_another_build(written, "bbbb2222") is True
 
-    def test_saving_again_brings_a_slot_up_to_date(self, game_saves_in_memory: FakeGameSaves) -> None:
+    def test_saving_again_brings_a_slot_up_to_date(self, game_saves_in_memory: GameSavesInMemory) -> None:
         """The repair the caution tells a player about."""
         save_game(
             GAME,

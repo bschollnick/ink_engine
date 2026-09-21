@@ -15,6 +15,7 @@ from pathlib import Path as FilePath
 from unittest import TestCase as SimpleTestCase
 
 from ink_engine.engine import (
+    InkPathError,
     InkRuntimeState,
     ListValue,
     apply_native_function,
@@ -192,7 +193,7 @@ class ListNativeFunctionTests(SimpleTestCase):
     def test_bool_operand_with_list_operand_raises(self):
         """A non-LIST operand paired with a LIST operand has no defined
         operation."""
-        with self.assertRaises(Exception):
+        with self.assertRaises(InkPathError):
             apply_native_function(">", [self.coins, 5])
 
 

@@ -11,6 +11,7 @@ back so a test reads as the sequence of operations it exercises.
 from __future__ import annotations
 
 import json
+from typing import ClassVar
 from unittest import TestCase as SimpleTestCase
 
 from ink_engine.engine_plugins.inventory import (
@@ -698,7 +699,7 @@ class WornCapacityExemptionTests(SimpleTestCase):
 class DescriptionSlotTests(SimpleTestCase):
     """Lookup-with-fallback. All text belongs to the caller."""
 
-    DEFAULTS = {"initial": "A {name} lies here.", "inventory": "A {name}."}
+    DEFAULTS: ClassVar[dict[str, str]] = {"initial": "A {name} lies here.", "inventory": "A {name}."}
 
     def test_an_authored_string_wins(self):
         text = describe("initial", authored={"initial": "authored text"}, defaults=self.DEFAULTS, name="widget")
