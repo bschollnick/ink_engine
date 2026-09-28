@@ -77,7 +77,7 @@ class Skills(StatefulPlugin[SkillSlot]):
     name = "skills"
     display_name = "Skills"
     state_key = STATE_KEY
-    slot_type = SkillSlot
+    slot_type: ClassVar[type] = SkillSlot
     fields: ClassVar[dict[str, Callable[[], Any]]] = {"skill_levels": dict, "rng_seed": int, "last_roll": int, "last_effective_target": int}
 
     @query

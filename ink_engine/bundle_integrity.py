@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,23 @@ import yaml
 
 from ink_engine.game_folder import MANIFEST_FILENAME
 from ink_engine.game_source import GameSourceError
+
+
+@dataclass(frozen=True, slots=True)
+class BundleDigests:
+    """The three SHA-256 hashes a built bundle records about itself.
+
+    Attributes:
+        story_sha256: The compiled story's hash, or "" when the plan has
+            no story file.
+        directory_sha256: The hash over every archive entry but the manifest.
+        manifest_sha256: The manifest's hash, as recorded in the archive comment.
+    """
+
+    story_sha256: str
+    directory_sha256: str
+    manifest_sha256: str
+
 
 #: Manifest field holding the compiled story's own SHA-256.
 STORY_SHA256_FIELD = "STORY_SHA256"

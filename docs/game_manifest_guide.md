@@ -1,7 +1,7 @@
 # Writing a Game Manifest
 
 **Date Created:** 2026-09-13  
-**Last Updated:** 2026-09-20  
+**Last Updated:** 2026-09-24  
 **Last Reviewed:** 2026-09-19
 
 Every game folder holds a `manifest.yaml` describing the game: its title,
@@ -146,7 +146,7 @@ PROSE_STYLES: theme.css
 | Field | Required | Notes |
 |---|---|---|
 | `MEDIA_DIRECTORIES` | If you ship media | Directories holding anything your story's tags point at. Each is included whole. |
-| `COVER_IMAGE` | Optional | Shown in a game list. Without it the engine looks for `cover.png`/`.jpg`/`.gif`/`.webp` in the folder root and in `images/`. |
+| `COVER_IMAGE` | Optional | Shown in a game list. Without it the engine looks for `cover.png`/`.jpg`/`.jpeg`/`.webp`/`.gif` in the folder root, then in `images/` or `Images/`. |
 | `PROSE_STYLES` | Optional | A CSS file styling your prose. Defaults to `styles.css` if present. |
 | `USES_NETWORK_RESOURCES` | Optional | Declare `true` if your game loads anything over the network. Advisory: an application tells the player, nothing restricts it. |
 

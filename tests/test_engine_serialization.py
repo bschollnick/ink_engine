@@ -269,6 +269,7 @@ class PersistedKeyContractTests(SimpleTestCase):
             "eval_stack",
             "globals",
             "in_tag",
+            "interludes",
             "last_turn_text",
             "output_tokens",
             "pending_thread",

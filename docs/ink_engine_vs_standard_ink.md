@@ -1,7 +1,7 @@
 # ink_engine vs. standard Ink
 
 **Date Created:** 2026-09-15  
-**Last Updated:** 2026-09-20  
+**Last Updated:** 2026-09-26  
 **Last Reviewed:** 2026-09-19
 
 For Ink authors and developers who know inkle's Ink and want to know what
@@ -191,9 +191,19 @@ in place. Cast a spell from the sidebar and the choice it unlocks appears
 without the story advancing a turn.
 
 The choice is an ordinary guarded choice, written as the language
-defines it. The turn count, the text already shown and the player's
-position are unchanged; only the list of available choices is rebuilt. The
-same story runs unmodified on an application that offers no panels.
+defines it. A panel command can answer with a knot to play as its
+reaction: the application jumps there as a turn, and a reaction that ends
+by diverting back to the current location shows its choices again,
+re-evaluated. `refresh_choices()` rebuilds the list without a turn by
+replaying the turn, so the turn's assignments and `EXTERNAL` calls before
+its choices run again. The same story runs unmodified on an application
+that offers no panels.
+
+An application can also run a knot in the middle of a turn, as a tunnel
+the story did not write: `start_interlude(knot)` sets the turn's choices
+aside, plays the knot, and offers them again when its `->->` returns. A
+side panel can list a knot's choices as buttons and run the one picked
+this way.
 
 Character creation works the same way: the answers a player gives before
 the story opens are already in your `VAR`s on turn one, so no prologue
@@ -204,12 +214,26 @@ knot exists just to set them.
 Differences between this engine and the standard Ink runtime. Most of
 these a story author never touches.
 
-**Three application APIs are unbuilt:** variable observers, `ChoosePathString`,
-and named flows. Each was evaluated and deferred because inkle documents
-little more than the signature — whether an observer fires on assignment
-or only on change, whether a jump resets the call stack, is left unstated.
-An application can already reread variables each turn and reposition by restoring
-a save. Better documentation or a real use case reopens the question.
+**`ChoosePathString` is `choose_path(path, *arguments)`.** It ports
+`Story.ChoosePathString` with `resetCallstack` true (inkle's
+`ink-engine-runtime/Story.cs`, with `StoryState.ForceEnd()` and
+`StoryState.SetChosenPath()` in `StoryState.cs`). It jumps to `"knot"` or
+`"knot.stitch"` and resets the call stack, discarding pending tunnels,
+function frames, temporary variables and interludes; it clears the current
+choices, advances the turn count, and counts the arrival as a visit.
+Arguments must be int, float, string, bool or a LIST value; another type
+raises `TypeError` where inkle raises `ArgumentException`. To run a knot
+and come back instead, `start_interlude(knot)` calls it as a tunnel,
+keeping the call stack and returning to the interrupted turn's choices.
+
+**`ChoosePathString(path, resetCallstack: false)` is not built;** a jump
+always resets the call stack.
+
+**Two application APIs are unbuilt:** variable observers and named flows.
+Each was evaluated and deferred because inkle documents little more than
+the signature — whether an observer fires on assignment or only on
+change is left unstated. An application can already reread variables each
+turn. Better documentation or a real use case reopens the question.
 
 **A misspelled function name degrades instead of raising.** Where the
 reference runtime reports an unresolvable function call as a story error,

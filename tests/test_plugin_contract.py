@@ -386,7 +386,7 @@ class ListDefsArgumentTests(TestCase):
 
     def test_bind_receives_the_tables(self):
         seen: dict[str, Any] = {}
-        list_defs = {"AllCharacters": {"gina": 1, "lola": 2}}
+        list_defs = {"AllCharacters": {"ada": 1, "iris": 2}}
 
         resolve_bindings({"reader": self._capturing_plugin(seen)}, ["reader"], {}, list_defs=list_defs)
 
@@ -406,7 +406,7 @@ class ListDefsArgumentTests(TestCase):
         own dict, so there is nothing to leak or to clean up."""
         engine_state: dict[str, Any] = {}
 
-        resolve_bindings({"reader": self._capturing_plugin({})}, ["reader"], engine_state, list_defs={"AllCharacters": {"gina": 1}})
+        resolve_bindings({"reader": self._capturing_plugin({})}, ["reader"], engine_state, list_defs={"AllCharacters": {"ada": 1}})
 
         self.assertEqual(sorted(engine_state), ["reader"])  # the plugin's own slot, nothing else
 
@@ -415,7 +415,7 @@ class ListDefsArgumentTests(TestCase):
         sessions of different stories cannot observe each other."""
         seen_first: dict[str, Any] = {}
         seen_second: dict[str, Any] = {}
-        first_lists = {"AllCharacters": {"gina": 1}}
+        first_lists = {"AllCharacters": {"ada": 1}}
         second_lists = {"AllCharacters": {"zali": 1, "nina": 2}}
 
         resolve_bindings({"reader": self._capturing_plugin(seen_first)}, ["reader"], {}, list_defs=first_lists)

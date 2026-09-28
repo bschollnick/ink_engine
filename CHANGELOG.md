@@ -1,7 +1,7 @@
 # Release Notes
 
 **Date Created:** 2026-09-20  
-**Last Updated:** 2026-09-20  
+**Last Updated:** 2026-09-26  
 **Last Reviewed:** 2026-09-20
 
 `ink_engine` began inside QuickBBS, a photo gallery application, as its
@@ -11,6 +11,97 @@ interactive-fiction feature. It was extracted into its own repository on
 Versions before 1.0.0 were never published: the engine was a package
 inside QuickBBS and had no release of its own. They are reconstructed
 here from commit history so the path to 1.0.0 is legible.
+
+---
+
+## Unreleased
+
+- Fixed: literal text or a string value that spells a control marker
+  ("done", "end", "ev", "str", "#", ...) is now text. `~ temp a = "done"`
+  used to end the story at that line.
+- Scheduling: `EffectKind.RUN_STORY_HANDLER` and the binding
+  `schedule_story_handler(handler, argument, minutes, event_id)` queue a
+  handler the game registers by name, for a delayed change that is more
+  than one flag.
+- Scheduling: the binding `schedule_move(character_id, location_id,
+  minutes, event_id)` queues a `MOVE_CHARACTER` effect; `""` removes the
+  character when it fires.
+- `location_graph` details accept `entrance` (a boolean): an indoor place
+  that is the way into a building, or into a unit inside one.
+  `location_graph.buildings(config)` groups a map into a tree of buildings
+  by its entrances, nesting a building whose entrance is reached from
+  inside another, and lists the indoor places no entrance leads to. A
+  `building` detail names a building's main entrance, giving it further
+  entrances and places inside it of any terrain, and an exit's `through`
+  names a place the journey passes through.
+  `tools/map_layout_v2.py` groups a map by this tree when it declares any
+  entrance: a nested building shows as its own closed marker inside its
+  open parent, a building with no room but its entrance opens to itself,
+  and every place has a larger click target.
+- `benchmarks/plugin_turn_cost.py` no longer needs a consuming application.
+  By default it measures a synthetic town built from every generic engine
+  plugin (`--scale` multiplies its size); `--game` measures any game folder
+  or bundle with the plugins its manifest declares.
+- `Condition.clock_reached(state_key, path)`: true once the clock reaches a
+  minute a scene stored in a plugin's state, such as a character who
+  arrives "from next Monday".
+- `CharacterOccupancy` records the location each character held just before
+  their most recent placement; `previous_location(character_id)` reads it.
+  After a move it is where they arrived from; after a placement at the same
+  place it equals `where_is`, so the two differing means "just arrived".
+  Saved games without the record answer `""` until the next placement.
+- `CharacterOccupancy.assigned_location(character_id)`: the location the
+  story last put a character at with `set_location`. A schedule's
+  `recompute()` moves a character without changing it, so a resolver can
+  fall back to where a scene sent them.
+- `InkRuntimeState.start_interlude(knot)` runs a knot as a tunnel inserted
+  into the current turn and offers the turn's choices again when its `->->`
+  returns. `->-> elsewhere`, or the story ending, discards them.
+  `InterludeError` is raised, before anything changes, for an unknown knot
+  or a turn with no choices. Saved state gains an `interludes` key; a save
+  without it loads with none pending.
+- `InkRuntimeState.knot_choices(knot)` lists the choices a knot would
+  offer now, evaluated on a copy of the state. `Choice.target_path` is a
+  choice target's path, which `start_interlude()` accepts.
+- Side panels: a game's `panel_context()` may return `panel_slots`,
+  sections drawn below the active tab's, and `compass_sections()` scans
+  them. An action section (`ACTIONS_LAYOUT`, built by `actions_section()`)
+  names a menu knot; `fill_action_sections()` lists its choices grouped by
+  their `# group:` tag, each group's picture from its `# image:` tag, and
+  `find_action()` looks one up to pass to `start_interlude()`.
+
+- `InkRuntimeState.choose_path(path, *arguments)`: standard Ink's
+  `ChoosePathString`. Jumps to a knot or stitch by name, resetting the call
+  stack (tunnels, function frames, temporary variables, interludes),
+  clearing the current choices and advancing the turn count. An unknown
+  path raises `InkPathError`, and an argument that is not an int, float,
+  string, bool or LIST value raises `TypeError`, before anything changes.
+- Panel commands can play a story turn. A game's `panel_command()` may
+  answer a dict, `{"knot": str, "message": str, "label": str}` (`message`
+  and `label` optional), instead of a message string.
+  `GamePanel.command_result()` reads either answer as a `CommandResult`,
+  and `play_reaction(state, result)` plays a knot answer with
+  `choose_path()` and `continue_story()`. `GamePanel.command()` still
+  answers the message.
+- `if_session.SAVE_FORMAT_VERSION` is 3: a save carries the engine's
+  `interludes`. A version 2 save loads with no interlude pending; a
+  version 3 save is refused by a reader of version 2.
+
+### Fixed
+- **A tunnel to a divert-target variable (`-> where ->`) stopped the
+  story.** The tunnel now runs the variable's target and returns, as
+  inklecate's runtime does.
+- **A variable printed inside a choice's tag moved into the choice's
+  text.** `+ [Wave # image: {season}/a.jpg]` now gives the text "Wave" and
+  the tag `image: Winter/a.jpg`.
+- **A tag inside an Ink function body raised `InkPathError`.** It is now
+  one of the turn's tags, as a tag outside a function is.
+
+### Documentation
+- `refresh_choices()` replays the turn, so the turn's assignments and
+  `EXTERNAL` calls before its choices run a second time. The bindings
+  guide and the standard-Ink comparison said nothing changed but the
+  choices; both now say what it does.
 
 ---
 

@@ -33,6 +33,7 @@ import yaml
 from ink_engine.bundle_integrity import (
     BUNDLE_DIRECTORY_SHA256_FIELD,
     STORY_SHA256_FIELD,
+    BundleDigests,
     build_archive_comment,
     directory_hash,
     hash_bytes,
@@ -50,6 +51,7 @@ from ink_engine.game_folder import (
     GameFolderError,
     read_manifest,
 )
+from ink_engine.media_resolver import cover_image_path, prose_styles_path
 
 #: Filenames never bundled even inside a declared directory: OS droppings
 #: that carry no game content and appear at every level of a media tree.
@@ -188,8 +190,10 @@ def select_bundle_contents(game_dir: Path, *, package_name: str | None = None) -
     Collects, in order: `manifest.yaml` itself, every top-level `.py`
     (the game's own package, including the `__init__.py` that makes it
     importable), the story named by `MAIN_STORY_FILE`, every directory in
-    `MEDIA_DIRECTORIES`, and every path in `EXTRA_FILES`. Nothing else is
-    considered.
+    `MEDIA_DIRECTORIES`, every path in `EXTRA_FILES`, the files the
+    single-file fields name (`COVER_IMAGE`, `PROSE_STYLES`,
+    `PLUGIN_DENIED_SCREEN`), and a cover or stylesheet found by filename
+    convention. Nothing else is considered.
 
     Never writes anything -- `build_bundle()` does that, so an author can
     inspect the plan first.
@@ -245,6 +249,12 @@ def select_bundle_contents(game_dir: Path, *, package_name: str | None = None) -
     # nothing once bundled.
     for field_name in (COVER_IMAGE_FIELD, PROSE_STYLES_FIELD, PLUGIN_DENIED_SCREEN_FIELD):
         _collect_single_file(plan, manifest, field_name)
+    # A cover or stylesheet found by filename convention rather than
+    # declared is used for the folder, so the bundle carries it too. A
+    # declared one was collected, and checked, above.
+    for field_name, find in ((COVER_IMAGE_FIELD, cover_image_path), (PROSE_STYLES_FIELD, prose_styles_path)):
+        if not manifest.get(field_name) and (found := find(game_dir)) is not None:
+            plan.included[Path(found)] = f"{field_name} by convention"
     return plan
 
 
@@ -438,14 +448,14 @@ def build_bundle(plan: BundlePlan, output_path: Path, *, progress: Callable[[Pat
             bundle_name=resolved_output.name,
             bundle_bytes=resolved_output.stat().st_size,
             file_count=len(plan.included),
-            **digests,
+            digests=digests,
         ),
         encoding="utf-8",
     )
     return resolved_output
 
 
-def _write_archive(plan: BundlePlan, output_path: Path, progress: Callable[[Path], None] | None) -> dict[str, str]:
+def _write_archive(plan: BundlePlan, output_path: Path, progress: Callable[[Path], None] | None) -> BundleDigests:
     """Write the archive, and return the three hashes it records.
 
     The manifest carries hashes of the bundle it lives in, so ordering is
@@ -460,8 +470,7 @@ def _write_archive(plan: BundlePlan, output_path: Path, progress: Callable[[Path
         progress: Called with each file's relative path as it is written.
 
     Returns:
-        `story_sha256`, `directory_sha256` and `manifest_sha256`, ready to
-        pass to `render_readme()`.
+        The three hashes, ready to pass to `render_readme()`.
     """
     manifest_relative = Path(MANIFEST_FILENAME)
     manifest_arcname = str(Path(plan.package_name) / manifest_relative)
@@ -491,7 +500,7 @@ def _write_archive(plan: BundlePlan, output_path: Path, progress: Callable[[Path
         if progress is not None:
             progress(manifest_relative)
 
-    return {"story_sha256": story_digest, "directory_sha256": directory_digest, "manifest_sha256": manifest_digest}
+    return BundleDigests(story_sha256=story_digest, directory_sha256=directory_digest, manifest_sha256=manifest_digest)
 
 
 def _manifest_with_hashes(source: str, *, story_sha256: str, directory_sha256: str) -> str:

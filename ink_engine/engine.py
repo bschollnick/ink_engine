@@ -54,6 +54,10 @@ class InkPathError(ValueError):
     """Raised when a path string cannot be resolved against a container tree."""
 
 
+class InterludeError(ValueError):
+    """Raised when `InkRuntimeState.start_interlude()` cannot start one."""
+
+
 class ConcurrentPlaythroughError(RuntimeError):
     """Raised when a second thread drives one `InkRuntimeState`.
 
@@ -564,6 +568,11 @@ class Choice:
     target: Container
     tags: list[str] = field(default_factory=list)
 
+    @property
+    def target_path(self) -> str:
+        """Return the target container's absolute path, which `start_interlude()` accepts."""
+        return _container_path(self.target)
+
 
 class Container:
     """A node in the compiled story's content tree.
@@ -982,6 +991,16 @@ def _load_container_lazily(obj: list[Any]) -> LazyContainer:
     return container
 
 
+class TextLeaf(str):
+    """A literal-text leaf: compiled JSON's "^text" with the caret stripped.
+
+    Kept apart from bare-string control markers so text that happens to
+    spell one ("done", "end", "ev", "str", "#", "->->") is never run as it.
+    """
+
+    __slots__ = ()
+
+
 def _load_object(obj: Any) -> Any:
     """Convert one compiled-JSON token into its runtime representation.
 
@@ -1002,7 +1021,7 @@ def _load_object(obj: Any) -> Any:
     # str 66%, dict 23%, list 4%. The three are mutually exclusive, so the
     # order changes only how many checks a token costs, never its result.
     if isinstance(obj, str):
-        return obj.removeprefix("^")
+        return TextLeaf(obj[1:]) if obj.startswith("^") else obj
     if isinstance(obj, dict):
         return _load_dict_object(obj)
     if isinstance(obj, list):
@@ -1066,15 +1085,32 @@ def _load_divert(obj: dict[str, Any]) -> Divert:
         real target from a variable instead), so the field stays
         well-typed without needing Optional.
     """
-    target = str(obj["->"])
+    return _build_divert(str(obj["->"]), obj, pushes_tunnel=False)
+
+
+def _load_tunnel_divert(obj: dict[str, Any]) -> Divert:
+    """Build a tunnel-push Divert from a `{"->t->": target, "var": bool}` leaf.
+
+    Args:
+        obj: The dict-form leaf token. "var": true means target is a
+            variable name, as for `_load_divert()`.
+
+    Returns:
+        The Divert, with `pushes_tunnel` set.
+    """
+    return _build_divert(str(obj["->t->"]), obj, pushes_tunnel=True)
+
+
+def _build_divert(target: str, obj: dict[str, Any], *, pushes_tunnel: bool) -> Divert:
+    """Build a plain or tunnel Divert, honouring the "var" and "c" flags."""
     if obj.get("var", False):
-        return Divert(target_path=Path(components=[PathComponent(name=target)]), is_variable_target=True)
-    return Divert(target_path=Path.parse(target), is_conditional=bool(obj.get("c", False)))
+        return Divert(target_path=Path(components=[PathComponent(name=target)]), is_variable_target=True, pushes_tunnel=pushes_tunnel)
+    return Divert(target_path=Path.parse(target), is_conditional=bool(obj.get("c", False)), pushes_tunnel=pushes_tunnel)
 
 
 _DICT_OBJECT_BUILDERS: list[tuple[str, Any]] = [
     ("->", _load_divert),
-    ("->t->", lambda obj: Divert(target_path=Path.parse(str(obj["->t->"])), pushes_tunnel=True)),
+    ("->t->", _load_tunnel_divert),
     ("*", lambda obj: ChoicePoint(target_path=Path.parse(str(obj["*"])), flags=int(obj.get("flg", 0)))),
     ("VAR?", lambda obj: VariableReference(name=str(obj["VAR?"]))),
     ("^var", lambda obj: VariablePointer(name=str(obj["^var"]), context_index=int(obj.get("ci", -1)))),
@@ -2005,6 +2041,25 @@ class CallFrame:
     temps: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class _Interlude:
+    """The turn an interlude interrupted, set aside until its tunnel returns.
+
+    Args:
+        choices: The interrupted turn's choices.
+        tunnel_depth: The index in `tunnel_stack` of the interlude's own
+            return entry, a `Pointer(None)`.
+        done: The interrupted turn's `done` flag.
+        turn_start: The interrupted turn's `refresh_choices()` snapshot.
+            Not saved, as `_turn_start` itself is not.
+    """
+
+    choices: list[Choice]
+    tunnel_depth: int
+    done: bool
+    turn_start: dict[str, Any] | None = None
+
+
 #: The plain scalar fields a save carries: (saved key, attribute name,
 #: how to coerce on load, default when a save predates the field). Both
 #: halves of serialization read this one list, so a field cannot be
@@ -2092,6 +2147,9 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         # text is evaluated and handed to the Choice built from it.
         self._pending_choice_tags: list[str] = []
         self._choice_tag_buffer: OutputStream | None = None
+        # len(_string_capture_stack) when that tag opened: an interpolation
+        # belongs to the tag only while that capture is the innermost.
+        self._choice_tag_capture_depth = 0
         # This turn's own starting state, for refresh_choices().
         self._turn_start: dict[str, Any] | None = None
         self.done = False
@@ -2113,6 +2171,8 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         # text level".
         self._string_capture_eval_depth: list[int] = []
         self.tunnel_stack: list[Pointer] = []
+        # Innermost last; see start_interlude().
+        self._interludes: list[_Interlude] = []
         self.call_stack: list[CallFrame] = []
         self._pending_thread = False
         self.turn_count = -1
@@ -2594,16 +2654,27 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         out.
 
         An empty tunnel_stack ends the story rather than raising, as
-        DONE_COMMANDS does for unexpected ends.
+        DONE_COMMANDS does for unexpected ends. Popping an interlude's own
+        entry ends the interlude: a plain return restores the turn it
+        interrupted, and an override discards that turn.
         """
         override = self._pop_eval_stack()
         if not self.tunnel_stack:
             self.done = True
             return
         return_pointer = self.tunnel_stack.pop()
+        interlude = self._interludes.pop() if self._interludes and len(self.tunnel_stack) == self._interludes[-1].tunnel_depth else None
         if isinstance(override, ResolvedDivertTarget) and override.container is not None:
             self.pointer = Pointer.start_of(override.container)
             self._visit_changed_containers_due_to_divert()
+            return
+        if interlude is not None:
+            # The turn stops here, offering the interrupted turn's choices.
+            # TODO: re-evaluate them, once refresh_choices() no longer repeats the turn's side effects.
+            self.current_choices = [*self.current_choices, *interlude.choices]
+            self.done = interlude.done
+            self._turn_start = interlude.turn_start
+            self.pointer = None
             return
         self.pointer = return_pointer
 
@@ -2852,69 +2923,83 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             self.eval_stack.append(captured.get_string_value())
             return True
         if self._string_capture_stack:
-            # A tag written inside a choice's own brackets (`* [Go #
-            # image: x.jpg]`) compiles to "#"/"/#" around its text INSIDE
-            # the choice-text capture. Collect it as a tag: swallowing the
-            # markers alone would leave the tag's text in the choice's
-            # visible label.
-            if content == BEGIN_TAG:
-                self._choice_tag_buffer = OutputStream()
-                return True
-            if content == END_TAG and self._choice_tag_buffer is not None:
-                self._pending_choice_tags.append(self._choice_tag_buffer.get_text().strip())
-                self._choice_tag_buffer = None
-                return True
-            if self._choice_tag_buffer is not None and content not in CONTROL_COMMAND_MARKERS:
-                self._choice_tag_buffer.push_text(content)
-                return True
-            if content in CONTROL_COMMAND_MARKERS and content != EVAL_OUTPUT:
-                # A bare "nop" can appear inside an active str/../str
-                # capture, not just at the main-stream level — e.g. as a
-                # branch separator in a conditional-choice-text construct
-                # (`* [Follow {cond:A|B}]`). It is consumed silently here,
-                # as the main-stream branch does, rather than captured as
-                # text. No depth gate is needed: a bare "nop" is
-                # unambiguous at any depth, real choice/tag text never
-                # legally containing one.
-                #
-                # EVAL_OUTPUT ("out") is excluded from this unconditional
-                # path despite being in CONTROL_COMMAND_MARKERS: it is
-                # depth-sensitive, always marking a nested eval run's
-                # output, so it must fall through to the depth-gated check
-                # below. Swallowing it here would discard the interpolated
-                # VAR's value before _handle_eval_run_command's EVAL_OUTPUT
-                # handling ever saw it.
-                return True
-            if self._eval_run_depth > self._string_capture_eval_depth[-1] and (content in NATIVE_FUNCTION_ARITY or content in EVAL_STACK_COMMANDS):
-                # A choice-text conditional's inline condition check
-                # (`{lvl == 2:"A"|B}` inside `* [...]`) or a plain
-                # `{var}`/`{expr}` interpolation compiles to a nested
-                # "ev"/"/ev" pair inside the outer choice-text "str"/"/str"
-                # capture. The operator/EVAL_OUTPUT tokens of that inner
-                # run (the bare string "==", or "out") are eval-stack
-                # machinery, not text, and must reach their normal
-                # handlers rather than being captured as literal text.
-                #
-                # The gate compares _eval_run_depth against the baseline
-                # recorded for this specific capture
-                # (_string_capture_eval_depth[-1]), not a bare `> 0`:
-                # several of these bare-string markers are also valid
-                # literal text characters at the capture's own base level,
-                # which is commonly > 0 already because of a choice/tag's
-                # surrounding "ev" run. In a capture like `"str",
-                # "^Obey the ", "ev", {VAR?:...}, "out", "/ev", "^?",
-                # "/str"`, depth is 1 at the base level and only rises to
-                # 2 inside the nested "ev"/"/ev". A bare `> 0` check would
-                # match the literal "?" after that block, since it collides
-                # with LIST_NATIVE_FUNCTION_ARITY's "?" contains-operator,
-                # though it is plain punctuation there. The per-capture
-                # baseline routes that "?" to plain-text capture while
-                # still routing "out"/"==" to eval-stack handling inside
-                # the nested run.
-                return False
-            self._handle_string_in_capture(content)
-            return True
+            return self._handle_token_in_capture(content)
         return False
+
+    def _handle_token_in_capture(self, content: str) -> bool:
+        """Route one string leaf token that arrives while a str/.../str capture is open.
+
+        Args:
+            content: The leaf value.
+
+        Returns:
+            True if the token was consumed here (as a choice tag, a
+            silently dropped marker, or captured text); False if it is
+            eval-stack machinery the caller must hand to its own handlers.
+        """
+        # A tag written inside a choice's own brackets (`* [Go #
+        # image: x.jpg]`) compiles to "#"/"/#" around its text INSIDE
+        # the choice-text capture. Collect it as a tag: swallowing the
+        # markers alone would leave the tag's text in the choice's
+        # visible label.
+        if content == BEGIN_TAG:
+            self._choice_tag_buffer = OutputStream()
+            self._choice_tag_capture_depth = len(self._string_capture_stack)
+            return True
+        if content == END_TAG and self._choice_tag_buffer is not None:
+            self._pending_choice_tags.append(self._choice_tag_buffer.get_text().strip())
+            self._choice_tag_buffer = None
+            return True
+        if self._choice_tag_buffer is not None and content not in CONTROL_COMMAND_MARKERS:
+            self._choice_tag_buffer.push_text(content)
+            return True
+        if content in CONTROL_COMMAND_MARKERS and content != EVAL_OUTPUT:
+            # A bare "nop" can appear inside an active str/../str
+            # capture, not just at the main-stream level — e.g. as a
+            # branch separator in a conditional-choice-text construct
+            # (`* [Follow {cond:A|B}]`). It is consumed silently here,
+            # as the main-stream branch does, rather than captured as
+            # text. No depth gate is needed: a bare "nop" is
+            # unambiguous at any depth, real choice/tag text never
+            # legally containing one.
+            #
+            # EVAL_OUTPUT ("out") is excluded from this unconditional
+            # path despite being in CONTROL_COMMAND_MARKERS: it is
+            # depth-sensitive, always marking a nested eval run's
+            # output, so it must fall through to the depth-gated check
+            # below. Swallowing it here would discard the interpolated
+            # VAR's value before _handle_eval_run_command's EVAL_OUTPUT
+            # handling ever saw it.
+            return True
+        if self._eval_run_depth > self._string_capture_eval_depth[-1] and (content in NATIVE_FUNCTION_ARITY or content in EVAL_STACK_COMMANDS):
+            # A choice-text conditional's inline condition check
+            # (`{lvl == 2:"A"|B}` inside `* [...]`) or a plain
+            # `{var}`/`{expr}` interpolation compiles to a nested
+            # "ev"/"/ev" pair inside the outer choice-text "str"/"/str"
+            # capture. The operator/EVAL_OUTPUT tokens of that inner
+            # run (the bare string "==", or "out") are eval-stack
+            # machinery, not text, and must reach their normal
+            # handlers rather than being captured as literal text.
+            #
+            # The gate compares _eval_run_depth against the baseline
+            # recorded for this specific capture
+            # (_string_capture_eval_depth[-1]), not a bare `> 0`:
+            # several of these bare-string markers are also valid
+            # literal text characters at the capture's own base level,
+            # which is commonly > 0 already because of a choice/tag's
+            # surrounding "ev" run. In a capture like `"str",
+            # "^Obey the ", "ev", {VAR?:...}, "out", "/ev", "^?",
+            # "/str"`, depth is 1 at the base level and only rises to
+            # 2 inside the nested "ev"/"/ev". A bare `> 0` check would
+            # match the literal "?" after that block, since it collides
+            # with LIST_NATIVE_FUNCTION_ARITY's "?" contains-operator,
+            # though it is plain punctuation there. The per-capture
+            # baseline routes that "?" to plain-text capture while
+            # still routing "out"/"==" to eval-stack handling inside
+            # the nested run.
+            return False
+        self._handle_string_in_capture(content)
+        return True
 
     def _handle_eval_run_command(self, content: str) -> bool:
         """Handle one string leaf token while inside an "ev".."/ev" run.
@@ -2946,8 +3031,13 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
                     # after it in the same run. String capture takes
                     # priority over tag capture, since an interpolation can
                     # sit inside a str/../str run that is itself part of a
-                    # tag's text (`{cond:"a {var}"|"b"}`).
-                    if self._string_capture_stack:
+                    # tag's text (`{cond:"a {var}"|"b"}`). A tag inside a
+                    # choice's brackets is itself inside the choice-text
+                    # capture, and takes the output while that capture is
+                    # the innermost (`* [Go # image: {season}/a.jpg]`).
+                    if self._choice_tag_buffer is not None and len(self._string_capture_stack) == self._choice_tag_capture_depth:
+                        self._choice_tag_buffer.push_text(_display_string(value))
+                    elif self._string_capture_stack:
                         self._handle_string_in_capture(_display_string(value))
                     elif self._in_tag:
                         self._tag_buffer.push_text(_display_string(value))
@@ -3000,6 +3090,11 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             # placeholder. Named here so it is consumed deliberately
             # rather than by the fallthrough below.
             return True
+        if content in (BEGIN_TAG, END_TAG) and self.call_stack and not self._string_capture_stack:
+            # A tag in a function body runs at the caller's eval-run depth;
+            # it is the turn's tag, as one outside a function is.
+            self._handle_tag_command(content)
+            return True
         if content in CONTROL_COMMAND_MARKERS:
             # A marker listed as recognized but with no branch above would
             # otherwise be consumed in silence, leaving its operands on the
@@ -3012,7 +3107,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
                 # (`Before {emit()} after.`). It is output, not an operand:
                 # the call frame is what distinguishes the two, since both
                 # arrive at eval-run depth.
-                self.output.push_text(content)
+                (self._tag_buffer if self._in_tag else self.output).push_text(content)
                 return True
             # A bare string operand, unwrapped by str/../str: LIST(n)
             # compiles its list name this way (`"^Nums", 3, "listInt"`).
@@ -3356,6 +3451,26 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             return True
         return False
 
+    def _handle_text_leaf(self, content: TextLeaf) -> None:
+        """Route one literal-text leaf to the innermost open capture, or to the output.
+
+        Args:
+            content: The text, which is never a control marker.
+        """
+        if self._string_capture_stack:
+            if self._choice_tag_buffer is not None:
+                self._choice_tag_buffer.push_text(content)
+            else:
+                self._handle_string_in_capture(content)
+        elif self._eval_run_depth > 0 and not self.call_stack:
+            # A bare string operand, unwrapped by str/../str: LIST(n)
+            # compiles its list name this way (`"^Nums", 3, "listInt"`).
+            self.eval_stack.append(str(content))
+        elif self._in_tag:
+            self._tag_buffer.push_text(content)
+        else:
+            self.output.push_text(content)
+
     def _handle_string_content(self, content: str) -> bool:
         """Process one string leaf token: a control-command marker, operator,
         text, or a stop signal.
@@ -3367,6 +3482,9 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             True if this token ends the story (a DONE_COMMANDS marker);
             False otherwise.
         """
+        if isinstance(content, TextLeaf):
+            self._handle_text_leaf(content)
+            return False
         if content in DONE_COMMANDS:
             self.done = True
             return True
@@ -3434,7 +3552,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             position to process (which may itself be None, meaning the
             story ran out of content here).
         """
-        if content in (POP_TUNNEL, FUNCTION_RETURN):
+        if content in (POP_TUNNEL, FUNCTION_RETURN) and not isinstance(content, TextLeaf):
             # Handled here, not in _handle_string_content: both set
             # self.pointer themselves, like the Divert/ChoicePoint jumps
             # below, so neither may also go through the plain-string
@@ -3667,7 +3785,55 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         # `new_tokens` is not referenced again, so `self.output` takes
         # ownership of it directly.
         self.output.tokens = new_tokens
+        if self.done and not self.current_choices and self._interludes:
+            # The story ended inside an interlude: nothing is left to return to.
+            del self.tunnel_stack[self._interludes[0].tunnel_depth :]
+            self._interludes = []
         return self.last_turn_text
+
+    @_one_turn_at_a_time
+    def start_interlude(self, knot: str | Container) -> str:
+        """Run a knot as a tunnel inserted into the current turn, as a turn.
+
+        The turn's choices are set aside and the knot runs as though the
+        story had written `-> knot ->` at this stopping point. When the
+        knot's `->->` returns, the set-aside choices are offered again, in
+        the same turn that returned. Until then the knot's own choices
+        are offered; an interlude may start inside another.
+
+        `->-> elsewhere`, or the story ending, discards the set-aside
+        choices. A plain divert out of the knot keeps the tunnel open, as
+        in standard Ink, so the next `->->` that is not matched by a later
+        tunnel returns to the interrupted turn.
+
+        Args:
+            knot: The knot or stitch to run, by path, or a container of
+                the story.
+
+        Returns:
+            The interlude's text, as `continue_story()` returns it.
+
+        Raises:
+            InterludeError: `knot` does not name a container of this
+                story, or this turn offers no choices to return to.
+                Raised before anything changes.
+        """
+        target = knot if isinstance(knot, Container) else resolve_path(self.root, Path.parse(knot))
+        if not isinstance(target, Container):
+            raise InterludeError(f"story has no knot named {knot!r}")
+        if not self.current_choices:
+            raise InterludeError("this turn offers no choices for an interlude to return to")
+        self._interludes.append(
+            _Interlude(choices=self.current_choices, tunnel_depth=len(self.tunnel_stack), done=self.done, turn_start=self._turn_start)
+        )
+        self.tunnel_stack.append(Pointer(None))
+        self.previous_pointer = self.pointer
+        self.pointer = Pointer.start_of(target)
+        self.done = False
+        self.turn_count += 1
+        self._visit_changed_containers_due_to_divert()
+        self.current_choices = []
+        return self.continue_story()
 
     @_one_turn_at_a_time
     def refresh_choices(self) -> None:
@@ -3678,10 +3844,12 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         should offer after they were evaluated. Replaying the turn from
         its own start re-runs those conditions; nothing is advanced, so
         the turn count, the visible text and the player's position are
-        all the same afterwards.
+        all the same afterwards. The replay also re-runs the turn's
+        assignments and EXTERNAL calls before its choices.
 
         Does nothing before the first turn has run.
         """
+        # FIXME: the replay repeats the turn's assignments and stateful binding calls (bindings guide, Section 4.1).
         if self._turn_start is None:
             return
         turn_start = self._turn_start
@@ -3712,6 +3880,38 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         # it, so the original output is kept and only the choices are new.
         self.last_turn_text, self.output = text, output
 
+    @_one_turn_at_a_time
+    def knot_choices(self, knot: str | Container) -> list[Choice]:
+        """List the choices a knot would offer now, without changing this state.
+
+        The knot runs on a copy of this state until it stops, so its
+        conditions and once-only rules are applied as they would be if the
+        story diverted there. Its choices' targets are containers of the
+        shared story, so one can be passed to `start_interlude()`.
+
+        WARNING: the copy shares this state's EXTERNAL bindings, so a
+        binding the knot calls changes the application's live plugin state.
+        A knot listed this way should hold only choices.
+
+        Args:
+            knot: The knot or stitch, by path, or a container of the story.
+
+        Returns:
+            The choices, in the order the knot offers them.
+
+        Raises:
+            InterludeError: `knot` does not name a container of this story.
+        """
+        target = knot if isinstance(knot, Container) else resolve_path(self.root, Path.parse(knot))
+        if not isinstance(target, Container):
+            raise InterludeError(f"story has no knot named {knot!r}")
+        copy = InkRuntimeState.from_dict(self.root, self.to_dict(), self.list_defs, self.engine_bindings, strict_externals=self.strict_externals)
+        copy.pointer = Pointer.start_of(target)
+        copy.done = False
+        copy.current_choices = []
+        copy.continue_story()
+        return copy.current_choices
+
     def _restore_from(self, other: InkRuntimeState) -> None:
         """Adopt another state's position and variables, in place.
 
@@ -3737,6 +3937,58 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         self.turn_count += 1
         self._visit_changed_containers_due_to_divert()
         self.current_choices = []
+
+    @_one_turn_at_a_time
+    def choose_path(self, path: str, *arguments: Any) -> None:
+        """Divert the story to a knot or stitch by name; standard Ink's ChoosePathString.
+
+        Ports Story.ChoosePathString with resetCallstack=true
+        (ink-engine-runtime/Story.cs): ResetCallstack() through
+        StoryState.ForceEnd(), PassArgumentsToEvaluationStack(), then
+        ChoosePath() through StoryState.SetChosenPath() and
+        VisitChangedContainersDueToDivert() (StoryState.cs). Unlike
+        `start_interlude()`, the jump does not return: pending tunnels,
+        function frames, temporary variables and interludes are
+        discarded, the current choices are cleared, and the turn count
+        advances, as for `choose()`. Call `continue_story()` next.
+
+        Args:
+            path: `"knot"` or `"knot.stitch"`. Gather and choice labels
+                cannot be addressed, as in standard Ink.
+            *arguments: Values for the knot's parameters, in order: int,
+                float, str, bool or `ListValue`.
+
+        Raises:
+            InkPathError: `path` does not name a container of this story.
+            TypeError: An argument is of another type (inkle's runtime
+                raises ArgumentException).
+            Both are raised before anything changes.
+        """
+        target = resolve_path(self.root, Path.parse(path))
+        if not isinstance(target, Container):
+            raise InkPathError(f"story has no knot or stitch at {path!r}")
+        for argument in arguments:
+            if not isinstance(argument, (int, float, str, bool, ListValue)):
+                raise TypeError(f"choose_path() arguments must be int, float, str, bool or ListValue, not {type(argument).__name__}")
+        self.tunnel_stack = []
+        self._interludes = []
+        self.call_stack = []
+        self.temps = {}
+        self.eval_stack = list(arguments)
+        self._eval_run_depth = 0
+        self._string_capture_stack = []
+        self._string_capture_eval_depth = []
+        self._in_tag = False
+        self._pending_thread = False
+        self.current_choices = []
+        self._invisible_default_choices = []
+        self.done = False
+        # ForceEnd() nulls both pointers, so every container above the
+        # target counts as newly entered.
+        self.previous_pointer = None
+        self.pointer = Pointer.start_of(target)
+        self.turn_count += 1
+        self._visit_changed_containers_due_to_divert()
 
     def _serialize_pointer(self, pointer: Pointer | None) -> dict[str, Any] | None:
         """Convert a Pointer to a plain, JSON-safe dict.
@@ -3772,6 +4024,38 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         if not isinstance(target, Container):
             return None
         return Pointer(container=target, index=int(data["index"]))
+
+    @staticmethod
+    def _serialize_choice(choice: Choice) -> dict[str, Any]:
+        """Convert a Choice to the JSON-safe dict `_deserialize_choice()` reads."""
+        return {"text": choice.text, "target_path": choice.target_path, "tags": list(choice.tags)}
+
+    def _restore_tunnels(self, data: dict[str, Any]) -> None:
+        """Rebuild `tunnel_stack` and the pending interludes from a to_dict() result.
+
+        An interlude's own entry is saved as None, the form of a pointer
+        that no longer resolves, so it is placed back by its recorded
+        index. A saved entry that no longer resolves is dropped, and an
+        interlude whose index is missing is dropped with it.
+        """
+        saved_interludes = data.get("interludes", [])
+        interlude_indexes = {int(saved["tunnel_depth"]) for saved in saved_interludes}
+        new_index: dict[int, int] = {}
+        self.tunnel_stack = []
+        for index, saved_pointer in enumerate(data.get("tunnel_stack", [])):
+            pointer = Pointer(None) if index in interlude_indexes else self._deserialize_pointer(saved_pointer)
+            if pointer is not None:
+                new_index[index] = len(self.tunnel_stack)
+                self.tunnel_stack.append(pointer)
+        self._interludes = [
+            _Interlude(
+                choices=[choice for choice in map(self._deserialize_choice, saved.get("choices", [])) if choice is not None],
+                tunnel_depth=new_index[int(saved["tunnel_depth"])],
+                done=bool(saved.get("done", False)),
+            )
+            for saved in saved_interludes
+            if int(saved["tunnel_depth"]) in new_index
+        ]
 
     def _serialize_value(self, value: Any) -> Any:
         """Convert one globals/temps/eval_stack entry to a JSON-safe form.
@@ -3842,6 +4126,30 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         if data["$type"] == "divert_target":
             return self._deserialize_divert_target(data)
         return None
+
+    def _deserialize_choice(self, data: dict[str, Any]) -> Choice | None:
+        """Rebuild one saved choice, or None when its target no longer resolves.
+
+        A save written before choices carried tags has no "tags" key; it
+        restores as an untagged choice.
+        """
+        target = resolve_path(self.root, Path.parse(str(data["target_path"])))
+        if not isinstance(target, Container):
+            return None
+        return Choice(text=str(data["text"]), target=target, tags=list(data.get("tags", [])))
+
+    def _deserialize_frame(self, data: dict[str, Any]) -> CallFrame | None:
+        """Rebuild one saved call frame, or None when its return address no longer resolves.
+
+        A frame with no valid return address is unusable, so it is
+        dropped: that call never returns. A story edit is what invalidates
+        one.
+        """
+        return_pointer = self._deserialize_pointer(data.get("return_pointer"))
+        if return_pointer is None:
+            return None
+        temps = {name: self._deserialize_value(value) for name, value in data.get("temps", {}).items()}
+        return CallFrame(return_pointer=return_pointer, temps=temps)
 
     def _deserialize_divert_target(self, data: dict[str, Any]) -> ResolvedDivertTarget:
         """Convert a {"$type": "divert_target", "path": ...} dict back to a
@@ -3927,9 +4235,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             "pointer": self._serialize_pointer(self.pointer),
             "previous_pointer": self._serialize_pointer(self.previous_pointer),
             "output_tokens": list(self.output.tokens),
-            "current_choices": [
-                {"text": choice.text, "target_path": _container_path(choice.target), "tags": list(choice.tags)} for choice in self.current_choices
-            ],
+            "current_choices": [self._serialize_choice(choice) for choice in self.current_choices],
             "visit_counts": self._id_keyed_dict_to_path_keyed(self.visit_counts, by_id),
             "visit_turns": self._id_keyed_dict_to_path_keyed(self.visit_turns, by_id),
             "current_tags": list(self.current_tags),
@@ -3938,6 +4244,14 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             "temps": {name: self._serialize_value(value) for name, value in self.temps.items()},
             "eval_stack": [self._serialize_value(value) for value in self.eval_stack],
             "tunnel_stack": [self._serialize_pointer(pointer) for pointer in self.tunnel_stack],
+            "interludes": [
+                {
+                    "choices": [self._serialize_choice(choice) for choice in interlude.choices],
+                    "tunnel_depth": interlude.tunnel_depth,
+                    "done": interlude.done,
+                }
+                for interlude in self._interludes
+            ],
             "call_stack": [
                 {
                     "return_pointer": self._serialize_pointer(frame.return_pointer),
@@ -3984,13 +4298,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         state.pointer = state._deserialize_pointer(data.get("pointer"))
         state.previous_pointer = state._deserialize_pointer(data.get("previous_pointer"))
         state.output = OutputStream.from_tokens(list(data.get("output_tokens", [])))
-        state.current_choices = []
-        for choice_data in data.get("current_choices", []):
-            target = resolve_path(state.root, Path.parse(str(choice_data["target_path"])))
-            if isinstance(target, Container):
-                # A save written before choices carried tags has no "tags"
-                # key; it restores as an untagged choice rather than failing.
-                state.current_choices.append(Choice(text=str(choice_data["text"]), target=target, tags=list(choice_data.get("tags", []))))
+        state.current_choices = [choice for choice in map(state._deserialize_choice, data.get("current_choices", [])) if choice is not None]
         state.visit_counts = state._path_keyed_dict_to_id_keyed(data.get("visit_counts", {}))
         state.visit_turns = state._path_keyed_dict_to_id_keyed(data.get("visit_turns", {}))
         state.current_tags = list(data.get("current_tags", []))
@@ -3998,28 +4306,15 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         state.globals = {name: state._deserialize_value(value) for name, value in data.get("globals", {}).items()}
         state.temps = {name: state._deserialize_value(value) for name, value in data.get("temps", {}).items()}
         state.eval_stack = [state._deserialize_value(value) for value in data.get("eval_stack", [])]
-        state.tunnel_stack = [pointer for pointer in (state._deserialize_pointer(p) for p in data.get("tunnel_stack", [])) if pointer is not None]
-        state.call_stack = []
-        for frame_data in data.get("call_stack", []):
-            return_pointer = state._deserialize_pointer(frame_data.get("return_pointer"))
-            if return_pointer is None:
-                # A call frame with no valid return address is unusable;
-                # dropping it degrades to "this call never returns".
-                # call_stack is the kind of state a story edit invalidates,
-                # and partial repair belongs to a save-compatibility path
-                # upstream.
-                continue
-            frame_temps = {name: state._deserialize_value(value) for name, value in frame_data.get("temps", {}).items()}
-            state.call_stack.append(CallFrame(return_pointer=return_pointer, temps=frame_temps))
+        state._restore_tunnels(data)
+        state.call_stack = [frame for frame in map(state._deserialize_frame, data.get("call_stack", [])) if frame is not None]
         for key, attribute, coerce, default in _SCALAR_STATE_FIELDS:
             setattr(state, attribute, coerce(data.get(key, default)))
         # Not in the table: its default is the seed this instance already
         # generated, not a constant.
         state.story_seed = int(data.get("story_seed", state.story_seed))
         state._tag_buffer = OutputStream.from_tokens(list(data.get("tag_buffer_tokens", [])))
-        state._string_capture_stack = []
-        for tokens in data.get("string_capture_stack", []):
-            state._string_capture_stack.append(OutputStream.from_tokens(list(tokens)))
+        state._string_capture_stack = [OutputStream.from_tokens(list(tokens)) for tokens in data.get("string_capture_stack", [])]
         # Falls back to the restored _eval_run_depth, not 0, for a save
         # blob lacking this field: an all-zero baseline would make every
         # capture believe it started at eval-run depth 0. A save with no

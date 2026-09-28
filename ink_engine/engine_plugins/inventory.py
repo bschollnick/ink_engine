@@ -166,7 +166,7 @@ class Inventory(StatefulPlugin[InventorySlot]):
     name = "inventory"
     display_name = "Inventory"
     state_key = "inventory"
-    slot_type = InventorySlot
+    slot_type: ClassVar[type] = InventorySlot
     fields: ClassVar[dict[str, Callable[[], Any]]] = {
         "item_locations": dict,
         "holder_items": dict,

@@ -1,7 +1,7 @@
 # Building a Game Bundle
 
 **Date Created:** 2026-09-20  
-**Last Updated:** 2026-09-20  
+**Last Updated:** 2026-09-24  
 **Last Reviewed:** 2026-09-20
 
 **Who reads it.** An Ink author who has a game that plays and wants to
@@ -107,6 +107,8 @@ The manifest decides, not the folder. A bundle carries:
 | Every top-level `.py` | the game's own package |
 | Media directories | `MEDIA_DIRECTORIES` — [Section 3.3, Media](game_manifest_guide.md#33-media) |
 | Anything else you name | `EXTRA_FILES` — [Section 3.4, Extra files](game_manifest_guide.md#34-extra-files) |
+| The cover, the prose stylesheet, the plugin-denied screen | `COVER_IMAGE`, `PROSE_STYLES`, `PLUGIN_DENIED_SCREEN` |
+| A cover or stylesheet you did not declare | found the way the engine finds it for your folder: `cover.<ext>` in the root, `images/` or `Images/`, and `styles.css` in the root |
 
 Everything undeclared is simply absent: your `.ink` source, editor
 caches, notes.

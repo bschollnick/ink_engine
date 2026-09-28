@@ -23,9 +23,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from ink_engine.engine_plugins import scheduling
+
 # Named, closed registries a caller supplies to evaluate_condition()/
 # resolve_schedule() for STORY_RULE/STORY_VALUE nodes — plain functions of
-# the raw clock value (in whatever unit the calling story uses), never an
+# the engine clock, in minutes (see `scheduling`), never an
 # arbitrary string the engine evaluates. The registry is the caller's, so
 # it is never a fixed set here. Named "story_*" because every name in
 # these nodes resolves to whatever the CALLING STORY defines; the engine
@@ -73,7 +75,8 @@ class ConditionKind(Enum):
     story-supplied boolean function of the clock), a named story value
     comparison (a story-supplied int-valued function of the clock), a read
     of another plugin's state (ENGINE_STATE — see
-    `Condition.engine_state()`), and AND/OR/NOT combinators for
+    `Condition.engine_state()`), a comparison of the clock with a time
+    stored in another plugin's state (CLOCK_REACHED), and AND/OR/NOT combinators for
     multi-condition priority chains."""
 
     FLAG = "flag"
@@ -81,6 +84,7 @@ class ConditionKind(Enum):
     STORY_RULE = "story_rule"
     STORY_VALUE = "story_value"
     ENGINE_STATE = "engine_state"
+    CLOCK_REACHED = "clock_reached"
     QUERY = "query"
     AND = "and"
     OR = "or"
@@ -176,14 +180,14 @@ class Condition:
         engine has no opinion about the registry's contents.
 
         Args:
-            rule_name: A story-supplied boolean function of the raw
-                clock, in the `StoryRuleRegistry` passed to
+            rule_name: A story-supplied boolean function of the clock
+                in minutes, in the `StoryRuleRegistry` passed to
                 `evaluate_condition()`/`resolve_schedule()` (e.g.
                 "is_school_open").
 
         Returns:
             A Condition true exactly when that function returns True for
-            the current raw clock value.
+            the current clock.
         """
         return cls(kind=ConditionKind.STORY_RULE, payload={"rule_name": rule_name})
 
@@ -193,7 +197,7 @@ class Condition:
 
         Args:
             value_name: A story-supplied int-or-str-valued function of
-                the raw clock, in the `StoryValueRegistry` passed to
+                the clock in minutes, in the `StoryValueRegistry` passed to
                 `evaluate_condition()`/`resolve_schedule()` (e.g.
                 "hour_of_day").
             operator: One of ">", ">=", "<", "<=" (numbers only) or "==",
@@ -255,6 +259,24 @@ class Condition:
         )
 
     @classmethod
+    def clock_reached(cls, state_key: str, path: tuple[str, ...]) -> Condition:
+        """Build a CLOCK_REACHED condition -- has the clock reached a stored time.
+
+        For a moment a scene records rather than a fixed time of day: a
+        character who arrives "from next Monday" stores that minute when
+        the scene runs, and the schedule compares the clock against it.
+
+        Args:
+            state_key: The state slot holding the time, as for `engine_state()`.
+            path: The keys to walk within that slot to the stored minute.
+
+        Returns:
+            A Condition true once the clock is at or past the stored minute,
+            and false while nothing numeric is stored there.
+        """
+        return cls(kind=ConditionKind.CLOCK_REACHED, payload={"state_key": state_key, "path": tuple(path)})
+
+    @classmethod
     def all_of(cls, *clauses: Condition) -> Condition:
         """Build an AND condition.
 
@@ -299,12 +321,10 @@ class EvalContext:
 
     Args:
         flags: The set of currently-set session-flag names.
-        minute_of_day: The current minute within a 1440-minute day
-            (`(clock % 288) * 5`) — used by MINUTE_IN_RANGE only.
-        clock: The raw, un-reduced clock value as passed to
-            `resolve_schedule()` — used by STORY_RULE/STORY_VALUE only,
-            whose caller-supplied functions expect their own unit, not
-            `minute_of_day`. Defaults to 0 for a tree with no such nodes.
+        clock: The engine clock, in minutes, as `scheduling` counts it.
+            STORY_RULE and STORY_VALUE functions receive it unchanged;
+            MINUTE_IN_RANGE reads it through `minute_of_day`. Defaults
+            to 0 for a tree with no such nodes.
         story_rules: The registry of named boolean functions of `clock`
             for STORY_RULE nodes. Defaults to an empty registry.
         story_values: The registry of named int-valued functions of
@@ -320,12 +340,16 @@ class EvalContext:
     """
 
     flags: frozenset[str]
-    minute_of_day: int
     clock: int = 0
     story_rules: StoryRuleRegistry = field(default_factory=dict)
     story_values: StoryValueRegistry = field(default_factory=dict)
     engine_state: dict[str, dict[str, Any]] = field(default_factory=dict)
     queries: QueryRegistry = field(default_factory=dict)
+
+    @property
+    def minute_of_day(self) -> int:
+        """The minute within a 1440-minute day, from `clock`."""
+        return scheduling.minute_of_day(self.clock)
 
 
 def engine_query_registry() -> QueryRegistry:
@@ -344,7 +368,10 @@ def engine_query_registry() -> QueryRegistry:
         that publishes a query.
     """
     # Deferred to avoid an import cycle: these modules import this one.
-    from ink_engine.engine_plugins import (  # pylint: disable=import-outside-toplevel
+    # The cycle is real: this default registry must name the plugins that
+    # evaluate schedules. Removable if resolve_schedule() stops defaulting
+    # `queries` and every caller passes its own registry.
+    from ink_engine.engine_plugins import (  # pylint: disable=import-outside-toplevel,cyclic-import
         character_occupancy,
         characters,
         location_graph,
@@ -413,36 +440,70 @@ def _evaluate_combinator(condition: Condition, context: EvalContext) -> bool:
     return not _evaluate(condition.clauses[0], context)
 
 
+def _compare(condition: Condition, actual: Any) -> bool:
+    """Apply the condition's `operator` to `actual` and its `value`."""
+    return _COMPARISON_OPERATORS[condition.payload["operator"]](actual, condition.payload["value"])
+
+
+def _compare_found(condition: Condition, actual: Any) -> bool:
+    """As `_compare()`, with a None `actual` read as the condition's `missing` value (default False)."""
+    return _compare(condition, condition.payload.get("missing", False) if actual is None else actual)
+
+
+def _evaluate_flag(condition: Condition, context: EvalContext) -> bool:
+    """FLAG: is the named session flag set."""
+    return condition.payload["flag"] in context.flags
+
+
+def _evaluate_minute_in_range(condition: Condition, context: EvalContext) -> bool:
+    """MINUTE_IN_RANGE: is the minute of the day in `[minute_low, minute_high)`."""
+    return condition.payload["minute_low"] <= context.minute_of_day < condition.payload["minute_high"]
+
+
+def _evaluate_query(condition: Condition, context: EvalContext) -> bool:
+    """QUERY: compare a plugin's answer to a published question."""
+    payload = condition.payload
+    return _compare_found(condition, _run_query(context, payload["state_key"], payload["query"], payload["args"]))
+
+
+def _evaluate_engine_state(condition: Condition, context: EvalContext) -> bool:
+    """ENGINE_STATE: compare a value read from another plugin's state."""
+    return _compare_found(condition, _read_engine_state(context.engine_state, condition.payload["state_key"], condition.payload["path"]))
+
+
+def _evaluate_clock_reached(condition: Condition, context: EvalContext) -> bool:
+    """CLOCK_REACHED: is the clock at or past the minute stored at the path."""
+    stored = _read_engine_state(context.engine_state, condition.payload["state_key"], condition.payload["path"])
+    return isinstance(stored, (int, float)) and not isinstance(stored, bool) and context.clock >= stored
+
+
+def _evaluate_story_rule(condition: Condition, context: EvalContext) -> bool:
+    """STORY_RULE: ask the story's named boolean function of the clock."""
+    return context.story_rules[condition.payload["rule_name"]](context.clock)
+
+
+def _evaluate_story_value(condition: Condition, context: EvalContext) -> bool:
+    """STORY_VALUE: compare the story's named value function of the clock."""
+    return _compare(condition, context.story_values[condition.payload["value_name"]](context.clock))
+
+
+_EVALUATORS: dict[ConditionKind, Callable[[Condition, EvalContext], bool]] = {
+    ConditionKind.FLAG: _evaluate_flag,
+    ConditionKind.MINUTE_IN_RANGE: _evaluate_minute_in_range,
+    ConditionKind.QUERY: _evaluate_query,
+    ConditionKind.ENGINE_STATE: _evaluate_engine_state,
+    ConditionKind.CLOCK_REACHED: _evaluate_clock_reached,
+    ConditionKind.STORY_RULE: _evaluate_story_rule,
+    ConditionKind.STORY_VALUE: _evaluate_story_value,
+    ConditionKind.AND: _evaluate_combinator,
+    ConditionKind.OR: _evaluate_combinator,
+    ConditionKind.NOT: _evaluate_combinator,
+}
+
+
 def _evaluate(condition: Condition, context: EvalContext) -> bool:
-    """Evaluate one Condition node against a bundled evaluation context.
-
-    Args:
-        condition: The condition to evaluate.
-        context: The real session state to evaluate it against.
-
-    Returns:
-        Whether `condition` holds.
-    """
-    if condition.kind is ConditionKind.FLAG:
-        return condition.payload["flag"] in context.flags
-    if condition.kind is ConditionKind.MINUTE_IN_RANGE:
-        return condition.payload["minute_low"] <= context.minute_of_day < condition.payload["minute_high"]
-    if condition.kind is ConditionKind.QUERY:
-        actual = _run_query(context, condition.payload["state_key"], condition.payload["query"], condition.payload["args"])
-        if actual is None:
-            actual = condition.payload.get("missing", False)
-        return _COMPARISON_OPERATORS[condition.payload["operator"]](actual, condition.payload["value"])
-    if condition.kind is ConditionKind.ENGINE_STATE:
-        actual = _read_engine_state(context.engine_state, condition.payload["state_key"], condition.payload["path"])
-        if actual is None:
-            actual = condition.payload.get("missing", False)
-        return _COMPARISON_OPERATORS[condition.payload["operator"]](actual, condition.payload["value"])
-    if condition.kind is ConditionKind.STORY_RULE:
-        return context.story_rules[condition.payload["rule_name"]](context.clock)
-    if condition.kind is ConditionKind.STORY_VALUE:
-        value_function = context.story_values[condition.payload["value_name"]]
-        return _COMPARISON_OPERATORS[condition.payload["operator"]](value_function(context.clock), condition.payload["value"])
-    return _evaluate_combinator(condition, context)
+    """Evaluate one Condition node with the evaluator for its kind."""
+    return _EVALUATORS[condition.kind](condition, context)
 
 
 def evaluate_condition(condition: Condition, context: EvalContext) -> bool:
@@ -471,8 +532,7 @@ class ScheduleRule:
         condition: The Condition gating this branch. None means "always
             true", for a schedule's trailing fallback branch.
         location_id: The location to report if `condition` holds, or None
-            for "not present anywhere" (source's `return 0` convention for
-            an absent character).
+            for "not present anywhere".
     """
 
     condition: Condition | None
@@ -496,13 +556,12 @@ def resolve_schedule(  # pylint: disable=too-many-arguments,too-many-positional-
         rules: The character's schedule, in priority order. The caller
             supplies a trailing unconditional fallback rule
             (`condition=None`) if one is wanted; a schedule with no
-            matching rule and no fallback resolves to None, source's
-            "not trackable" convention.
+            matching rule and no fallback resolves to None (nowhere).
         flags: The set of currently-set session-flag names.
-        clock: The current absolute tick count, reduced here to
-            minute-of-day via `(clock % 288) * 5` for MINUTE_IN_RANGE
-            nodes. STORY_RULE/STORY_VALUE registry functions receive the
-            raw value unchanged, in the story's own clock unit.
+        clock: The engine clock, in minutes. MINUTE_IN_RANGE nodes read
+            its minute of the day; STORY_RULE/STORY_VALUE registry
+            functions receive it unchanged. A story with its own tick
+            converts to minutes before calling.
         story_rules: The registry of named boolean functions of `clock`
             for any STORY_RULE node in `rules`. Defaults to empty.
         story_values: The registry of named int-valued functions of
@@ -511,9 +570,9 @@ def resolve_schedule(  # pylint: disable=too-many-arguments,too-many-positional-
         engine_state: Other plugins' serialized state, keyed by state
             slot, for any ENGINE_STATE node in `rules`. Defaults to empty.
         queries: What each plugin can be asked, for any QUERY node in
-            `rules` -- `{state_key: {query_name: callable}}`, as
-            `engine_query_registry()` builds. Defaults to empty, which
-            makes a QUERY condition raise rather than answer False.
+            `rules` -- `{state_key: {query_name: callable}}`. Defaults to
+            `engine_query_registry()`, the engine's own shipped plugins;
+            an application with plugins of its own passes its registry.
 
     Returns:
         The resolved location id, or None if the character isn't present
@@ -521,7 +580,6 @@ def resolve_schedule(  # pylint: disable=too-many-arguments,too-many-positional-
     """
     context = EvalContext(
         flags=flags,
-        minute_of_day=(clock % 288) * 5,
         clock=clock,
         story_rules=story_rules or {},
         story_values=story_values or {},

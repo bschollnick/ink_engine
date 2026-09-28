@@ -14,3 +14,6 @@ CLAUDE.md
 # Sweeps a large real story that only exists on the developer's machine.
 tests/test_engine_path_sweep.py
 poetry.lock
+# Third-party IF reference material, downloaded for comparison only.
+# See demo/PROVENANCE.md for sources and licence status.
+demo/

@@ -191,6 +191,15 @@ class TagTests(SimpleTestCase):
         self.assertEqual(text, "You step into a clearing.\n")
         self.assertEqual(state.current_tags, ["image: Anna/gypsy0.jpg"])
 
+    def test_tags_inside_a_function_body_are_the_turns_tags(self):
+        """function_tags.ink; inklecate -j -p prints the text "Before.",
+        "Inside.", "After." and the tags "image: a.jpg",
+        "image: winter/b.jpg"."""
+        state = _run("function_tags.ink.json")
+        text = state.continue_story()
+        self.assertEqual(text, "Before.\nInside.\nAfter.\n")
+        self.assertEqual(state.current_tags, ["image: a.jpg", "image: winter/b.jpg"])
+
 
 class EvalStackCommandGroupingTests(SimpleTestCase):
     """The token groups that several dispatch sites share.
@@ -248,12 +257,12 @@ class ChoiceTagTests(SimpleTestCase):
         self.assertEqual(self.state.current_choices[1].text, "As a cleaner")
 
     def test_a_choice_tag_is_collected_on_the_choice(self):
-        self.assertEqual(self.state.current_choices[1].tags, ["image: louise/Monica/louise1b.jpg"])
+        self.assertEqual(self.state.current_choices[1].tags, ["image: rosa/Summer/rosa1b.jpg"])
 
     def test_each_choice_keeps_its_own_tag(self):
         self.assertEqual(
             [choice.tags for choice in self.state.current_choices[1:3]],
-            [["image: louise/Monica/louise1b.jpg"], ["image: louise/Kayla/louise1b.jpg"]],
+            [["image: rosa/Summer/rosa1b.jpg"], ["image: rosa/Winter/rosa1b.jpg"]],
         )
 
     def test_an_untagged_choice_has_no_tags(self):
@@ -271,7 +280,7 @@ class ChoiceTagTests(SimpleTestCase):
     def test_choice_tags_survive_a_save_and_load(self):
         data = _load("choice_tags.json")
         restored = InkRuntimeState.from_dict(load_story_root(data), self.state.to_dict(), data.get("listDefs", {}))
-        self.assertEqual(restored.current_choices[1].tags, ["image: louise/Monica/louise1b.jpg"])
+        self.assertEqual(restored.current_choices[1].tags, ["image: rosa/Summer/rosa1b.jpg"])
 
     def test_a_save_written_before_choice_tags_still_loads(self):
         data = _load("choice_tags.json")
@@ -280,3 +289,21 @@ class ChoiceTagTests(SimpleTestCase):
             del choice["tags"]
         restored = InkRuntimeState.from_dict(load_story_root(data), saved, data.get("listDefs", {}))
         self.assertEqual([choice.tags for choice in restored.current_choices], [[], [], [], []])
+
+
+class ChoiceTagVariableTests(SimpleTestCase):
+    """A variable printed inside a choice's own tag (choice_tag_variable.ink).
+    Expected values from the local inklecate build's -j -p output."""
+
+    def setUp(self):
+        """Start the story at its opening turn."""
+        data = _load("choice_tag_variable.ink.json")
+        self.state = engine.start_new_story(load_story_root(data), data.get("listDefs", {}))
+
+    def test_the_printed_variable_stays_out_of_the_choice_text(self):
+        """The printed variable stays out of the choice text."""
+        self.assertEqual(self.state.current_choices[0].text, "Wave to Sam")
+
+    def test_the_printed_variable_is_part_of_the_tag(self):
+        """The printed variable is part of the tag."""
+        self.assertEqual(self.state.current_choices[0].tags, ["group: sam", "image: sam/Winter/sam-facec.jpg"])

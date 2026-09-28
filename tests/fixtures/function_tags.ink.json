@@ -1,0 +1,1 @@
+{"inkVersion":21,"root":[["^Before.","\n","ev",{"f()":"show_it"},"pop","/ev","\n","^After.","\n","end",["done",{"#n":"g-0"}],null],"done",{"show_it":["#","^image: a.jpg","/#","#","^image: ","ev",{"VAR?":"season"},"out","/ev","^/b.jpg","/#","^Inside.","\n",null],"global decl":["ev","str","^winter","/str",{"VAR=":"season"},"/ev","end",null]}],"listDefs":{}}

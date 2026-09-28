@@ -22,6 +22,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ink_engine.bundle_integrity import BundleDigests
+
+#: Fields quoted verbatim under the bundle line, in display order, each
+#: with the label it is shown under.
+_FACT_LABELS: tuple[tuple[str, str], ...] = (
+    ("GAME_AUTHOR", "Author"),
+    ("GAME_VERSION", "Version"),
+    ("SOURCE_GAME_VERSION", "Converted from"),
+)
+
 #: Fields quoted verbatim into the requirements table, in display order,
 #: each with the label it is shown under.
 _REQUIREMENT_LABELS: tuple[tuple[str, str], ...] = (
@@ -47,9 +57,7 @@ def render_readme(
     bundle_name: str,
     bundle_bytes: int,
     file_count: int,
-    story_sha256: str,
-    directory_sha256: str,
-    manifest_sha256: str,
+    digests: BundleDigests,
 ) -> str:
     """Render the companion readme for one built bundle.
 
@@ -58,59 +66,68 @@ def render_readme(
         bundle_name: The bundle file's own name.
         bundle_bytes: The bundle's size on disk.
         file_count: How many files it contains.
-        story_sha256: The compiled story's hash.
-        directory_sha256: The archive directory's hash.
-        manifest_sha256: The manifest's hash, as recorded in the archive
-            comment.
+        digests: The hashes the bundle records.
 
     Returns:
         The readme's full Markdown text.
     """
     title = str(manifest.get("GAME_TITLE") or Path(bundle_name).stem)
-    lines = [f"# {title}", ""]
+    size = f"{_format_size(bundle_bytes)}, {file_count:,} files"
+    lines = [
+        f"# {title}",
+        "",
+        *_description_lines(manifest, f"**Bundle:** `{bundle_name}` ({size})"),
+        *_verification_lines(manifest, bundle_name, digests),
+        *_requirements_lines(manifest),
+    ]
+    return "\n".join(lines)
 
-    facts = [f"**Bundle:** `{bundle_name}` ({_format_size(bundle_bytes)}, {file_count:,} files)"]
-    if manifest.get("GAME_AUTHOR"):
-        facts.append(f"**Author:** {manifest['GAME_AUTHOR']}")
-    if manifest.get("GAME_VERSION"):
-        facts.append(f"**Version:** {manifest['GAME_VERSION']}")
-    if manifest.get("SOURCE_GAME_VERSION"):
-        facts.append(f"**Converted from:** {manifest['SOURCE_GAME_VERSION']}")
-    lines.extend(["  \n".join(facts), ""])
 
+def _description_lines(manifest: dict[str, Any], bundle_fact: str) -> list[str]:
+    """The facts block (bundle, author, version, source) and the game's description."""
+    facts = [bundle_fact]
+    for field, label in _FACT_LABELS:
+        if manifest.get(field):
+            facts.append(f"**{label}:** {manifest[field]}")
+    lines = ["  \n".join(facts), ""]
     description = str(manifest.get("GAME_DESCRIPTION") or "").strip()
     if description:
         lines.extend([description, ""])
+    return lines
 
-    lines.extend(
-        [
-            "## Verification",
-            "",
-            "These hashes are published here so they can be checked against a",
-            "copy of the bundle that did not travel with them.",
-            "",
-            "| Value | SHA-256 |",
-            "|---|---|",
-        ]
-    )
+
+def _verification_lines(manifest: dict[str, Any], bundle_name: str, digests: BundleDigests) -> list[str]:
+    """The "Verification" section: a table of the bundle's hashes and the command to check them."""
+    lines = [
+        "## Verification",
+        "",
+        "These hashes are published here so they can be checked against a",
+        "copy of the bundle that did not travel with them.",
+        "",
+        "| Value | SHA-256 |",
+        "|---|---|",
+    ]
     story_file = manifest.get("MAIN_STORY_FILE")
-    if story_sha256 and isinstance(story_file, str):
-        lines.append(f"| Story (`{story_file}`) | `{story_sha256}` |")
-    lines.append(f"| Bundle directory | `{directory_sha256}` |")
-    lines.append(f"| Manifest | `{manifest_sha256}` |")
+    if digests.story_sha256 and isinstance(story_file, str):
+        lines.append(f"| Story (`{story_file}`) | `{digests.story_sha256}` |")
+    lines.append(f"| Bundle directory | `{digests.directory_sha256}` |")
+    lines.append(f"| Manifest | `{digests.manifest_sha256}` |")
     lines.extend(["", f"Verify with: `ink-bundle verify {bundle_name}`", ""])
+    return lines
 
+
+def _requirements_lines(manifest: dict[str, Any]) -> list[str]:
+    """The "Requirements" section, or nothing when the manifest declares none."""
     requirements = [(label, manifest[field]) for field, label in _REQUIREMENT_LABELS if manifest.get(field)]
     plugins = manifest.get("REQUIRED_PLUGINS")
     questions = manifest.get("NEW_GAME_FIELDS")
-    if requirements or plugins or questions:
-        lines.extend(["## Requirements", ""])
-        for label, value in requirements:
-            lines.append(f"**{label}:** {value}  ")
-        if isinstance(plugins, list) and plugins:
-            lines.append(f"**Plugins ({len(plugins)}):** {', '.join(str(name) for name in plugins)}  ")
-        if isinstance(questions, list) and questions:
-            lines.append(f"**Character creation:** {len(questions)} question(s) before play begins  ")
-        lines.append("")
-
-    return "\n".join(lines)
+    if not (requirements or plugins or questions):
+        return []
+    lines = ["## Requirements", ""]
+    lines.extend(f"**{label}:** {value}  " for label, value in requirements)
+    if isinstance(plugins, list) and plugins:
+        lines.append(f"**Plugins ({len(plugins)}):** {', '.join(str(name) for name in plugins)}  ")
+    if isinstance(questions, list) and questions:
+        lines.append(f"**Character creation:** {len(questions)} question(s) before play begins  ")
+    lines.append("")
+    return lines

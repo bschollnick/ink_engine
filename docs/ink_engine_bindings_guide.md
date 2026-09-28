@@ -1,7 +1,7 @@
 # Ink Engine — How to use Plugins & Python Functions from Ink
 
 **Date Created:** 2026-09-15  
-**Last Updated:** 2026-09-20  
+**Last Updated:** 2026-09-26  
 **Last Reviewed:** 2026-09-20
 
 How an Ink story reaches Python in this engine: the plugins that ship with
@@ -10,7 +10,7 @@ it, how to use them from your `.ink`, and how to write your own.
 - **[section 1](#1-plugins-and-the-two-ways-to-use-them)** — what the plugins are for, and the two ways to reach them
 - **[section 2](#2-using-the-plugins-that-ship-with-the-engine)** — the eight plugins that ship, and how to extend one
 - **[section 3](#3-creating-a-plugin)** — writing a plugin of your own
-- **[section 4](#4-refreshing-the-choices-after-a-plugin-changes-something)** — updating what the player is offered, without taking a turn
+- **[section 4](#4-acting-on-the-story-from-outside-a-turn)** — updating what the player is offered, running a scene mid-turn, listing story actions in a side panel, jumping to a knot, and panel commands that play a turn
 - **[section 5](#5-saving-a-game)** — saving and loading a game: save slots, labels, quicksave, and export files
 - **[section 6](#6-when-something-does-not-work)** — what to look at when something does not work
 - **[section 7](#7-testing-that-a-binding-is-really-wired)** — proving a binding is wired, when the answer looks right but is not
@@ -158,7 +158,7 @@ need something nobody has written yet.
 |---|---|---|
 | [**Cost table**](#21-costtable-what-things-cost) | what an action costs, and whether it can be afforded | `cost_of` `can_afford` `is_priced` `set_cost` |
 | [**Inventory**](#22-inventorysystem-where-things-are) | where items are, and who holds them | `has_item` `item_count` `give_item_to` `take_item_from` `move_item` `drop_item_at` `destroy_item` `location_of_item` `holder_of_item` `held_item_count` `holds_nothing` `item_is_at` |
-| [**Character occupancy**](#24-characteroccupancy-who-is-where) | who is at which place right now | `set_location` `where_is` `is_at` `is_with` `is_anywhere` `who_is_at` |
+| [**Character occupancy**](#24-characteroccupancy-who-is-where) | who is at which place right now | `set_location` `where_is` `previous_location` `assigned_location` `is_at` `is_with` `is_anywhere` `who_is_at` |
 | [**Characters**](#25-characters-anything-you-want-to-remember-about-someone) | any fact about a character — statistics, feelings, biography, flags | `read_attribute` `set_attribute` `attribute_exists` `clear_attributes` `character_known` `set_character_known` `current_location` |
 | [**Quests**](#26-quests-progress-that-outlives-a-scene) | quest stages, goals, completion and failure | `start_quest` `quest_stage` `set_quest_stage` `advance_quest` `meet_goal` `is_goal_met` `is_quest_started` `finish_quest` `fail_quest` `is_quest_failed` |
 | [**Skills**](#27-skills-what-a-character-is-capable-of) | what a character can do and how well — known/unknown, a degree, or something to roll against | `skill_level` `set_skill_level` `adjust_skill_level` `knows_skill` `add_skill` `skill_check` `last_skill_roll` `last_skill_target` |
@@ -291,7 +291,7 @@ your world's data by name, so
 `resolve_bindings(..., configs={"cost_table": PRICES})` activates the
 shipped cost table already holding your prices. It is not universal: a
 plugin that reads its data from the instance rather than from session
-state — `LocationGraph` and its edges, as [section 2.3](#23-locationgraph-the-places-in-your-world) shows — needs its own
+state — `LocationGraph` and its exits, as [section 2.3](#23-locationgraph-the-places-in-your-world) shows — needs its own
 configured instance instead.
 
 #### Where your saved state lives
@@ -599,7 +599,7 @@ each joined to its neighbour. The **well** hangs below the square. The
 So from the road you can reach the market, the farm and the crypt — but
 not the square or the well, which are only reachable back through the
 market. Two places being near each other in the declaration does not connect
-them; only an edge does.
+them; only an exit does.
 
 The crypt is on the map but the player does not know it is there until
 someone tells them, and the tomb is deeper still.
@@ -614,23 +614,23 @@ from ink_engine.engine_plugins.location_graph import LocationGraph
 TOWN_MAP = {
     "locations": {
         "inn":    {"known_by_default": True,  "details": {"name": "The Inn"},
-                   "edges": [{"to": "square"}]},
+                   "exits": [{"to": "square"}]},
         "square": {"known_by_default": True,  "details": {"name": "Town Square"},
-                   "edges": [{"to": "inn"}, {"to": "market"}, {"to": "well"}]},
+                   "exits": [{"to": "inn"}, {"to": "market"}, {"to": "well"}]},
         "well":   {"known_by_default": True,  "details": {"name": "The Well"},
-                   "edges": [{"to": "square"}]},
+                   "exits": [{"to": "square"}]},
         "market": {"known_by_default": True,  "details": {"name": "Market"},
-                   "edges": [{"to": "square"}, {"to": "road"}]},
+                   "exits": [{"to": "square"}, {"to": "road"}]},
         "road":   {"known_by_default": True,  "details": {"name": "South Road"},
-                   "edges": [{"to": "market"}, {"to": "farm"},
+                   "exits": [{"to": "market"}, {"to": "farm"},
                              {"to": "crypt", "requires_known": True}]},
         "farm":   {"known_by_default": True,  "details": {"name": "Hillside Farm"},
-                   "edges": [{"to": "road"}]},
+                   "exits": [{"to": "road"}]},
         "crypt":  {"known_by_default": False, "details": {"name": "Old Crypt"},
-                   "edges": [{"to": "road"},
+                   "exits": [{"to": "road"},
                              {"to": "tomb", "requires_known": True}]},
         "tomb":   {"known_by_default": False, "details": {"name": "Sealed Tomb"},
-                   "edges": [{"to": "crypt"}]},
+                   "exits": [{"to": "crypt"}]},
     }
 }
 
@@ -640,14 +640,14 @@ game_state = {}
 story_functions = resolve_bindings({"town": TOWN.plugin()}, ["town"], game_state)
 ```
 
-**A map belongs to its own instance.** Edges are read from the instance's
+**A map belongs to its own instance.** Exits are read from the instance's
 config, not from session state, so a game builds its own `LocationGraph`
 with its map rather than using the shipped one — which, having no map,
 would report every place as having nowhere to go.
 
-Note what is *absent*: `road` lists no edge to `square` or `well`. Nothing
+Note what is *absent*: `road` lists no exit to `square` or `well`. Nothing
 infers a route from two places being near each other on the page — if you
-do not write the edge, it does not exist.
+do not write the exit, it does not exist.
 
 Four things that config decides:
 
@@ -656,12 +656,28 @@ Four things that config decides:
   side and you have a drop, deliberate or otherwise.
 - **`known_by_default`** puts a place on the player's map at the start.
   The crypt's `False` is why it is absent until something reveals it.
-- **`requires_known`** gates the *edge*, not the place: standing on the
+- **`requires_known`** gates the *exit*, not the place: standing on the
   road, the crypt turning is only offered once the crypt is known.
-  Ordinary edges omit it, because walking somewhere is usually how it
+  Ordinary exits omit it, because walking somewhere is usually how it
   becomes known.
-- **`details`** is free-form per place — a display name here, but equally
-  terrain, an icon, or an id from whatever the map was drawn in.
+- **`details`** describes each place. The engine defines and type-checks
+  `name`, `description`, `external_identifier`, `terrain`, `region`,
+  `lit`, `visits`, `event`, `entrance` and `building`; any other key is
+  the game's own and must hold a string, number or boolean.
+  `entrance: true` marks an indoor place as the way into a building, or
+  into a unit inside one such as an apartment off a corridor.
+  `buildings(config)` groups the map by entrances: each entrance plus the
+  indoor places behind it, up to the next entrance or the next place that
+  is not indoor, is one building, and an entrance reached from inside a
+  building is a building nested in it. Indoor means `terrain: "indoor"`.
+  `building` names a building's main entrance: an entrance declaring it
+  is a second way into that building, such as a back door, and any other
+  place declaring it is inside that building whatever its terrain and
+  whether or not its entrances reach it, such as a courtyard within its
+  walls or a storeroom whose only door opens outside. An exit may declare `through`, a place
+  the journey passes through, such as the lobby on a hotel room's "leave
+  the hotel" shortcut; `buildings()` treats the exit as leading there, so
+  the shortcut does not give the room a door of its own.
 
 #### What it looks like at runtime
 
@@ -675,11 +691,11 @@ the_map = game_state["location_graph"]
 print("1", sorted(the_map["declared"]))
 print("2", sorted(the_map["known"]))
 
-print("3", TOWN.reachable_edges(the_map, "square"))
-print("4", TOWN.reachable_edges(the_map, "road"))
+print("3", TOWN.reachable_exits(the_map, "square"))
+print("4", TOWN.reachable_exits(the_map, "road"))
 
 TOWN.set_known(the_map, "crypt", True)
-print("5", TOWN.reachable_edges(the_map, "road"))
+print("5", TOWN.reachable_exits(the_map, "road"))
 print("6", TOWN.detail(the_map, "crypt", "name"))
 ```
 
@@ -695,9 +711,105 @@ print("6", TOWN.detail(the_map, "crypt", "name"))
 The crypt is declared from the start but not known, so the road offers no
 turning toward it until `set_known` is called.
 
-`reachable_edges` is the travel menu: hand it where the player is standing
+`reachable_exits` is the travel menu: hand it where the player is standing
 and it returns where they may go, with the gated turning appearing only
 after discovery.
+
+### Naming exits, and gating them
+
+An exit can carry more than a destination. `label` is what a player
+reads. `position` places it in a widget — one of `n`, `ne`, `e`, `se`,
+`s`, `sw`, `w`, `nw`, `up`, `down`, `in`, `out`, and no two exits from
+one location may claim the same one. A position is where a widget draws
+the exit, not what it is called, so a lift declares `out` and labels it
+"EXIT".
+
+Three gates decide whether an exit may be taken. `requires_known` hides
+it until the destination is known. `sealed` is never passable.
+`unlocked_by` names an attribute on the destination: the exit opens once
+that attribute is set, and stays open, because the attribute is saved
+with the session. A blocked exit is left out entirely unless it declares
+`show_when_blocked`, which returns it marked unavailable so an
+application can draw it greyed rather than hide it.
+
+`add_missing_return_exits()` fills in the journey back, so a two-way
+connection is declared once. It skips an exit marked `one_way`, one
+whose destination already declares a way back, and one with no position.
+A return exit has an `arrival_knot` only when the location it leads back
+to declares its own `arrival_knot` (and, optionally, `arrival_text`,
+which becomes the return's `travel_text`). Without one, an application
+can draw the way back but cannot take it.
+
+```python
+from ink_engine.engine_plugins.location_graph import LocationGraph, add_missing_return_exits
+
+TOWN_MAP = {
+    "locations": {
+        "square": {"known_by_default": True, "details": {"name": "Town Square"},
+                   "arrival_knot": "square", "arrival_text": "You head back to the square.", "exits": [
+            {"to": "inn", "position": "n", "label": "the inn door"},
+            {"to": "crypt", "position": "down", "label": "the crypt stair",
+             "unlocked_by": "crypt_opened", "show_when_blocked": True},
+            {"to": "well", "label": "peer into the well", "sealed": True},
+        ]},
+        "inn": {"known_by_default": True, "details": {"name": "The Inn"}},
+        "crypt": {"known_by_default": True, "details": {"name": "Old Crypt"}},
+        "well": {"known_by_default": True, "details": {"name": "The Well"}},
+    }
+}
+
+TOWN = LocationGraph(name="town", config=add_missing_return_exits(TOWN_MAP))
+the_map = TOWN.init_state(TOWN_MAP)
+
+for exit_ in TOWN.exits_from(the_map, "square"):
+    print("1", exit_["position"], exit_["label"], exit_["passable"])
+
+TOWN.set_attribute(the_map, "crypt", "crypt_opened", True)
+print("2", [(e["position"], e["passable"]) for e in TOWN.exits_from(the_map, "square")])
+
+print("3", [(e["to"], e["position"], e["label"]) for e in TOWN.exits_from(the_map, "inn")])
+print("4", [(e["arrival_knot"], e["travel_text"]) for e in TOWN.exits_from(the_map, "inn")])
+```
+
+```
+1 n the inn door True
+1 down the crypt stair False
+2 [('n', True), ('down', True)]
+3 [('square', 's', 'Town Square')]
+4 [('square', 'You head back to the square.')]
+```
+
+The sealed well never appears. The crypt stair appears blocked, then
+becomes passable once the attribute is set. And the inn, which declares
+no exits of its own, has gained the way back to the square with the
+returning position, the square's own name as its label, and the square's
+`arrival_knot` and `arrival_text` to travel by.
+
+`exits_from` is what an application renders; `reachable_exits` remains
+the plain list of destination ids, gated on `requires_known` alone.
+
+To draw exits in a game's side panel, a game's `sidebar.py` passes
+`exits_from()` to `ink_engine.game_panel.exits_section()`, which returns
+a panel section with `layout` set to `"compass"`, or None when no exit
+has a position or an arrival knot. An exit in that section is `passable`
+only when it has an `arrival_knot`. Continuing the same file:
+
+```python
+from ink_engine.game_panel import exits_section
+
+print("5", [(e["id"], e["passable"]) for e in exits_section(TOWN.exits_from(the_map, "inn"))["exits"]])
+```
+
+```
+5 [('position:s', True)]
+```
+
+When the player picks one, the application passes that exit's
+`arrival_knot` and `travel_text` to `ink_engine.travel.take_exit()`.
+`take_exit()` moves the story through its `GO` choice, so while a compass
+is shown the application leaves that choice out of the list it displays:
+`ink_engine.game_panel.choices_beside_panel(choices, panel)` returns the
+choices without it whenever the panel has a compass section.
 
 **Who is standing where is not this plugin's job.** The map knows places
 and routes; it never knows that the blacksmith is at the inn.
@@ -706,7 +818,7 @@ data — every character's location should be one of the place ids declared
 here, and the `set_location` binding refuses anything else. Draw the map first; [section 2.4](#24-characteroccupancy-who-is-where) has
 the examples.
 
-**How it fits with everything else.** The map knows places and edges,
+**How it fits with everything else.** The map knows places and exits,
 never who is standing where, so `CharacterOccupancy` ([section 2.4](#24-characteroccupancy-who-is-where)) layers on top without the map
 knowing characters exist.
 
@@ -719,7 +831,8 @@ plugin needs no `EXTERNAL` surface at all.
 ### 2.4 `CharacterOccupancy` — who is where
 
 **What.** The current place of every character: `set_location`,
-`where_is`, `is_at`, `is_with`, `is_anywhere`, `who_is_at`.
+`where_is`, `previous_location`, `assigned_location`, `is_at`, `is_with`,
+`is_anywhere`, `who_is_at`.
 
 **Why.** To keep track of people and where they are in the world — the
 player included. It answers "who is here?" and "where is she?", so a scene
@@ -746,10 +859,10 @@ from ink_engine.engine_plugins.character_occupancy import (
 from ink_engine.engine_plugins.location_graph import LocationGraph
 
 TOWN_MAP = {"locations": {
-    "inn":    {"known_by_default": True, "edges": [{"to": "square"}]},
-    "square": {"known_by_default": True, "edges": [{"to": "inn"}, {"to": "market"}]},
-    "market": {"known_by_default": True, "edges": [{"to": "square"}]},
-    "farm":   {"known_by_default": True, "edges": []},
+    "inn":    {"known_by_default": True, "exits": [{"to": "square"}]},
+    "square": {"known_by_default": True, "exits": [{"to": "inn"}, {"to": "market"}]},
+    "market": {"known_by_default": True, "exits": [{"to": "square"}]},
+    "farm":   {"known_by_default": True, "exits": []},
 }}
 
 TOWN = LocationGraph(name="town", config=TOWN_MAP)
@@ -780,6 +893,7 @@ print("9", repr(story_functions["who_is_at"]("square")))
 
 print("10", repr(story_functions["where_is"]("ghost")))
 print("11", CHARACTER_OCCUPANCY.characters_at(game_state["character_occupancy"], "inn"))
+print("12", story_functions["previous_location"]("player"))
 ```
 
 ```
@@ -794,12 +908,19 @@ print("11", CHARACTER_OCCUPANCY.characters_at(game_state["character_occupancy"],
 9 ''
 10 ''
 11 ['player', 'blacksmith']
+12 square
 ```
 
 A character is any id string you choose — the plugin never needs to be
 told they exist first (2). One write moves someone, and every answer
 follows from it: after the player walks to the inn, `is_with` flips to
 True (7) and the inn holds two people (8) while the square empties (9).
+`previous_location` answers where someone arrived from: the player
+walked in from the square (12). Placing them at the inn again would make
+it `inn`, so `previous_location(x) != where_is(x)` means "just arrived".
+`assigned_location` is where the story last put someone with
+`set_location`; a schedule's `recompute()` can move them without changing
+it, so a schedule can send a character back there.
 
 In a story that reads as:
 
@@ -839,7 +960,7 @@ declared order, first match wins. It is plain data — never a code string —
 so it serializes, and a story can carry one per character.
 
 ```python
-from ink_engine.engine_plugins.scheduling import EIGHT_AM, SIX_PM
+from ink_engine.engine_plugins.scheduling import EIGHT_AM, EIGHT_PM, NINE_AM, SIX_PM
 from ink_engine.engine_plugins.schedule_rules import (
     Condition, ScheduleRule, resolve_schedule,
 )
@@ -850,9 +971,15 @@ BLACKSMITH = (
     ScheduleRule(condition=None, location_id="tavern"),
 )
 
-resolve_schedule(BLACKSMITH, flags=frozenset(), clock=108)                       # 'forge'
-resolve_schedule(BLACKSMITH, flags=frozenset(), clock=240)                       # 'tavern'
-resolve_schedule(BLACKSMITH, flags=frozenset({"blacksmith_fled"}), clock=108)    # None
+print(resolve_schedule(BLACKSMITH, flags=frozenset(), clock=NINE_AM))
+print(resolve_schedule(BLACKSMITH, flags=frozenset(), clock=EIGHT_PM))
+print(resolve_schedule(BLACKSMITH, flags=frozenset({"blacksmith_fled"}), clock=NINE_AM))
+```
+
+```
+forge
+tavern
+None
 ```
 
 `location_id=None` means "not anywhere right now", which is how a
@@ -860,14 +987,14 @@ character leaves the world without being placed somewhere fictional. A
 rule with `condition=None` always matches, so it is the fallback and
 belongs last.
 
-**`clock` is the story's own unit; condition ranges are minutes.** This
-catches people out: `resolve_schedule` converts with
-`minute_of_day = (clock % 288) * 5`, so `clock` counts **five-minute
-ticks** — 288 to a day, `clock=108` is 09:00 — while
-`minute_in_range` takes minutes-of-day (0–1439). Use `scheduling.py`'s
-named constants (`EIGHT_AM`, `SIX_PM`, `MINUTES_PER_DAY`) for the bounds
-rather than bare integers, and remember the two arguments are in
-different units.
+**`clock` is the engine clock, in minutes** — the same absolute count
+the scheduling plugin keeps. `resolve_schedule` reduces it to the minute
+of the day for `minute_in_range`, and passes it unchanged to your
+`story_rule` and `story_value` functions. A game that counts time in its
+own ticks converts to minutes before calling, and back inside its own
+registry functions if they were written in ticks. Use `scheduling.py`'s
+named constants (`EIGHT_AM`, `SIX_PM`, `MINUTES_PER_DAY`) rather than
+bare integers.
 
 **The condition vocabulary is closed.** Build nodes with these
 classmethods rather than constructing `payload` by hand:
@@ -879,6 +1006,7 @@ classmethods rather than constructing `payload` by hand:
 | `Condition.story_rule(name)` | A boolean function of the clock that your story registers. |
 | `Condition.story_value(name, operator, value)` | Compare a story-registered value against a number or string. |
 | `Condition.engine_state(state_key, path, ...)` | Read another plugin's serialized state. |
+| `Condition.clock_reached(state_key, path)` | Has the clock reached a minute stored in another plugin's state? False while nothing numeric is stored. |
 | `Condition.query(state_key, query, ...)` | Ask a question another active plugin publishes. |
 | `Condition.all_of(...)` / `any_of(...)` / `negate(...)` | AND, OR, NOT. |
 
@@ -1304,6 +1432,13 @@ An hour passes.
 - `schedule_person_flag(character_id, flag, value, minutes, event_id)` —
   set a flag on someone, `minutes` from now. Returns the clock value it
   will fire at.
+- `schedule_move(character_id, location_id, minutes, event_id)` — move
+  someone, `minutes` from now; `""` removes them. The game applies it when
+  `advance()` reports the `MOVE_CHARACTER` effect.
+- `schedule_story_handler(handler, argument, minutes, event_id)` — run a
+  handler the game registered under `handler` with the string `argument`,
+  `minutes` from now: for a delayed change that is more than one flag. The
+  game applies it when `advance()` reports the `RUN_STORY_HANDLER` effect.
 - `event_pending(event_id)` — is that event still waiting?
 - `cancel_event_now(event_id)` — un-arm it. Returns how many were
   removed, `0` when nothing was queued under that name, which is not an
@@ -1315,9 +1450,9 @@ re-checking the arithmetic everywhere you care:
 
 ```ink
 // the long way -- two of these three clauses are just computing elapsed time
-+ { person_value_is_set_now("hannah", "call_armed_at")
-    and n_time_now() - person_value_now("hannah", "call_armed_at") >= 35
-    and not person_value_now("hannah", "call_answered") } [Answer the call] -> call
++ { person_value_is_set_now("messenger", "call_armed_at")
+    and n_time_now() - person_value_now("messenger", "call_armed_at") >= 35
+    and not person_value_now("messenger", "call_answered") } [Answer the call] -> call
 ```
 
 **Gate the action on a flag, not on the timer.** The scheduler sets
@@ -1326,11 +1461,11 @@ write the ordinary condition you would have written anyway:
 
 ```ink
 // arm it when the story reaches the moment that starts the clock
-~ schedule_person_flag("hannah", "call_ready", true, 35, "hannah_call")
+~ schedule_person_flag("messenger", "call_ready", true, 35, "messenger_call")
 
 // ...and gate on the flag, which is true only once it has fired
-+ { person_value_now("hannah", "call_ready")
-    and not person_value_now("hannah", "call_answered") } [Answer the call] -> call
++ { person_value_now("messenger", "call_ready")
+    and not person_value_now("messenger", "call_answered") } [Answer the call] -> call
 ```
 
 This is the pattern to reach for whenever a choice should appear after a
@@ -1370,7 +1505,7 @@ original. Pass `""` for an event you never need to cancel or test.
 
 ```ink
 // she leaves; the call she promised is no longer coming
-~ cancel_event_now("hannah_call")
+~ cancel_event_now("messenger_call")
 ```
 
 **When.** A promised phone call, a spell that matures, a character who
@@ -1549,7 +1684,7 @@ evaluated first-match-wins. It is plain data rather than code, so it
 serializes with a save.
 
 ```python
-from ink_engine.engine_plugins.scheduling import EIGHT_AM, SIX_PM
+from ink_engine.engine_plugins.scheduling import EIGHT_AM, EIGHT_PM, NINE_AM, SIX_PM
 from ink_engine.engine_plugins.schedule_rules import (
     Condition, ScheduleRule, resolve_schedule,
 )
@@ -1560,8 +1695,13 @@ BLACKSMITH = (
     ScheduleRule(condition=None, location_id="tavern"),
 )
 
-resolve_schedule(BLACKSMITH, flags=frozenset(), clock=108)   # 'forge'   (09:00)
-resolve_schedule(BLACKSMITH, flags=frozenset(), clock=240)   # 'tavern'  (20:00)
+print(resolve_schedule(BLACKSMITH, flags=frozenset(), clock=NINE_AM))
+print(resolve_schedule(BLACKSMITH, flags=frozenset(), clock=EIGHT_PM))
+```
+
+```
+forge
+tavern
 ```
 
 `character_occupancy` imports `schedule_rules`, never the other way
@@ -1572,13 +1712,13 @@ round, so a story can evaluate schedules with no occupancy store at all.
 #### Config versus session state
 
 **Your world's data belongs to the plugin; only what a session changed
-belongs to that session.** A price list, a map's edges, a quest catalog —
+belongs to that session.** A price list, a map's exits, a quest catalog —
 these are the world as you authored it, held on the plugin and read live.
 What one playthrough did to that world — a price it altered, a place it
 discovered — is what `game_state` records, as [section 2.1](#21-costtable-what-things-cost) showed.
 
 That split is what lets a new version of a game reach an existing save.
-Re-price a spell or add a map edge, and every save in flight resolves the
+Re-price a spell or add a map exit, and every save in flight resolves the
 change, because no save ever contained a copy of the old value.
 
 **A game extends a shipped plugin by instantiating it with config, or by
@@ -2084,7 +2224,7 @@ PLUGIN = CHARACTER_OCCUPANCY.plugin()
 One field. A character's whereabouts is one place id, so the slot is
 `{character_id: location_id}` and nothing more. It deliberately does **not**
 hold the map — that belongs to `LocationGraph`, which knows places and
-edges and nothing about characters.
+exits and nothing about characters.
 
 That asymmetry is the design: **occupancy depends on the map; the map
 depends on nothing.** A story with no map still runs occupancy, unchecked.
@@ -2211,7 +2351,14 @@ a running session's data lives.
 Binds each active plugin and merges the results into the
 `dict[str, Callable]` that goes to `InkRuntimeState(engine_bindings=...)`.
 
-## 4. Refreshing the choices after a plugin changes something
+## 4. Acting on the story from outside a turn
+
+An application can change the story between turns in five ways: refresh
+the current choices after a plugin changed something, run a scene in the
+middle of a turn (an interlude), list story actions in a side panel, jump
+to a knot by name, and play a panel command's reaction as a turn.
+
+### 4.1 Refreshing the choices after a plugin changes something
 
 When a plugin changes the environment or the player — inventory, money,
 a skill, which exits are open — the choices already on screen were
@@ -2219,8 +2366,28 @@ evaluated *before* that change. Their guards ran against the old state,
 so a choice the player should now be able to take is still greyed out,
 and one they can no longer afford is still offered.
 
-`refresh_choices()` re-evaluates them **without advancing the clock or
-the turn**:
+`refresh_choices()` re-evaluates them without advancing the turn. In
+this story the lantern choice is guarded by the inventory plugin's
+`has_item`, and the turn counts its own visits:
+
+```ink
+EXTERNAL has_item(holder_id, item_id)
+VAR visits = 0
+-> cellar
+
+=== cellar ===
+~ visits += 1
+The cellar is dark.
++ {has_item("player", "lantern")} [Light the lantern] -> lit
++ [Go back up] -> END
+
+=== lit ===
+The cellar glows.
+-> END
+
+=== function has_item(holder_id, item_id) ===
+~ return false
+```
 
 ```python
 import json
@@ -2228,24 +2395,46 @@ from pathlib import Path
 
 from ink_engine.binding import resolve_bindings
 from ink_engine.discovery import discover_plugins
-from ink_engine.engine import InkRuntimeState, load_story_root, load_list_defs
+from ink_engine.engine import load_list_defs, load_story_root, start_new_story
 
-story_json = json.loads(Path("story.ink.json").read_text())
-root = load_story_root(story_json)
-list_defs = load_list_defs(story_json)
-story_functions = resolve_bindings(
-    discover_plugins(["ink_engine.engine_plugins"]), ["inventory"], {})
-state = InkRuntimeState(root, list_defs, engine_bindings=story_functions)
+# Compiled from the Ink above; this repository ships it as
+# tests/fixtures/refresh_lantern.ink.json.
+story_json = json.loads(Path("tests/fixtures/refresh_lantern.ink.json").read_text())
+game_state = {}
+story_functions = resolve_bindings(discover_plugins(["ink_engine.engine_plugins"]), ["inventory"], game_state)
+state = start_new_story(load_story_root(story_json), load_list_defs(story_json), engine_bindings=story_functions)
+print("1", [choice.text for choice in state.current_choices], state.globals["visits"])
 
+# The application gives the player a lantern from its inventory panel.
+story_functions["give_item_to"]("player", "lantern")
 state.refresh_choices()
+print("2", [choice.text for choice in state.current_choices], state.globals["visits"])
+print("3", state.last_turn_text.strip(), state.turn_count)
 ```
+
+```
+1 ['Go back up'] 1
+2 ['Light the lantern', 'Go back up'] 2
+3 The cellar is dark. -1
+```
+
+The lantern choice appears (2) with the text and turn count unchanged
+(3), and `visits` is 2: the replay ran `~ visits += 1` again (see the
+WARNING below).
 
 That one call is the whole API. What follows is what it does and when to
 reach for it.
 
-**What changes.** Only `current_choices`. The turn is replayed from its
-own start, so every choice's condition runs again and sees what your
-plugin just wrote.
+**What changes.** `current_choices`, and anything the turn itself changes
+before its choices. The turn is replayed from its own start with your
+plugin's changes in place, so every choice's condition runs again and
+sees what your plugin just wrote.
+
+**WARNING: the replay runs the turn's assignments and binding calls a
+second time.** A turn that does `~ visits += 1`, or calls a binding that
+advances a clock or places a character, before its choices does so again
+on every refresh. Keep such a turn's side effects out of reach of a
+refresh, or expect them twice.
 
 **What does not change:**
 
@@ -2253,20 +2442,281 @@ plugin just wrote.
   not a turn.
 - **The text already shown.** The replay re-emits this turn's prose, but
   the original output is kept — the player does not see the scene twice.
-- **Your story's variables.** Globals are carried forward rather than
-  rolled back with the position. Whatever the plugin changed is the whole
-  point of replaying, so rolling it back would undo the change.
 - **Visit counts.** Carried across deliberately. Visit counts key on
   object identity, so a naive replay would count this turn's containers a
   second time and retire a once-only (`*`) choice the player never took.
 
-**When to call it.** After any application-side action that writes plugin
-state mid-turn: a panel button, an inventory screen, a spell menu — the
-kinds of thing `@query` and the panel API exist for. A binding called
-from the story itself does not need it, because the story is mid-turn
-already and its choices have not been evaluated yet.
+Your story's variables are carried forward rather than rolled back with
+the position, so what your plugin wrote stays; the turn's own
+assignments then run again on top of them.
 
-It does nothing before the first turn has run.
+**When to call it.** After an application-side action that writes plugin
+state mid-turn, when replaying the turn is harmless. A panel command that
+changes what the scene offers should instead answer with a knot that
+shows the scene again ([section 4.5](#45-a-panel-command-that-plays-a-story-turn)),
+which re-evaluates the choices without repeating the turn. A binding
+called from the story itself does not need it, because the story is
+mid-turn already and its choices have not been evaluated yet.
+
+It does nothing before the first turn has run, or on a state just
+restored from a save.
+
+### 4.2 Running a scene in the middle of a turn: interludes
+
+`state.start_interlude(knot)` runs a knot as though the story had written
+`-> knot ->` where the turn stopped. The turn's choices are set aside,
+the knot plays as a turn of its own, and when its `->->` returns, the
+set-aside choices are offered again. A sidebar button that starts a
+conversation, or a phone call that plays a short scene, is this.
+
+The story below is used for the rest of this section:
+
+```ink
+VAR sam_present = true
+VAR ada_present = false
+VAR season = "Winter"
+VAR chats = 0
+-> scene
+
+=== scene ===
+The shopkeeper eyes you warily.
++ [Browse] You browse. -> scene
++ [Leave] You leave. -> END
+
+=== companion_actions ===
++ {sam_present} [Talk to Sam # group: sam # image: sam/{season}/sam-face.jpg] -> talk_to_sam
+* {sam_present} [Ask Sam about the shop # group: sam] -> sam_on_the_shop
++ {ada_present} [Talk to Ada # group: ada # image: ada/ada-face.jpg] -> talk_to_ada
++ [Check the time] -> check_time
+-> DONE
+
+=== talk_to_sam ===
+~ chats += 1
+Sam grins.
+->->
+
+=== sam_on_the_shop ===
+"It's old," says Sam.
+->->
+
+=== talk_to_ada ===
+Ada nods.
+->->
+
+=== check_time ===
+It is noon.
+->->
+```
+
+```python
+import json
+from pathlib import Path
+
+from ink_engine.engine import load_list_defs, load_story_root, start_new_story
+
+# Compiled from the Ink above; this repository ships it as
+# tests/fixtures/panel_actions.ink.json.
+story_json = json.loads(Path("tests/fixtures/panel_actions.ink.json").read_text())
+state = start_new_story(load_story_root(story_json), load_list_defs(story_json))
+print("1", [choice.text for choice in state.current_choices])
+
+print("2", state.start_interlude("check_time").strip())
+print("3", [choice.text for choice in state.current_choices], state.turn_count)
+```
+
+```
+1 ['Browse', 'Leave']
+2 It is noon.
+3 ['Browse', 'Leave'] 0
+```
+
+- **It is a turn.** `turn_count` advances and the returned text is the
+  interlude's. An interlude with choices of its own offers them first;
+  the set-aside choices come back when its `->->` runs.
+- **It is saved.** The set-aside choices are part of `to_dict()`, so a
+  game saved in the middle of an interlude returns to the right scene
+  after loading.
+- **Leaving the scene.** `->-> elsewhere` returns from the interlude to
+  another knot and discards the set-aside choices, as does the story
+  ending. A plain `-> elsewhere` keeps the tunnel open, as in standard
+  Ink: the next `->->` that no later tunnel matches returns to the
+  interrupted scene. Write `->-> elsewhere` for an interlude that moves
+  the player on.
+- **Refused before anything changes.** `InterludeError` is raised when the
+  knot does not exist, or when the turn offers no choices to return to
+  (the story has ended).
+
+### 4.3 Side-panel slots and action sections
+
+A game's `panel_context()` may return `panel_slots`: sections an
+application draws below the active tab's sections, whichever tab is
+showing, in the order given. `compass_sections()` scans the slots as well
+as the tabs.
+
+An **action section** lists a menu knot's choices as story actions. The
+game declares it with `ink_engine.game_panel.actions_section(knot,
+heading=...)`; the knot's choices are the actions, guarded in Ink and
+tagged `# group: <id>` and `# image: <path>`. A game's hooks do not
+receive the story state, so the application fills the section with
+`fill_action_sections(panel, state, resolver=...)`. The knot is evaluated
+with `state.knot_choices(knot)`, on a copy of the state: Ink conditions
+and once-only rules apply, and the live state is unchanged. Choices are
+grouped by their `group` tag, in story order, and a group's picture is
+the first `image` tag among its actions, resolved by the resolver the
+application passes. When the player picks an action, the application
+looks it up again with `find_action(filled, group, label)` and passes its
+`target` to `start_interlude()`. Continuing the same file:
+
+```python
+from ink_engine.game_panel import actions_section, fill_action_sections, find_action
+
+panel = {"panel_sections": [], "panel_slots": [actions_section("companion_actions", heading="Companions")]}
+filled = fill_action_sections(panel, state)
+for group in filled["panel_slots"][0]["groups"]:
+    print("4", repr(group["id"]), [action["label"] for action in group["actions"]])
+
+action = find_action(filled, "sam", "Talk to Sam")
+print("5", state.start_interlude(action["target"]).strip())
+print("6", [choice.text for choice in state.current_choices], state.globals["chats"])
+print("7", [choice.tags for choice in state.knot_choices("companion_actions")][0])
+```
+
+```
+4 'sam' ['Talk to Sam', 'Ask Sam about the shop']
+4 '' ['Check the time']
+5 Sam grins.
+6 ['Browse', 'Leave'] 1
+7 ['group: sam', 'image: sam/Winter/sam-face.jpg']
+```
+
+An action with no `group` tag is in the group `""`. A variable printed
+inside a tag (`{season}` above) is part of the tag.
+
+**A menu knot holds only choices.** It runs on a copy of the story
+state, but with the session's live bindings, so a binding it calls
+changes the application's real plugin state on every panel render.
+Evaluating one costs a copy of the story state (about 0.4 milliseconds
+for a 22 KB saved state) plus the knot's conditions (about 0.7
+milliseconds for 21 choices whose conditions call two bindings each).
+
+### 4.4 Jumping to a knot by name
+
+`state.choose_path(path, *arguments)` is standard Ink's
+`ChoosePathString`: the story diverts to `"knot"` or `"knot.stitch"` and
+does not come back. The call stack is reset, so pending tunnels, function
+frames, temporary variables and interludes are discarded; the current
+choices are cleared; and the turn count advances, as for `choose()`.
+Arguments fill a knot's parameters in order and must be int, float,
+string, bool or a LIST value; another type raises `TypeError`. Call
+`continue_story()` next. A path the story does not have raises
+`InkPathError`; both errors are raised before anything changes. Gather and choice labels cannot be addressed, as in standard Ink.
+
+The story below is used for this section and the next:
+
+```ink
+VAR bell_rung = false
+-> shop
+
+=== shop ===
+The shopkeeper eyes you warily.
++ {bell_rung} [Ask why the bell rang] The shopkeeper shrugs. -> shop
++ [Leave] You leave. -> END
+
+=== bell_rings ===
+~ bell_rung = true
+The bell over the door rings.
+-> shop
+```
+
+```python
+import json
+from pathlib import Path
+
+from ink_engine.engine import load_list_defs, load_story_root, start_new_story
+
+# Compiled from the Ink above; this repository ships it as
+# tests/fixtures/panel_command.ink.json.
+story_json = json.loads(Path("tests/fixtures/panel_command.ink.json").read_text())
+state = start_new_story(load_story_root(story_json), load_list_defs(story_json))
+print("1", [choice.text for choice in state.current_choices], state.turn_count)
+
+state.choose_path("bell_rings")
+print("2", state.continue_story().strip().replace("\n", " / "))
+print("3", [choice.text for choice in state.current_choices], state.turn_count)
+```
+
+```
+1 ['Leave'] -1
+2 The bell over the door rings. / The shopkeeper eyes you warily.
+3 ['Ask why the bell rang', 'Leave'] 0
+```
+
+`bell_rings` ends by diverting back to `shop`, so showing the shop again
+re-evaluates its choices: the one guarded by `bell_rung` appears (3).
+
+### 4.5 A panel command that plays a story turn
+
+A game's `panel_command()` hook answers in one of two ways:
+
+- **A string**: a message for the panel. The story stays where it is; an
+  Examine or a refusal answers this way.
+- **A dict naming the reaction**: `knot` (str, required) is the knot or
+  `knot.stitch` to play; `message` (str, optional, default `""`) is panel
+  text shown with the turn; `label` (str, optional, default `message`) is
+  what the transcript records the player as doing.
+
+`GamePanel.command_result()` reads either answer as a `CommandResult`
+with `message`, `knot` (None for a string answer) and `label`; any other
+answer is logged and read as an empty result. `play_reaction(state,
+result)` plays a knot answer as a turn, with `choose_path()` then
+`continue_story()`, and returns its text; for a message-only result it
+returns None and changes nothing. An application plays the reaction
+inside the same turn handling a choice gets (the staleness check and the
+undo snapshot, taken before the command ran) and records `label` in the
+transcript. A reaction that should leave the player where they were ends
+by diverting to the current location's knot, which shows its choices
+again. Continuing with the same story file:
+
+```python
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+from ink_engine.engine import load_list_defs, load_story_root, start_new_story
+from ink_engine.game_panel import GamePanel, play_reaction
+
+story_json = json.loads(Path("tests/fixtures/panel_command.ink.json").read_text())
+state = start_new_story(load_story_root(story_json), load_list_defs(story_json))
+
+
+# A game's sidebar.py defines this function; here it stands alone.
+def panel_command(engine_state, globals_, bindings, command_id, target_id):
+    if (command_id, target_id) == ("ring", "bell"):
+        return {"knot": "bell_rings", "message": "You ring the bell.", "label": "Ring the bell"}
+    return "A brass bell, polished by many hands."
+
+
+sidebar = SimpleNamespace(panel_command=panel_command)
+panel = GamePanel(module=sidebar, engine_state={}, globals_=state.globals, bindings={})
+
+result = panel.command_result("look", "bell")
+print("4", result, play_reaction(state, result))
+
+result = panel.command_result("ring", "bell")
+print("5", result)
+print("6", play_reaction(state, result).strip().replace("\n", " / "))
+print("7", [choice.text for choice in state.current_choices], state.turn_count)
+```
+
+```
+4 CommandResult(message='A brass bell, polished by many hands.', knot=None, label='') None
+5 CommandResult(message='You ring the bell.', knot='bell_rings', label='Ring the bell')
+6 The bell over the door rings. / The shopkeeper eyes you warily.
+7 ['Ask why the bell rang', 'Leave'] 0
+```
+
+`GamePanel.command()` still answers the message alone, for an
+application that plays no reactions.
 
 ---
 

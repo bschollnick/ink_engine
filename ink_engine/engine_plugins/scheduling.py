@@ -46,23 +46,14 @@ STATE_KEY = "scheduling"
 
 
 class EffectKind(Enum):
-    """The 3 timed-event effects in the original source (`time.js`'s
-    `movePersonfterTime`/`setPersonFlagAfterTime`/`setPlaceFlagAfterTime`)
-    -- a closed, non-`eval` vocabulary. Extend only by adding another named
-    kind here, never by accepting an arbitrary string/code payload."""
+    """The timed-event effects: move a character, set a character flag, set a
+    place flag, or run a handler the game registers by name. A closed
+    vocabulary; the slot holds only data, never code."""
 
     MOVE_CHARACTER = "move_character"
     SET_PERSON_FLAG = "set_person_flag"
     SET_PLACE_FLAG = "set_place_flag"
-
-    # NOTE: An effect that must do SEVERAL things at once has no kind here
-    # on purpose. Adding one kind per operation (increment, append, clamp)
-    # is the wrong direction; the answer is a named handler a game
-    # registers, which keeps the SLOT free of code while letting the
-    # handler do the work. Designed but deliberately not built for a
-    # single call site -- see the "Deferred: a CALL_STORY_HANDLER effect
-    # kind" section of the scheduler-improvements plan for the design and
-    # the condition that should trigger building it.
+    RUN_STORY_HANDLER = "run_story_handler"
 
 
 @dataclass(frozen=True)
@@ -72,9 +63,10 @@ class Effect:
     Args:
         kind: Which of the 3 closed effect kinds this is.
         target: The subject of the effect -- a character id for
-            MOVE_CHARACTER/SET_PERSON_FLAG, a place id for SET_PLACE_FLAG.
+            MOVE_CHARACTER/SET_PERSON_FLAG, a place id for SET_PLACE_FLAG,
+            the handler's name for RUN_STORY_HANDLER.
             Never looked up here, only reported back.
-        payload: The effect's arguments (e.g. {"place_id": "hotel_room"}
+        payload: The effect's arguments (e.g. {"place_id": "inn_room"}
             for MOVE_CHARACTER, {"flag": "met_the_stranger", "value":
             True} for SET_PERSON_FLAG/SET_PLACE_FLAG) -- plain JSON-safe
             values only.
@@ -113,8 +105,7 @@ class SchedulingSlot(TypedDict):
         clock: The current time, in whole minutes since an arbitrary
             session-defined epoch.
         pending: The timed-event queue, each entry a (due_time, effect)
-            record -- a non-`eval` port of source's `vTimedEvent` array of
-            `TimedEvent(evt, time)` objects.
+            record.
     """
 
     clock: int
@@ -377,9 +368,8 @@ class Scheduling(StatefulPlugin[SchedulingSlot]):
     def schedule_effect(self, slot: SchedulingSlot, effect: Effect, minutes_from_now: int, *, event_id: str = "", replace: bool = True) -> None:
         """Queue an effect to fire `minutes_from_now` minutes after the current clock.
 
-        A non-`eval` port of source's `startTimedEvent(evt, cnt)`
-        (`time.js`) -- `minutes_from_now` mirrors `cnt`, an offset from
-        the current clock rather than an absolute time.
+        `minutes_from_now` is an offset from the current clock, not an
+        absolute time.
 
         Args:
             slot: This session's slot.
@@ -390,10 +380,8 @@ class Scheduling(StatefulPlugin[SchedulingSlot]):
                 cancelled or tested for later. Names are the caller's to
                 choose and mean nothing here.
             replace: With an `event_id`, cancel any event already queued
-                under that name before queuing this one. Mirrors source's
-                own `reset` argument (`time.js:414`). Re-arming is the
-                common case -- a timer armed twice would otherwise fire
-                twice.
+                under that name before queuing this one, so a timer armed
+                twice fires once.
         """
         if replace and event_id:
             self.cancel_event(slot, event_id)
@@ -404,9 +392,6 @@ class Scheduling(StatefulPlugin[SchedulingSlot]):
 
     def cancel_event(self, slot: SchedulingSlot, event_id: str) -> int:
         """Remove every queued event named `event_id`.
-
-        A port of source's `removeTimedEvent(evt)` (`time.js:431`), which
-        likewise matches on the event's own name.
 
         Args:
             slot: This session's slot.
@@ -448,12 +433,9 @@ class Scheduling(StatefulPlugin[SchedulingSlot]):
     def advance(self, slot: SchedulingSlot, minutes: int) -> list[Effect]:
         """Advance the clock by `minutes` and report every effect now due.
 
-        A non-`eval` port of source's `passTime()` -> `nTime += ...` ->
-        `checkTimedEvents()` sequence (`time.js`) -- every due event fires
-        once, then is removed from the queue. This does NOT apply any
-        effect to any character/flag/place state; the caller interprets
-        and applies each returned Effect against whatever state model it
-        uses.
+        Every due event fires once, then leaves the queue. Nothing is
+        applied here: the caller applies each returned `Effect` to its
+        own state.
 
         Args:
             slot: This session's slot.
@@ -521,6 +503,60 @@ class Scheduling(StatefulPlugin[SchedulingSlot]):
         self.schedule_effect(
             slot,
             Effect(kind=EffectKind.SET_PERSON_FLAG, target=character_id, payload={"flag": flag, "value": value}),
+            minutes,
+            event_id=event_id,
+        )
+        return self.clock(slot) + minutes
+
+    @external
+    def schedule_move(self, slot: SchedulingSlot, character_id: str, location_id: str, minutes: int, event_id: str) -> int:
+        """EXTERNAL schedule_move(character_id, location_id, minutes, event_id).
+
+        Queue a MOVE_CHARACTER to fire `minutes` from now; the game applies
+        it as `set_location(character_id, location_id)`, where "" removes
+        them. Re-arming the same `event_id` replaces the pending move.
+
+        Args:
+            slot: This session's slot.
+            character_id: Who moves.
+            location_id: Where to, or "" for nowhere.
+            minutes: How long from now, in the clock's own minutes.
+            event_id: A name for this event, or "" for one never cancelled.
+
+        Returns:
+            The clock value at which it will fire.
+        """
+        self.schedule_effect(
+            slot,
+            Effect(kind=EffectKind.MOVE_CHARACTER, target=character_id, payload={"place_id": location_id}),
+            minutes,
+            event_id=event_id,
+        )
+        return self.clock(slot) + minutes
+
+    @external
+    def schedule_story_handler(self, slot: SchedulingSlot, handler: str, argument: str, minutes: int, event_id: str) -> int:
+        """EXTERNAL schedule_story_handler(handler, argument, minutes, event_id).
+
+        Queues a RUN_STORY_HANDLER effect: when it comes due, the game runs
+        the handler it registered under `handler` with `argument`. For a
+        delayed change that is more than one flag, such as adding to a
+        counter unless something has switched it off meanwhile. An unnamed
+        event ("") is never replaced, so two queued calls both run.
+
+        Args:
+            slot: This session's slot.
+            handler: The name the game registered the handler under.
+            argument: A string the handler interprets.
+            minutes: How long from now, in the clock's own minutes.
+            event_id: A name for this event, or "" for one never cancelled.
+
+        Returns:
+            The clock value at which it will fire.
+        """
+        self.schedule_effect(
+            slot,
+            Effect(kind=EffectKind.RUN_STORY_HANDLER, target=handler, payload={"argument": argument}),
             minutes,
             event_id=event_id,
         )

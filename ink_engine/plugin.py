@@ -44,9 +44,10 @@ StateQuery = Callable[..., Any]
 class Plugin:
     """A discoverable ink_engine plugin.
 
-    Setting `state_key`/`init_state`/`bind` (all three, or none) makes a
-    plugin stateful: it owns one named slice of the session's
-    `EngineState`. Otherwise `bindings` is its complete surface.
+    Setting `state_key` and `init_state` together makes a plugin
+    stateful: it owns one named slice of the session's `EngineState`, and
+    may add `bind` to build bindings over it. Otherwise `bindings` is its
+    complete surface.
 
     ink_engine holds no opinion about an application's user interface or
     where it stores configuration, and does not decide which plugin
@@ -57,12 +58,12 @@ class Plugin:
             unique across every source one `discover_plugins()` call
             scans.
         display_name: Human-readable label for an application's own user
-            interface. Never
-            read by ink_engine.
+            interface. Never read by ink_engine.
         bindings: Stateless EXTERNAL functions, keyed by the Ink function
             name each implements.
-        validate_config: Optional validator for whatever config shape a
-            the application attaches to this plugin. Called by the application, never here.
+        validate_config: Optional validator for the configuration an
+            application attaches to this plugin. Called by the
+            application, never by ink_engine.
         state_key: Where this plugin's state lives in `EngineState`, or
             None when stateless. It need not equal `name`, and two
             plugins may deliberately share one key -- so `EngineState`
@@ -72,17 +73,17 @@ class Plugin:
             win a collision.
         init_state: `(config) -> dict`, building this plugin's fresh state
             on first use, or None when stateless. Set with `state_key`,
-            never alone. `config` is the application's config for this plugin,
-            `default_config` when the application attaches none, or None. A
-            plugin may own state without binding anything: state_key and
-            init_state with no `bind` is valid.
-        default_config: What `init_state` is given when the application attaches
-            no config. Declaring it is how the allocation step knows
-            which of two plugins sharing a slot builds it.
+            never alone. `config` is the configuration the application
+            attaches to this plugin, else `default_config`, else None. A
+            plugin may own state without binding anything: `state_key`
+            and `init_state` with no `bind` is valid.
+        default_config: What `init_state` is given when the application
+            attaches no configuration. Declaring it is how the allocation
+            step knows which of two plugins sharing a slot builds it.
         bind: `(own_state, engine_state, list_defs) -> dict[str, Callable]`,
-            building the stateful bindings; None when stateless. Always
-            this exact shape, used or not, so a wrong signature fails at
-            bind time. Read another plugin's state with
+            building the stateful bindings; None when it binds nothing.
+            Always this exact signature, every argument used or not, so a
+            wrong signature fails at bind time. Read another plugin's state with
             `engine_state.get(other_state_key, {})`. `list_defs` is an
             argument rather than an `engine_state` entry so it has no
             lifetime beyond the call.

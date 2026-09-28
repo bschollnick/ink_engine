@@ -42,7 +42,7 @@ class ScheduleEffectTests(SimpleTestCase):
         """due_time is the current clock plus minutes_from_now, not an
         absolute time the caller must compute itself."""
         slot = _slot(100)
-        effect = Effect(kind=EffectKind.SET_PERSON_FLAG, target="brenda", payload={"flag": "brenda_flag1", "value": True})
+        effect = Effect(kind=EffectKind.SET_PERSON_FLAG, target="potter", payload={"flag": "potter_flag1", "value": True})
         SCHEDULING.schedule_effect(slot, effect, minutes_from_now=288)
         self.assertEqual(SCHEDULING.pending_effects(slot), [(388, effect)])
 
@@ -50,7 +50,7 @@ class ScheduleEffectTests(SimpleTestCase):
         """The slot holds the kind's string value; the Enum is rebuilt at
         the one reader that needs it."""
         slot = _slot()
-        SCHEDULING.schedule_effect(slot, Effect(EffectKind.MOVE_CHARACTER, "davy", {"place_id": "robbins_house"}), 10)
+        SCHEDULING.schedule_effect(slot, Effect(EffectKind.MOVE_CHARACTER, "miller", {"place_id": "mill_house"}), 10)
         self.assertEqual(slot["pending"][0]["effect"]["kind"], "move_character")
         json.dumps(slot)
 
@@ -62,11 +62,11 @@ class AdvanceTests(SimpleTestCase):
 
     def test_advancing_past_the_due_time_fires_the_effect(self):
         slot = _slot()
-        SCHEDULING.schedule_effect(slot, Effect(EffectKind.MOVE_CHARACTER, "davy", {"place_id": "robbins_house"}), 10)
+        SCHEDULING.schedule_effect(slot, Effect(EffectKind.MOVE_CHARACTER, "miller", {"place_id": "mill_house"}), 10)
         fired = SCHEDULING.advance(slot, minutes=10)
         self.assertEqual(SCHEDULING.clock(slot), 10)
         self.assertEqual(len(fired), 1)
-        self.assertEqual(fired[0].target, "davy")
+        self.assertEqual(fired[0].target, "miller")
         self.assertEqual(slot["pending"], [])
 
     def test_advancing_short_of_the_due_time_fires_nothing(self):
@@ -89,17 +89,17 @@ class AdvanceTests(SimpleTestCase):
 
     def test_advance_never_applies_an_effect_only_reports_it(self):
         """The ONLY thing advance() ever produces is the list it returns;
-        nothing about "brenda" exists anywhere except inside that value."""
+        nothing about "potter" exists anywhere except inside that value."""
         slot = _slot()
-        SCHEDULING.schedule_effect(slot, Effect(EffectKind.SET_PERSON_FLAG, "brenda", {"flag": "brenda_flag1", "value": True}), 10)
+        SCHEDULING.schedule_effect(slot, Effect(EffectKind.SET_PERSON_FLAG, "potter", {"flag": "potter_flag1", "value": True}), 10)
         fired = SCHEDULING.advance(slot, minutes=10)
         self.assertIsInstance(fired[0], Effect)
-        self.assertEqual(fired[0].payload, {"flag": "brenda_flag1", "value": True})
+        self.assertEqual(fired[0].payload, {"flag": "potter_flag1", "value": True})
         self.assertEqual(slot["pending"], [])
 
     def test_an_effect_not_yet_due_survives_multiple_advances(self):
         slot = _slot()
-        SCHEDULING.schedule_effect(slot, Effect(EffectKind.MOVE_CHARACTER, "kate", {"place_id": "hotel_bar"}), 20)
+        SCHEDULING.schedule_effect(slot, Effect(EffectKind.MOVE_CHARACTER, "tailor", {"place_id": "inn_bar"}), 20)
         self.assertEqual(SCHEDULING.advance(slot, minutes=5), [])
         self.assertEqual(SCHEDULING.advance(slot, minutes=5), [])
         self.assertEqual(SCHEDULING.clock(slot), 10)
@@ -121,13 +121,13 @@ class SerializationTests(SimpleTestCase):
 
     def test_round_trips_pending_effects(self):
         slot = _slot()
-        SCHEDULING.schedule_effect(slot, Effect(EffectKind.SET_PLACE_FLAG, "sacred_clearing", {"flag": "tunnel_known", "value": True}), 30)
+        SCHEDULING.schedule_effect(slot, Effect(EffectKind.SET_PLACE_FLAG, "stone_circle", {"flag": "tunnel_known", "value": True}), 30)
         restored = json.loads(json.dumps(slot))
         self.assertEqual(SCHEDULING.clock(restored), 0)
         ((due_time, effect),) = SCHEDULING.pending_effects(restored)
         self.assertEqual(due_time, 30)
         self.assertEqual(effect.kind, EffectKind.SET_PLACE_FLAG)
-        self.assertEqual(effect.target, "sacred_clearing")
+        self.assertEqual(effect.target, "stone_circle")
 
     def test_clock_of_reads_the_slot_from_the_whole_session(self):
         self.assertEqual(clock_of({"scheduling": {"clock": 42}}), 42)
@@ -153,7 +153,7 @@ class JumpClockTests(SimpleTestCase):
         """A hard jump, not simulated time passing; a caller wanting due
         effects to fire calls advance() separately."""
         slot = _slot()
-        SCHEDULING.schedule_effect(slot, Effect(EffectKind.SET_PERSON_FLAG, "brenda", {"flag": "x", "value": True}), 10)
+        SCHEDULING.schedule_effect(slot, Effect(EffectKind.SET_PERSON_FLAG, "potter", {"flag": "x", "value": True}), 10)
         SCHEDULING.jump_clock(slot, ONE_DAY)
         self.assertEqual(len(slot["pending"]), 1)
         SCHEDULING.jump_clock(slot, -2 * ONE_DAY)
@@ -228,7 +228,16 @@ class BindingTests(SimpleTestCase):
         slot = PLUGIN.init_state(None)
         self.assertEqual(
             sorted(PLUGIN.bind(slot, {}, {})),
-            ["advance_clock", "cancel_event_now", "clock", "event_pending", "schedule_person_flag", "set_clock"],
+            [
+                "advance_clock",
+                "cancel_event_now",
+                "clock",
+                "event_pending",
+                "schedule_move",
+                "schedule_person_flag",
+                "schedule_story_handler",
+                "set_clock",
+            ],
         )
         self.assertEqual(
             sorted(PLUGIN.bindings), ["day_of_week", "hour_of_day", "is_afternoon", "is_day", "is_evening", "is_morning", "is_night", "is_weekday"]
@@ -253,17 +262,17 @@ class NamedEventTests(SimpleTestCase):
         return {"clock": 0, "pending": []}
 
     def _flag_effect(self) -> Effect:
-        return Effect(kind=EffectKind.SET_PERSON_FLAG, target="hannah", payload={"flag": "call_ready", "value": True})
+        return Effect(kind=EffectKind.SET_PERSON_FLAG, target="messenger", payload={"flag": "call_ready", "value": True})
 
     def test_a_named_event_is_pending_until_it_fires(self):
         slot = self._slot()
-        SCHEDULING.schedule_effect(slot, self._flag_effect(), 35, event_id="hannah_call")
-        self.assertTrue(SCHEDULING.event_is_pending(slot, "hannah_call"))
+        SCHEDULING.schedule_effect(slot, self._flag_effect(), 35, event_id="messenger_call")
+        self.assertTrue(SCHEDULING.event_is_pending(slot, "messenger_call"))
         self.assertEqual(SCHEDULING.advance(slot, 20), [], "not due yet")
-        self.assertTrue(SCHEDULING.event_is_pending(slot, "hannah_call"))
+        self.assertTrue(SCHEDULING.event_is_pending(slot, "messenger_call"))
         fired = SCHEDULING.advance(slot, 20)
-        self.assertEqual([effect.target for effect in fired], ["hannah"])
-        self.assertFalse(SCHEDULING.event_is_pending(slot, "hannah_call"), "a fired event has left the queue")
+        self.assertEqual([effect.target for effect in fired], ["messenger"])
+        self.assertFalse(SCHEDULING.event_is_pending(slot, "messenger_call"), "a fired event has left the queue")
 
     def test_rearming_the_same_name_replaces_rather_than_duplicates(self):
         """A timer armed twice must still fire once."""
@@ -295,7 +304,40 @@ class NamedEventTests(SimpleTestCase):
 
     def test_a_pending_event_survives_a_save_round_trip(self):
         slot = self._slot()
-        SCHEDULING.schedule_effect(slot, self._flag_effect(), 35, event_id="hannah_call")
+        SCHEDULING.schedule_effect(slot, self._flag_effect(), 35, event_id="messenger_call")
         restored = json.loads(json.dumps(slot))
-        self.assertTrue(SCHEDULING.event_is_pending(restored, "hannah_call"))
-        self.assertEqual([effect.target for effect in SCHEDULING.advance(restored, 35)], ["hannah"])
+        self.assertTrue(SCHEDULING.event_is_pending(restored, "messenger_call"))
+        self.assertEqual([effect.target for effect in SCHEDULING.advance(restored, 35)], ["messenger"])
+
+
+class MoveEffectTests(SimpleTestCase):
+    """`schedule_move` queues a MOVE_CHARACTER effect."""
+
+    def test_the_move_comes_due_with_its_destination(self):
+        slot = SCHEDULING.init_state(None)
+        self.assertEqual(SCHEDULING.schedule_move(slot, "messenger", "inn_room", 20, "messenger_leaves"), 20)
+        self.assertEqual(SCHEDULING.advance(slot, 19), [])
+        self.assertEqual(SCHEDULING.advance(slot, 1), [Effect(EffectKind.MOVE_CHARACTER, "messenger", {"place_id": "inn_room"})])
+
+    def test_rearming_the_same_event_replaces_the_pending_move(self):
+        slot = SCHEDULING.init_state(None)
+        SCHEDULING.schedule_move(slot, "messenger", "inn_room", 20, "messenger_leaves")
+        SCHEDULING.schedule_move(slot, "messenger", "", 30, "messenger_leaves")
+        self.assertEqual(SCHEDULING.advance(slot, 30), [Effect(EffectKind.MOVE_CHARACTER, "messenger", {"place_id": ""})])
+
+
+class StoryHandlerEffectTests(SimpleTestCase):
+    """`schedule_story_handler` queues a named handler with its argument."""
+
+    def test_the_handler_effect_comes_due_with_its_argument(self):
+        slot = SCHEDULING.init_state(None)
+        SCHEDULING.schedule_story_handler(slot, "raise_counter", "2", 30, "")
+        self.assertEqual(SCHEDULING.advance(slot, 29), [])
+        fired = SCHEDULING.advance(slot, 1)
+        self.assertEqual(fired, [Effect(EffectKind.RUN_STORY_HANDLER, "raise_counter", {"argument": "2"})])
+
+    def test_unnamed_handlers_are_not_replaced(self):
+        slot = SCHEDULING.init_state(None)
+        SCHEDULING.schedule_story_handler(slot, "raise_counter", "1", 10, "")
+        SCHEDULING.schedule_story_handler(slot, "raise_counter", "1", 10, "")
+        self.assertEqual(len(SCHEDULING.advance(slot, 10)), 2)

@@ -53,6 +53,26 @@ class ManifestDrivenSelectionTests(SimpleTestCase):
                 ["Images/a.jpg", "__init__.py", "manifest.yaml", "story.inkj"],
             )
 
+    def test_a_cover_found_by_convention_is_bundled(self):
+        """The folder shows `cover.<ext>` without a declaration, so the bundle carries it."""
+        for relative in ("cover.jpg", "images/cover.png"):
+            with self.subTest(cover=relative), tempfile.TemporaryDirectory() as tmp:
+                game = _make_game(Path(tmp), extra={relative: "x"})
+                self.assertIn(Path(relative), select_bundle_contents(game).included)
+
+    def test_a_stylesheet_found_by_convention_is_bundled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            game = _make_game(Path(tmp), extra={"styles.css": "p {}"})
+            self.assertIn(Path("styles.css"), select_bundle_contents(game).included)
+
+    def test_a_declared_cover_outside_the_game_folder_is_still_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "outside.jpg").write_text("x", encoding="utf-8")
+            game = _make_game(Path(tmp), manifest="MAIN_STORY_FILE: story.inkj\nCOVER_IMAGE: ../outside.jpg\n")
+            plan = select_bundle_contents(game)
+            self.assertNotIn(Path("../outside.jpg"), plan.included)
+            self.assertTrue(any("outside the game folder" in reason for _, reason in plan.missing))
+
     def test_undeclared_media_is_not_bundled(self):
         """A directory nothing declares stays out, however large."""
         with tempfile.TemporaryDirectory() as tmp:

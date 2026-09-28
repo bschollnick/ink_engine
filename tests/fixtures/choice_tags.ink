@@ -4,8 +4,8 @@ Who is she?
 * A choice #shared_tag [ with detail #choice_tag ] and content # content_tag
     Content one.
     -> END
-* [As a cleaner # image: louise/Monica/louise1b.jpg] -> picked
-* [Casually # image: louise/Kayla/louise1b.jpg] -> picked
+* [As a cleaner # image: rosa/Summer/rosa1b.jpg] -> picked
+* [Casually # image: rosa/Winter/rosa1b.jpg] -> picked
 * {false} [Never shown # image: hidden.jpg] -> picked
 * [Plain, no tag] -> picked
 === picked ===

@@ -35,24 +35,48 @@ MEDIA_TAG_PREFIXES: dict[str, str] = {"image:": "image", "video:": "video"}
 #: this list is never consulted at all.
 EXTENSION_FALLBACKS: tuple[str, ...] = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".webm", ".mov")
 
-#: Extensions `find_cover_image()` tries, in order. Image formats only — a
+#: Extensions `cover_image_path()` tries, in order. Image formats only — a
 #: cover is always a still image, never video.
 COVER_EXTENSION_FALLBACKS: tuple[str, ...] = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 
-#: Where `find_cover_image()` looks for `cover.<ext>`, in order — the game
-#: folder's own root first, then a conventional `images/` subdirectory some
-#: games may still choose to use even though nothing requires it.
-COVER_SEARCH_DIRS: tuple[str, ...] = (".", "images")
+#: Where `cover_image_path()` looks for `cover.<ext>`, in order: the game's
+#: root, then an `images/` or `Images/` subdirectory. Both spellings are
+#: listed because a bundle's member names are case-sensitive.
+COVER_SEARCH_DIRS: tuple[str, ...] = (".", "images", "Images")
+
+
+def cover_image_path(game_dir: GameSource | Path) -> str | None:
+    """Return the path of a game's cover image within the game.
+
+    The manifest's `COVER_IMAGE` when it names a file that exists;
+    otherwise the first `cover.<ext>` (any of `COVER_EXTENSION_FALLBACKS`)
+    found in `COVER_SEARCH_DIRS`, in order.
+
+    Args:
+        game_dir: The game folder, or its source.
+
+    Returns:
+        The path relative to the game, or None when the game has no cover.
+        A declared cover that does not exist is None, not an error.
+    """
+    source = as_source(game_dir)
+    declared = read_cover_image(source)
+    if declared:
+        return declared if source.exists(declared) else None
+    for search_dir in COVER_SEARCH_DIRS:
+        for extension in COVER_EXTENSION_FALLBACKS:
+            candidate = f"cover{extension}" if search_dir == "." else f"{search_dir}/cover{extension}"
+            if source.exists(candidate):
+                return candidate
+    return None
 
 
 def find_cover_image(game_dir: GameSource | Path) -> str | None:
-    """Return a game folder's own cover image.
+    """Return a displayable reference to a game's cover image.
 
-    A manifest that declares `COVER_IMAGE` names the file outright — one
-    lookup, and any filename the game likes. Otherwise this falls back to
-    the old convention: `cover.<ext>` (any of `COVER_EXTENSION_FALLBACKS`)
-    directly under `game_dir`, then under `game_dir/images/`, which costs
-    up to ten filesystem probes to find one file.
+    The cover is the one `cover_image_path()` finds. A manifest that
+    declares `COVER_IMAGE` costs one lookup; the `cover.<ext>` convention
+    costs up to ten filesystem probes.
 
     Args:
         game_dir: The game folder's real filesystem path.
@@ -64,18 +88,8 @@ def find_cover_image(game_dir: GameSource | Path) -> str | None:
         cosmetic gap, not a reason a game cannot be played.
     """
     source = as_source(game_dir)
-    resolver = FilesystemMediaResolver(source)
-
-    declared = read_cover_image(source)
-    if declared:
-        return resolver.reference(declared) if source.exists(declared) else None
-
-    for search_dir in COVER_SEARCH_DIRS:
-        for extension in COVER_EXTENSION_FALLBACKS:
-            candidate = f"cover{extension}" if search_dir == "." else f"{search_dir}/cover{extension}"
-            if source.exists(candidate):
-                return resolver.reference(candidate)
-    return None
+    relative = cover_image_path(source)
+    return FilesystemMediaResolver(source).reference(relative) if relative else None
 
 
 #: Filename `find_prose_styles()` looks for, directly under `game_dir` —
@@ -86,6 +100,23 @@ PROSE_STYLES_FILENAME = "styles.css"
 #: Same shape as a panel hook: absent, raising, or answering the wrong
 #: type all mean "this game has nothing to say", never an error.
 RESOLVE_TAG_HOOK = "resolve_tag"
+
+
+def prose_styles_path(game_dir: GameSource | Path) -> str | None:
+    """Return the path of a game's prose stylesheet within the game.
+
+    The manifest's `PROSE_STYLES` when it names a file, otherwise
+    `PROSE_STYLES_FILENAME`; either only if it exists.
+
+    Args:
+        game_dir: The game folder, or its source.
+
+    Returns:
+        The path relative to the game, or None when the game has none.
+    """
+    source = as_source(game_dir)
+    candidate = read_prose_styles(source) or PROSE_STYLES_FILENAME
+    return candidate if source.exists(candidate) else None
 
 
 def find_prose_styles(game_dir: GameSource | Path) -> str | None:
@@ -109,8 +140,8 @@ def find_prose_styles(game_dir: GameSource | Path) -> str | None:
         application's own concern — `ink_engine` has no opinion on application UI.
     """
     source = as_source(game_dir)
-    candidate = read_prose_styles(source) or PROSE_STYLES_FILENAME
-    return source.read_text(candidate) if source.exists(candidate) else None
+    path = prose_styles_path(source)
+    return source.read_text(path) if path else None
 
 
 def parse_media_tags(current_tags: list[str]) -> list[tuple[str, str]]:
@@ -283,7 +314,7 @@ class FilesystemMediaResolver:  # pylint: disable=too-few-public-methods
     def _ask_game(self, kind: str, tag_name: str) -> str | None:
         """Ask a game's own resolver what one of its tags means.
 
-        Modelled on `game_panel.run_panel_hook()`: called by keyword, and
+        Modelled on `game_panel.GamePanel`'s hook calls: called by keyword, and
         absent, raising, or answering a non-string all mean "no answer"
         rather than an error. A broken resolver must not take a turn
         down; the tag simply goes unresolved, exactly as an unresolvable

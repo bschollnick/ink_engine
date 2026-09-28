@@ -1,23 +1,65 @@
 """Calling a game's own side-panel hooks.
 
 A game folder may ship a `sidebar.py` exposing `panel_context()`,
-`panel_action()` and `panel_command()`; an application renders whatever data they
-return beside the story text. This module is the shared calling
+`panel_action()` and `panel_command()`; an application renders whatever
+data they return beside the story text. `GamePanel` is the shared calling
 convention.
 
 A hook supplies data, never markup. This module never imports a game's
-code: it calls a module the application already imported, having made its own
-trust decision upstream. Every hook is optional, and one that raises is
-logged and treated as absent.
+code: it calls a module the application already imported, having made its
+own trust decision upstream. Every hook is optional, and one that raises
+is logged and treated as absent. Hooks are called by keyword, so a wrong
+parameter name fails loudly instead of binding the wrong value.
+
+A game's `panel_context()` answers a dict whose `panel_sections` list holds one
+dict per section: the active tab's. `panel_sections_by_tab` maps each tab
+id to its sections, and `panel_slots` lists sections an application draws
+below the active tab's, in the order given, whichever tab is active.
+A section with no `layout` is a list: `heading`,
+`rows`, `empty_text`. A section with `layout` set to `COMPASS_LAYOUT` is
+an exits panel, built by `exits_section()`: `heading` and `exits`, each
+exit a dict of `id`, `label`, `position` and `passable`, plus the
+`arrival_knot` and `travel_text` an application passes to
+`ink_engine.travel.take_exit()` when the player picks it.
+
+A section with `layout` set to `ACTIONS_LAYOUT` names a menu knot, built by
+`actions_section()`. The knot's choices are the actions, guarded in Ink and
+tagged `# group: <id>` and `# image: <path>`. A game cannot list them
+itself, since its hooks do not receive the story state, so an application
+calls `fill_action_sections()` on the context, which adds `groups`: one per
+group id in story order, each `{id, image_urls, actions}`, each action
+`{group, label, target}`. A group's picture is the first `image` tag among
+its actions. When the player picks an action, the application looks it up
+with `find_action()` in a freshly filled context and passes its `target`
+to `InkRuntimeState.start_interlude()`. A menu knot holds only choices:
+it is evaluated on a copy of the story state, but with the live bindings.
+
+A game's `panel_command()` answers either a string, a message for the
+panel that leaves the story where it is (an Examine, a refusal), or a dict
+naming the story turn that is the command's reaction: `knot` (str,
+required), the knot or `knot.stitch` to play; `message` (str, optional,
+default ""), panel text shown with the turn; and `label` (str, optional,
+default `message`), what the transcript records the player as doing.
+`GamePanel.command_result()` reads either answer as a `CommandResult`, and
+an application plays a knot answer with `play_reaction()`: a jump to the
+knot, standard Ink's ChoosePathString, then `continue_story()`, so it
+counts as a turn with the same staleness guard and undo snapshot a choice
+gets. A reaction that should leave the player where they were ends by
+diverting back to the current location's knot, which shows its choices
+again. Any other answer is logged and treated as "".
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from types import ModuleType
 from typing import Any
 
+from ink_engine.engine import InkRuntimeState, InterludeError
+from ink_engine.media_resolver import MediaResolver, parse_media_tags
 from ink_engine.plugin import EngineState
+from ink_engine.travel import MOVE_CHOICE_TEXT
 
 #: The names a game's own `sidebar.py` may define. A game defines the ones
 #: it wants; every one is optional.
@@ -25,165 +67,403 @@ PANEL_CONTEXT_HOOK = "panel_context"
 PANEL_ACTION_HOOK = "panel_action"
 PANEL_COMMAND_HOOK = "panel_command"
 
+#: The `layout` of a section drawn as a compass rather than a list.
+COMPASS_LAYOUT = "compass"
 
-def run_panel_hook(
-    module: ModuleType | None,
-    hook_name: str,
-    *,
-    engine_state: EngineState,
-    globals_: dict[str, Any],
-    bindings: dict[str, Any],
-    default: Any,
-    logger: logging.Logger | None = None,
-    **extra_args: str,
-) -> Any:
-    """Call one of a game's own panel hooks, or answer `default`.
 
-    Hooks are invoked by keyword, so each author's parameter order is
-    their own business and a wrong name fails loudly instead of binding
-    the wrong value by position.
+@dataclass(frozen=True, slots=True)
+class CommandResult:
+    """What a panel command answered.
 
-    Args:
+    Attributes:
+        message: Text for the panel's detail area; "" for none.
+        knot: The knot or `knot.stitch` to play as the command's reaction,
+            or None when the command does not advance the story.
+        label: What the transcript records the player as doing.
+    """
+
+    message: str = ""
+    knot: str | None = None
+    label: str = ""
+
+
+#: The heading `exits_section()` gives a section unless told otherwise.
+EXITS_HEADING = "Exits"
+
+#: The `layout` of a section listing a menu knot's choices as actions.
+ACTIONS_LAYOUT = "actions"
+
+#: The choice tag naming the group an action belongs to.
+GROUP_TAG = "group"
+
+
+@dataclass(frozen=True, slots=True)
+class GamePanel:
+    """One session's view of a game's own side-panel hooks.
+
+    Built per call from what the application already holds; every hook
+    receives the same `engine_state`, `globals_` and `bindings`.
+
+    Attributes:
         module: The game's already-imported `sidebar` module, or None.
-        hook_name: Which hook to call -- one of the `*_HOOK` constants.
         engine_state: The session's live plugin-state dict. A hook may
             mutate it; `panel_command` is expected to.
         globals_: The runtime's Ink globals, likewise mutable.
         bindings: The session's real EXTERNAL bindings, so a hook can ask
             what the story can.
-        default: The answer when the hook is absent, raises, or answers
-            the wrong type. Also fixes that expected type: the hook's
-            answer must be an instance of `type(default)`, with None
-            meaning any dict.
         logger: Where to report a raising hook.
-        **extra_args: Further named arguments this hook takes.
+    """
+
+    module: ModuleType | None
+    engine_state: EngineState
+    globals_: dict[str, Any]
+    bindings: dict[str, Any]
+    logger: logging.Logger | None = None
+
+    def context(self) -> dict[str, Any] | None:
+        """Ask the game for the data its side panel should render.
+
+        Read-only by contract: nothing returned here is persisted.
+
+        Returns:
+            The panel's data, or None when this game supplies no panel.
+        """
+        return self._run(PANEL_CONTEXT_HOOK, default=None)
+
+    def action(self, action_id: str, target_id: str) -> str:
+        """Run one of the panel's read-only row actions (e.g. "examine").
+
+        Args:
+            action_id: Which action the row offered.
+            target_id: What it was invoked on.
+
+        Returns:
+            The text to show, or "" when unrecognised or unavailable.
+        """
+        return self._run(PANEL_ACTION_HOOK, default="", action_id=action_id, target_id=target_id)
+
+    def command(self, command_id: str, target_id: str) -> str:
+        """Run one of the panel's state-changing commands and answer its message.
+
+        Args:
+            command_id: Which command the row offered.
+            target_id: What it was invoked on.
+
+        Returns:
+            `command_result(command_id, target_id).message`.
+        """
+        return self.command_result(command_id, target_id).message
+
+    def command_result(self, command_id: str, target_id: str) -> CommandResult:
+        """Run one of the panel's state-changing commands (e.g. "use", "cast").
+
+        Expected to mutate `engine_state`, and may mutate `globals_`; an
+        application persists both as it would after a mid-turn binding
+        call. The command itself does not advance the story; a result
+        naming a knot asks the application to play one turn with
+        `play_reaction()`.
+
+        Args:
+            command_id: Which command the row offered.
+            target_id: What it was invoked on.
+
+        Returns:
+            The answer, read as the module docstring describes. An
+            unrecognised, unavailable or malformed answer is an empty
+            result. A raising command answers an empty result and may
+            leave state partly mutated, as a raising EXTERNAL binding
+            mid-turn would.
+        """
+        answer = self._run(PANEL_COMMAND_HOOK, default="", expected_types=(str, dict), command_id=command_id, target_id=target_id)
+        if isinstance(answer, str):
+            return CommandResult(message=answer)
+        knot, message = answer.get("knot"), answer.get("message", "")
+        label = answer.get("label", message)
+        if not (isinstance(knot, str) and isinstance(message, str) and isinstance(label, str)):
+            (self.logger or logging.getLogger(__name__)).warning("ink_engine.game_panel: %s answered a malformed result; ignored", PANEL_COMMAND_HOOK)
+            return CommandResult()
+        return CommandResult(message=message, knot=knot, label=label)
+
+    def _run(self, hook_name: str, *, default: Any, expected_types: tuple[type, ...] | None = None, **extra_args: str) -> Any:
+        """Call one hook by keyword, or answer `default`.
+
+        The hook's answer must be an instance of `expected_types`, or,
+        when that is None, of `type(default)`, with a None default meaning
+        any dict. An absent hook, a raising one, or a wrong-typed answer
+        all answer `default`.
+        """
+        hook = getattr(self.module, hook_name, None) if self.module is not None else None
+        if not callable(hook):
+            return default
+
+        try:
+            result = hook(engine_state=self.engine_state, globals_=self.globals_, bindings=self.bindings, **extra_args)
+        except Exception:  # pylint: disable=broad-except
+            (self.logger or logging.getLogger(__name__)).exception("ink_engine.game_panel: %s failed; treating the panel as absent", hook_name)
+            return default
+
+        if expected_types is None:
+            expected_types = (dict,) if default is None else (type(default),)
+        return result if isinstance(result, expected_types) else default
+
+
+def exit_id(exit_: dict[str, Any]) -> str:
+    """Return the identifier an exits section gives one exit.
+
+    Positions are unique within one location, so a positioned exit is
+    named by its position and any other by its destination.
+
+    Args:
+        exit_: One exit, as `LocationGraph.exits_from()` returns it.
 
     Returns:
-        The hook's answer if it ran and matched the expected type, else
-        `default`.
+        `"position:<position>"`, or `"to:<destination>"` for an exit
+        with no position.
     """
-    hook = getattr(module, hook_name, None) if module is not None else None
-    if not callable(hook):
-        return default
+    if exit_.get("position"):
+        return f"position:{exit_['position']}"
+    return f"to:{exit_['to']}"
 
+
+def exits_section(exits: list[dict[str, Any]], *, heading: str = EXITS_HEADING) -> dict[str, Any] | None:
+    """Build a compass section from one location's exits.
+
+    An exit with neither a `position` nor an `arrival_knot` is left out:
+    it has nowhere to be drawn on the compass and nothing to do when
+    picked. An exit is `passable` only when the location graph says it is
+    and it has an `arrival_knot` to travel to.
+
+    Args:
+        exits: The location's exits, as `LocationGraph.exits_from()`
+            returns them.
+        heading: The section's heading.
+
+    Returns:
+        The section, or None when no exit is left to show, so a game
+        whose exits carry no positions or arrival knots shows no exits
+        panel at all.
+    """
+    shown = [
+        {
+            "id": exit_id(exit_),
+            "label": exit_["label"],
+            "position": exit_.get("position"),
+            "passable": bool(exit_.get("passable")) and exit_.get("arrival_knot") is not None,
+            "arrival_knot": exit_.get("arrival_knot"),
+            "travel_text": exit_.get("travel_text") or "",
+        }
+        for exit_ in exits
+        if exit_.get("position") or exit_.get("arrival_knot")
+    ]
+    if not shown:
+        return None
+    return {"heading": heading, "layout": COMPASS_LAYOUT, "exits": shown}
+
+
+def _all_sections(panel: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return every section in a panel context: its tabs' and its slots', each once."""
+    panel = panel or {}
+    candidates = list(panel.get("panel_sections") or [])
+    for tab_sections in (panel.get("panel_sections_by_tab") or {}).values():
+        candidates.extend(tab_sections)
+    candidates.extend(panel.get("panel_slots") or [])
+    seen: set[int] = set()
+    sections = []
+    for section in candidates:
+        if isinstance(section, dict) and id(section) not in seen:
+            seen.add(id(section))
+            sections.append(section)
+    return sections
+
+
+def compass_sections(panel: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return every compass section in a panel context, across its tabs and slots.
+
+    Args:
+        panel: A `GamePanel.context()` answer, or None.
+
+    Returns:
+        The sections whose `layout` is `COMPASS_LAYOUT`, possibly empty.
+    """
+    return [section for section in _all_sections(panel) if section.get("layout") == COMPASS_LAYOUT]
+
+
+def find_exit(panel: dict[str, Any] | None, wanted_id: str) -> dict[str, Any] | None:
+    """Return the passable exit named `wanted_id` from a panel's compass sections.
+
+    An application calls this on a panel context it has just asked the
+    game for, so the exit taken is one the game offers now rather than
+    whatever the player's screen last showed.
+
+    Args:
+        panel: A `GamePanel.context()` answer, or None.
+        wanted_id: The exit's `id`.
+
+    Returns:
+        The exit, or None when no compass section offers a passable exit
+        by that id.
+    """
+    for section in compass_sections(panel):
+        for exit_ in section.get("exits", []):
+            if exit_.get("id") == wanted_id and exit_.get("passable"):
+                return exit_
+    return None
+
+
+def choices_beside_panel(choices: list[dict[str, Any]], panel: dict[str, Any] | None, *, move_choice: str = MOVE_CHOICE_TEXT) -> list[dict[str, Any]]:
+    """Return a turn's choices minus the story's movement choice while the panel draws a compass.
+
+    The compass takes an exit through that choice (`ink_engine.travel.take_exit()`),
+    so listing it among the choices as well offers the same move twice.
+
+    Args:
+        choices: The turn's choices, each a dict with at least a `text` key.
+        panel: The `GamePanel.context()` answer shown beside them, or None.
+        move_choice: The movement choice's text.
+
+    Returns:
+        `choices` unchanged when the panel has no compass section; otherwise
+        a new list without the movement choice. The rest keep their own keys.
+    """
+    if not compass_sections(panel):
+        return choices
+    return [choice for choice in choices if choice.get("text") != move_choice]
+
+
+def actions_section(knot: str, *, heading: str, empty_text: str = "") -> dict[str, Any]:
+    """Declare a section listing a menu knot's choices, for a game's `panel_context()`.
+
+    Args:
+        knot: The menu knot, by path.
+        heading: The section's heading.
+        empty_text: What to show when the knot offers no choices.
+
+    Returns:
+        The section, to be filled by `fill_action_sections()`.
+    """
+    return {"heading": heading, "layout": ACTIONS_LAYOUT, "knot": knot, "empty_text": empty_text}
+
+
+def action_sections(panel: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return every action section in a panel context, across its tabs and slots.
+
+    Args:
+        panel: A `GamePanel.context()` answer, or None.
+
+    Returns:
+        The sections whose `layout` is `ACTIONS_LAYOUT`, possibly empty.
+    """
+    return [section for section in _all_sections(panel) if section.get("layout") == ACTIONS_LAYOUT]
+
+
+def _tag_value(tags: list[str], name: str) -> str | None:
+    """Return the value of the first `name: value` tag, or None."""
+    for tag in tags:
+        key, separator, value = tag.partition(":")
+        if separator and key.strip() == name:
+            return value.strip()
+    return None
+
+
+def _action_groups(state: InkRuntimeState, knot: str, resolver: MediaResolver | None) -> list[dict[str, Any]]:
+    """List a menu knot's choices as groups of actions; an unknown knot lists none."""
     try:
-        result = hook(engine_state=engine_state, globals_=globals_, bindings=bindings, **extra_args)
-    except Exception:  # pylint: disable=broad-except
-        (logger or logging.getLogger(__name__)).exception("ink_engine.game_panel: %s failed; treating the panel as absent", hook_name)
-        return default
-
-    expected_type = dict if default is None else type(default)
-    return result if isinstance(result, expected_type) else default
-
-
-def panel_context(
-    module: ModuleType | None,
-    *,
-    engine_state: EngineState,
-    globals_: dict[str, Any],
-    bindings: dict[str, Any],
-    logger: logging.Logger | None = None,
-) -> dict[str, Any] | None:
-    """Ask a game for the data its side panel should render.
-
-    Read-only by contract: nothing returned here is persisted.
-
-    Args:
-        module: The game's `sidebar` module, or None.
-        engine_state: The session's live plugin-state dict.
-        globals_: The runtime's Ink globals.
-        bindings: The session's real EXTERNAL bindings.
-        logger: Where to report a raising hook.
-
-    Returns:
-        The panel's data, or None when this game supplies no panel.
-    """
-    return run_panel_hook(
-        module,
-        PANEL_CONTEXT_HOOK,
-        engine_state=engine_state,
-        globals_=globals_,
-        bindings=bindings,
-        default=None,
-        logger=logger,
-    )
+        choices = state.knot_choices(knot)
+    except InterludeError:
+        logging.getLogger(__name__).warning("ink_engine.game_panel: action section names no knot %r", knot)
+        return []
+    groups: dict[str, dict[str, Any]] = {}
+    for choice in choices:
+        group_id = _tag_value(choice.tags, GROUP_TAG) or ""
+        group = groups.setdefault(group_id, {"id": group_id, "image_urls": [], "actions": []})
+        group["actions"].append({"group": group_id, "label": choice.text, "target": choice.target_path})
+        images = [request for request in parse_media_tags(choice.tags) if request[0] == "image"][:1]
+        if images and not group["image_urls"] and resolver is not None:
+            group["image_urls"] = resolver.resolve(images)
+    return list(groups.values())
 
 
-def panel_action(
-    module: ModuleType | None,
-    *,
-    engine_state: EngineState,
-    globals_: dict[str, Any],
-    bindings: dict[str, Any],
-    action_id: str,
-    target_id: str,
-    logger: logging.Logger | None = None,
-) -> str:
-    """Run one of a panel's read-only row actions (e.g. "examine").
+def fill_action_sections(panel: dict[str, Any] | None, state: InkRuntimeState, *, resolver: MediaResolver | None = None) -> dict[str, Any] | None:
+    """Return a copy of a panel context with every action section's `groups` listed.
+
+    Each menu knot is evaluated with `InkRuntimeState.knot_choices()`, so
+    the live state is unchanged. A section naming no knot of the story
+    lists no groups, and a warning is logged.
 
     Args:
-        module: The game's `sidebar` module, or None.
-        engine_state: The session's live plugin-state dict.
-        globals_: The runtime's Ink globals.
-        bindings: The session's real EXTERNAL bindings.
-        action_id: Which action the row offered.
-        target_id: What it was invoked on.
-        logger: Where to report a raising hook.
+        panel: A `GamePanel.context()` answer, or None.
+        state: The session's story state, at the turn being shown.
+        resolver: Turns each group's `image` tag into displayable
+            references; without one, groups have no images.
 
     Returns:
-        The text to show, or "" when unrecognised or unavailable.
+        The filled context, or None when `panel` is None. `panel` itself
+        is not changed.
     """
-    return run_panel_hook(
-        module,
-        PANEL_ACTION_HOOK,
-        engine_state=engine_state,
-        globals_=globals_,
-        bindings=bindings,
-        default="",
-        logger=logger,
-        action_id=action_id,
-        target_id=target_id,
-    )
+    if panel is None:
+        return None
+    filled: dict[int, dict[str, Any]] = {
+        id(section): {**section, "groups": _action_groups(state, str(section.get("knot", "")), resolver)} for section in action_sections(panel)
+    }
+    if not filled:
+        return panel
+
+    def fill(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [filled.get(id(section), section) for section in sections]
+
+    result = dict(panel)
+    for key in ("panel_sections", "panel_slots"):
+        if panel.get(key):
+            result[key] = fill(panel[key])
+    if panel.get("panel_sections_by_tab"):
+        result["panel_sections_by_tab"] = {tab: fill(sections) for tab, sections in panel["panel_sections_by_tab"].items()}
+    return result
 
 
-def panel_command(
-    module: ModuleType | None,
-    *,
-    engine_state: EngineState,
-    globals_: dict[str, Any],
-    bindings: dict[str, Any],
-    command_id: str,
-    target_id: str,
-    logger: logging.Logger | None = None,
-) -> str:
-    """Run one of a panel's state-changing commands (e.g. "use", "cast").
+def find_action(panel: dict[str, Any] | None, group: str, label: str) -> dict[str, Any] | None:
+    """Return the action `label` in group `group` from a panel's filled action sections.
 
-    Expected to mutate `engine_state`, and may mutate `globals_`; an application
-    persists both as it would after a mid-turn binding call. Does not
-    advance the story -- a panel command is not a choice.
+    An application calls this on a context it has just asked the game for
+    and filled, so the action run is one the story offers now rather than
+    whatever the player's screen last showed.
 
     Args:
-        module: The game's `sidebar` module, or None.
-        engine_state: The session's live plugin-state dict.
-        globals_: The runtime's Ink globals.
-        bindings: The session's real EXTERNAL bindings.
-        command_id: Which command the row offered.
-        target_id: What it was invoked on.
-        logger: Where to report a raising hook.
+        panel: A `fill_action_sections()` result, or None.
+        group: The action's group id; "" for an ungrouped action.
+        label: The action's label.
 
     Returns:
-        A short result message, or "" when unrecognised or unavailable.
-        A raising command answers "" and may leave state partly mutated,
-        as a raising EXTERNAL binding mid-turn would.
+        The action, whose `target` goes to `InkRuntimeState.start_interlude()`,
+        or None when no action section offers it now.
     """
-    return run_panel_hook(
-        module,
-        PANEL_COMMAND_HOOK,
-        engine_state=engine_state,
-        globals_=globals_,
-        bindings=bindings,
-        default="",
-        logger=logger,
-        command_id=command_id,
-        target_id=target_id,
-    )
+    for section in action_sections(panel):
+        for listed_group in section.get("groups", []):
+            for action in listed_group.get("actions", []):
+                if action.get("group") == group and action.get("label") == label:
+                    return action
+    return None
+
+
+def play_reaction(state: InkRuntimeState, result: CommandResult) -> str | None:
+    """Play a panel command's reaction as a story turn.
+
+    Jumps to `result.knot` with `InkRuntimeState.choose_path()`, which
+    advances the turn count and discards the current choices and call
+    stack, then continues the story.
+
+    Args:
+        state: The session's story state.
+        result: A `GamePanel.command_result()` answer.
+
+    Returns:
+        The turn's text, or None when `result` names no knot; nothing is
+        changed then.
+
+    Raises:
+        InkPathError: `result.knot` names no knot of the story. Raised
+            before the story is changed.
+    """
+    if result.knot is None:
+        return None
+    state.choose_path(result.knot)
+    return state.continue_story()

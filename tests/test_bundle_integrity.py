@@ -14,6 +14,7 @@ from ink_engine.bundle_integrity import (
     BUNDLE_DIRECTORY_SHA256_FIELD,
     BUNDLE_VERSION,
     STORY_SHA256_FIELD,
+    BundleDigests,
     directory_hash,
     hash_bytes,
     read_bundle_version,
@@ -196,9 +197,7 @@ class CompanionReadmeTests(BundleIntegrityTestCase):
             "bundle_name": "g.zip",
             "bundle_bytes": 1024,
             "file_count": 3,
-            "story_sha256": "a" * 64,
-            "directory_sha256": "b" * 64,
-            "manifest_sha256": "c" * 64,
+            "digests": BundleDigests(story_sha256="a" * 64, directory_sha256="b" * 64, manifest_sha256="c" * 64),
         }
         manifest = {"GAME_TITLE": "T", "MAIN_STORY_FILE": "s.inkj"}
         self.assertEqual(render_readme(manifest, **arguments), render_readme(manifest, **arguments))
@@ -211,9 +210,7 @@ class CompanionReadmeTests(BundleIntegrityTestCase):
             bundle_name="g.zip",
             bundle_bytes=10,
             file_count=1,
-            story_sha256="",
-            directory_sha256="d" * 64,
-            manifest_sha256="e" * 64,
+            digests=BundleDigests(story_sha256="", directory_sha256="d" * 64, manifest_sha256="e" * 64),
         )
         self.assertIn("# g", text)
         self.assertIn("d" * 64, text)

@@ -22,7 +22,11 @@ from ink_engine.media_resolver import parse_media_tags
 #: 2: a game is a verified bundle rather than a scanned directory, so a
 #: save's media references and plugin state no longer mean what they did
 #: under the directory layout.
-SAVE_FORMAT_VERSION = 2
+#:
+#: 3: the engine's state adds `interludes`, the turns set aside by
+#: `start_interlude()`. A reader of version 2 would drop a pending one; a
+#: version 2 save loads here with none pending.
+SAVE_FORMAT_VERSION = 3
 
 #: Keys this library layers onto the engine's own serialization. Named so
 #: a reader can see what the application owns without diffing two dicts.

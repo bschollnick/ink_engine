@@ -1,0 +1,13 @@
+MANIFEST_VERSION: 1
+GAME_TITLE: Cloak of Darkness
+GAME_AUTHOR: ""
+GAME_VERSION: "1.0"
+GAME_DESCRIPTION: >
+  A three-room demonstration game, specified by Roger Firth in 1999 so
+  that one story could be implemented across many authoring systems and
+  compared. Five or six moves to win.
+ENGINE_FORMAT: ink
+MAIN_STORY_FILE: cloak_of_darkness.inkj
+PLAY_LAYOUT: three_column
+REQUIRED_PLUGINS:
+  - cloak_locations

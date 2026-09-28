@@ -20,7 +20,7 @@ from if_session import (
     read_saved_state,
     turn_context,
 )
-from ink_engine.engine import load_story_root, start_new_story
+from ink_engine.engine import InkRuntimeState, load_story_root, start_new_story
 
 FIXTURES = FilePath(__file__).parent / "fixtures"
 
@@ -95,6 +95,21 @@ class SaveVersionTests(SimpleTestCase):
         with self.assertRaises(SaveFormatError) as caught:
             read_saved_state({"save_format_version": SAVE_FORMAT_VERSION + 1})
         self.assertIn("newer version", str(caught.exception))
+
+    def test_a_save_carrying_interludes_is_version_3(self):
+        """Version 3 adds the engine's `interludes`; an older reader would drop a pending one."""
+        self.assertEqual(SAVE_FORMAT_VERSION, 3)
+        self.assertIn("interludes", build_saved_state(_story("interlude.ink.json"), None, [], {}))
+
+    def test_a_version_2_save_loads_with_no_interlude_pending(self):
+        """A save from before interludes reads, and restores with none pending."""
+        data = json.loads((FIXTURES / "interlude.ink.json").read_text(encoding="utf-8"))
+        saved = build_saved_state(start_new_story(load_story_root(data), {}), None, [], {})
+        saved["save_format_version"] = 2
+        del saved["interludes"]
+        restored = InkRuntimeState.from_dict(load_story_root(data), read_saved_state(saved))
+        self.assertEqual(restored.to_dict()["interludes"], [])
+        self.assertEqual([choice.text for choice in restored.current_choices], ["Ask about the vase", "Leave"])
 
 
 class TranscriptTests(SimpleTestCase):

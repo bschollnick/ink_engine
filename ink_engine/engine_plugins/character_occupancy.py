@@ -12,9 +12,8 @@ re-exported here so a story imports one module.
 
 **Scheduling is an optional dependency.** A story can track a location as
 a flat last-set value (`place()`/`where_is()` alone) or layer a
-`ScheduleRule` on top. `resolve_schedule()` takes a plain integer tick,
-never a `SchedulingState` -- this module does not import
-`engine_plugins.scheduling` at all.
+`ScheduleRule` on top. `resolve_schedule()` takes the clock as a plain
+integer count of minutes, never the scheduling plugin's slot.
 
 **The slot is the live layer**: the one record of where each character
 is, player and NPC alike. `recompute()` resolves every schedule-driven
@@ -82,9 +81,16 @@ class OccupancySlot(TypedDict):
             location is currently known. A character absent from
             `locations` is not present anywhere -- either never placed, or
             cleared by `place(..., None)`.
+        previous_locations: character_id -> the location they held just
+            before their most recent placement.
+        assigned: character_id -> the location the story last put them
+            at with `set_location()`, or "" when it last removed them. A
+            schedule's `recompute()` moves a character without changing it.
     """
 
     locations: dict[str, str]
+    previous_locations: dict[str, str]
+    assigned: dict[str, str]
 
 
 class UnknownLocationError(ValueError):
@@ -121,7 +127,7 @@ def resolve_present_characters(  # pylint: disable=too-many-arguments
         schedules: character_id -> that character's ScheduleRule tuple.
         flags: The set of currently-set session-flag names, shared across
             every character's schedule evaluation.
-        clock: The current absolute tick count, passed through unchanged
+        clock: The engine clock, in minutes, passed through unchanged
             to each `resolve_schedule()` call.
         story_rules: The registry of named boolean functions of `clock`.
         story_values: The registry of named int-or-str-valued functions
@@ -152,8 +158,8 @@ class CharacterOccupancy(StatefulPlugin[OccupancySlot]):
     name = "character_occupancy"
     display_name = "Character occupancy"
     state_key = STATE_KEY
-    slot_type = OccupancySlot
-    fields: ClassVar[dict[str, Callable[[], Any]]] = {"locations": dict}
+    slot_type: ClassVar[type] = OccupancySlot
+    fields: ClassVar[dict[str, Callable[[], Any]]] = {"locations": dict, "previous_locations": dict, "assigned": dict}
 
     def place(
         self,
@@ -165,7 +171,10 @@ class CharacterOccupancy(StatefulPlugin[OccupancySlot]):
         """Place a character at a location, or remove them from the world.
 
         Checked on write, the only moment a bad value is still
-        attributable to its source.
+        attributable to its source. Every placement records the location
+        held just before it for `previous_location()`, including a
+        placement where the character already is; a removal leaves that
+        record alone.
 
         Args:
             slot: This session's slot.
@@ -189,8 +198,11 @@ class CharacterOccupancy(StatefulPlugin[OccupancySlot]):
         locations = slot.setdefault("locations", {})
         if location_id is None:
             locations.pop(character_id, None)
-        else:
-            locations[character_id] = location_id
+            return
+        current = locations.get(character_id)
+        if current is not None:
+            slot.setdefault("previous_locations", {})[character_id] = current
+        locations[character_id] = location_id
 
     @external(needs_context=True)
     def set_location(self, context: BindingContext[OccupancySlot], character_id: str, location_id: str) -> None:
@@ -199,7 +211,8 @@ class CharacterOccupancy(StatefulPlugin[OccupancySlot]):
         Ink VARs carry no None, so an empty string removes the character
         from the world. The location vocabulary is the map's declared
         set, read from the session's `location_graph` slot; a story with
-        no map slot is not checked.
+        no map slot is not checked. Also records the location as the
+        character's `assigned_location()`.
 
         Args:
             context: This session.
@@ -212,6 +225,28 @@ class CharacterOccupancy(StatefulPlugin[OccupancySlot]):
         """
         known_locations = frozenset(context.slot_of(_LOCATION_STATE_KEY).get("declared", ()))
         self.place(context.slot, character_id, location_id or None, known_locations)
+        context.slot.setdefault("assigned", {})[character_id] = location_id or ""
+
+    @query
+    @external
+    def assigned_location(self, slot: OccupancySlot, character_id: str, default: str | None = "") -> str | None:
+        """Return the location the story last put a character at.
+
+        A schedule can move a scheduled character elsewhere, but where a
+        scene sent them is kept: a teacher sent to the classroom is at home
+        each night and back in the classroom each morning.
+
+        Args:
+            slot: This session's slot.
+            character_id: The character to look up.
+            default: What to answer when no scene has placed or removed
+                them.
+
+        Returns:
+            The assigned location id, "" when the story last removed
+            them, or `default`.
+        """
+        return slot.get("assigned", {}).get(character_id, default)
 
     @query
     @external
@@ -233,6 +268,26 @@ class CharacterOccupancy(StatefulPlugin[OccupancySlot]):
             The character's current location id, or `default`.
         """
         return slot.get("locations", {}).get(character_id, default)
+
+    @query
+    @external
+    def previous_location(self, slot: OccupancySlot, character_id: str, default: str | None = "") -> str | None:
+        """Return the location a character held before their most recent placement.
+
+        After the player walks from the foyer to the street,
+        `previous_location("player")` is the foyer: they arrived from
+        there. Placing them at the street again makes it the street, so
+        `previous_location(x) != where_is(x)` means "just arrived".
+
+        Args:
+            slot: This session's slot.
+            character_id: The character to look up.
+            default: What to answer for a character placed at most once.
+
+        Returns:
+            The location they last left, or `default`.
+        """
+        return slot.get("previous_locations", {}).get(character_id, default)
 
     @query
     @external
@@ -360,7 +415,7 @@ class CharacterOccupancy(StatefulPlugin[OccupancySlot]):
             slot: This session's slot, written in place.
             schedules: character_id -> that character's ScheduleRule tuple.
             flags: The set of currently-set session-flag names.
-            clock: The current absolute tick count.
+            clock: The engine clock, in minutes.
             story_rules: The registry of named boolean functions of `clock`.
             story_values: The registry of named int-or-str-valued
                 functions of `clock`.

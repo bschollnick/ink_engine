@@ -10,17 +10,22 @@ from __future__ import annotations
 from unittest import TestCase as SimpleTestCase
 
 from ink_engine.engine_config_schemas import SystemConfigValidationError
-from ink_engine.engine_plugins.location_graph import validate_location_graph
+from ink_engine.engine_plugins.location_graph import (
+    EXIT_POSITIONS,
+    RETURN_DIRECTION,
+    add_missing_return_exits,
+    validate_location_graph,
+)
 
 _VALID_LOCATION_GRAPH = {
     "locations": {
         "outside_hospital": {
             "known_by_default": True,
-            "edges": [{"to": "hospital_foyer", "requires_known": False}],
+            "exits": [{"to": "hospital_foyer", "requires_known": False}],
         },
         "hospital_foyer": {
             "known_by_default": False,
-            "edges": [],
+            "exits": [],
         },
     },
 }
@@ -32,7 +37,7 @@ class ValidateLocationGraphTests(SimpleTestCase):
     def test_real_shape_from_a_converted_games_own_config_passes(self):
         """A shape modeled directly on a real converted game's own
         location_scenes.ink pattern (a named location, a known-by-default
-        gate, real outgoing edges to other declared locations) validates
+        gate, real outgoing exits to other declared locations) validates
         cleanly."""
         validate_location_graph(_VALID_LOCATION_GRAPH)
 
@@ -47,12 +52,12 @@ class ValidateLocationGraphTests(SimpleTestCase):
         with self.assertRaises(SystemConfigValidationError):
             validate_location_graph({"locations": {}})
 
-    def test_edge_to_an_undeclared_location_is_rejected(self):
-        """A real, closed graph — no dangling edges to a location_id that
+    def test_exit_to_an_undeclared_location_is_rejected(self):
+        """A real, closed graph — no dangling exits to a location_id that
         was never itself declared under "locations"."""
         config = {
             "locations": {
-                "a": {"known_by_default": True, "edges": [{"to": "nonexistent"}]},
+                "a": {"known_by_default": True, "exits": [{"to": "nonexistent"}]},
             },
         }
         with self.assertRaises(SystemConfigValidationError):
@@ -63,13 +68,13 @@ class ValidateLocationGraphTests(SimpleTestCase):
         the string "true", or 1) rather than silently coercing it — the
         plan's own "never arbitrary JSON interpreted flexibly" requirement
         means a wrong type is a real error, not a convenience cast."""
-        config = {"locations": {"a": {"known_by_default": "true", "edges": []}}}
+        config = {"locations": {"a": {"known_by_default": "true", "exits": []}}}
         with self.assertRaises(SystemConfigValidationError):
             validate_location_graph(config)
 
-    def test_edges_must_be_a_list(self):
-        """A non-list "edges" value is rejected."""
-        config = {"locations": {"a": {"known_by_default": True, "edges": "not-a-list"}}}
+    def test_exits_must_be_a_list(self):
+        """A non-list "exits" value is rejected."""
+        config = {"locations": {"a": {"known_by_default": True, "exits": "not-a-list"}}}
         with self.assertRaises(SystemConfigValidationError):
             validate_location_graph(config)
 
@@ -91,11 +96,11 @@ _VALID_CHARACTER_OCCUPANCY = {
                             {"kind": "minute_in_range", "minute_low": 720, "minute_high": 1440},  # noon-midnight
                         ],
                     },
-                    "location_id": "school_nurse_office",
+                    "location_id": "infirmary",
                 },
                 {
                     "condition": {"kind": "minute_in_range", "minute_low": 480, "minute_high": 1080},  # 8:00am-6:00pm
-                    "location_id": "hospital_office",
+                    "location_id": "clinic_office",
                 },
                 {
                     "condition": {
@@ -105,7 +110,7 @@ _VALID_CHARACTER_OCCUPANCY = {
                             {"kind": "or", "clauses": [{"kind": "flag", "flag": "deal_made"}, {"kind": "flag", "flag": "charmed"}]},
                         ],
                     },
-                    "location_id": "hotel_room",
+                    "location_id": "inn_room",
                 },
                 {"condition": None, "location_id": None},
             ],
@@ -154,6 +159,7 @@ class LocationDetailsValidationTests(SimpleTestCase):
                     "region": "Police Station",
                     "lit": True,
                     "visits": 0,
+                    "entrance": True,
                 }
             )
         )
@@ -180,6 +186,12 @@ class LocationDetailsValidationTests(SimpleTestCase):
         with self.assertRaises(SystemConfigValidationError):
             validate_location_graph(self._config({"visited": True}))
 
+    def test_entrance_must_be_a_boolean(self):
+        """`entrance` is a flag, like `lit`."""
+        for bad in ("yes", 1):
+            with self.subTest(entrance=bad), self.assertRaises(SystemConfigValidationError):
+                validate_location_graph(self._config({"entrance": bad}))
+
     def test_visits_must_be_a_non_negative_integer(self):
         """It is a count of entries, so `true` and -1 are both mistakes."""
         for bad in (True, -1, "twice"):
@@ -192,3 +204,198 @@ class LocationDetailsValidationTests(SimpleTestCase):
         validate_location_graph(self._config({"external_identifier": ["room_a", 12]}))
         with self.assertRaises(SystemConfigValidationError):
             validate_location_graph(self._config({"external_identifier": 260}))
+
+
+def _one_location_with_exits(exits: list) -> dict:
+    """Return a two-location config whose first location declares `exits`."""
+    return {
+        "locations": {
+            "a": {"known_by_default": True, "exits": exits},
+            "b": {"known_by_default": True},
+        }
+    }
+
+
+class ExitPositionTests(SimpleTestCase):
+    """The closed set of positions an exit may occupy."""
+
+    def test_every_return_direction_is_its_own_return(self):
+        for position in EXIT_POSITIONS:
+            self.assertEqual(RETURN_DIRECTION[RETURN_DIRECTION[position]], position)
+
+    def test_every_return_direction_is_itself_a_position(self):
+        for returning in RETURN_DIRECTION.values():
+            self.assertIn(returning, EXIT_POSITIONS)
+
+    def test_an_unknown_position_is_rejected(self):
+        config = _one_location_with_exits([{"to": "b", "position": "widdershins"}])
+        with self.assertRaises(SystemConfigValidationError):
+            validate_location_graph(config)
+
+    def test_two_exits_cannot_share_a_position_from_one_location(self):
+        config = _one_location_with_exits([{"to": "b", "position": "s"}, {"to": "b", "position": "s"}])
+        with self.assertRaises(SystemConfigValidationError):
+            validate_location_graph(config)
+
+    def test_the_same_position_from_different_locations_is_fine(self):
+        config = {
+            "locations": {
+                "a": {"known_by_default": True, "exits": [{"to": "b", "position": "s"}]},
+                "b": {"known_by_default": True, "exits": [{"to": "a", "position": "s"}]},
+            }
+        }
+        validate_location_graph(config)
+
+
+class ExitSchemaTests(SimpleTestCase):
+    """The optional fields an exit may carry."""
+
+    def test_an_exit_with_only_a_destination_still_validates(self):
+        validate_location_graph(_one_location_with_exits([{"to": "b"}]))
+
+    def test_an_arrival_knot_without_travel_text_is_rejected(self):
+        with self.assertRaises(SystemConfigValidationError):
+            validate_location_graph(_one_location_with_exits([{"to": "b", "arrival_knot": "k"}]))
+
+    def test_travel_text_without_an_arrival_knot_is_rejected(self):
+        with self.assertRaises(SystemConfigValidationError):
+            validate_location_graph(_one_location_with_exits([{"to": "b", "travel_text": "You walk."}]))
+
+    def test_an_arrival_knot_and_travel_text_together_validate(self):
+        validate_location_graph(_one_location_with_exits([{"to": "b", "arrival_knot": "k", "travel_text": "You walk."}]))
+
+    def test_a_non_boolean_gate_is_rejected(self):
+        for field in ("sealed", "one_way", "show_when_blocked", "requires_known"):
+            with self.subTest(field=field), self.assertRaises(SystemConfigValidationError):
+                validate_location_graph(_one_location_with_exits([{"to": "b", field: "yes"}]))
+
+    def test_a_non_string_unlocked_by_is_rejected(self):
+        with self.assertRaises(SystemConfigValidationError):
+            validate_location_graph(_one_location_with_exits([{"to": "b", "unlocked_by": 7}]))
+
+
+class LocationArrivalTests(SimpleTestCase):
+    """A location's own `arrival_knot` and `arrival_text`."""
+
+    def _config(self, **hall: object) -> dict:
+        return {"locations": {"hall": {"known_by_default": True, **hall}}}
+
+    def test_an_arrival_knot_and_text_validate(self):
+        validate_location_graph(self._config(arrival_knot="hall", arrival_text="You come in."))
+
+    def test_an_arrival_knot_alone_validates(self):
+        validate_location_graph(self._config(arrival_knot="hall"))
+
+    def test_arrival_text_without_a_knot_is_rejected(self):
+        with self.assertRaises(SystemConfigValidationError):
+            validate_location_graph(self._config(arrival_text="You come in."))
+
+    def test_a_non_string_arrival_knot_is_rejected(self):
+        with self.assertRaises(SystemConfigValidationError):
+            validate_location_graph(self._config(arrival_knot=3))
+
+
+class ReturnExitTests(SimpleTestCase):
+    """add_missing_return_exits() fills in the journey back."""
+
+    def test_a_return_arrives_through_the_origin_arrival_knot(self):
+        config = {
+            "locations": {
+                "hall": {
+                    "known_by_default": True,
+                    "arrival_knot": "hall_knot",
+                    "arrival_text": "You go back in.",
+                    "exits": [{"to": "yard", "position": "s", "arrival_knot": "yard_knot", "travel_text": "Out."}],
+                },
+                "yard": {"known_by_default": True},
+            }
+        }
+        filled = add_missing_return_exits(config)
+        validate_location_graph(filled)
+        returning = filled["locations"]["yard"]["exits"][0]
+        self.assertEqual(returning["arrival_knot"], "hall_knot")
+        self.assertEqual(returning["travel_text"], "You go back in.")
+
+    def test_a_return_without_arrival_text_travels_silently(self):
+        config = {
+            "locations": {
+                "hall": {"known_by_default": True, "arrival_knot": "hall_knot", "exits": [{"to": "yard", "position": "s"}]},
+                "yard": {"known_by_default": True},
+            }
+        }
+        returning = add_missing_return_exits(config)["locations"]["yard"]["exits"][0]
+        self.assertEqual(returning["travel_text"], "")
+
+    def test_a_return_into_a_location_with_no_arrival_knot_has_none(self):
+        config = {
+            "locations": {
+                "hall": {"known_by_default": True, "exits": [{"to": "yard", "position": "s"}]},
+                "yard": {"known_by_default": True},
+            }
+        }
+        returning = add_missing_return_exits(config)["locations"]["yard"]["exits"][0]
+        self.assertNotIn("arrival_knot", returning)
+        self.assertNotIn("travel_text", returning)
+
+    def test_a_two_way_exit_gains_its_return(self):
+        config = {
+            "locations": {
+                "hall": {"known_by_default": True, "details": {"name": "Hall"}, "exits": [{"to": "yard", "position": "s", "label": "the yard"}]},
+                "yard": {"known_by_default": True, "details": {"name": "Yard"}},
+            }
+        }
+        filled = add_missing_return_exits(config)
+        returning = filled["locations"]["yard"]["exits"]
+        self.assertEqual(len(returning), 1)
+        self.assertEqual(returning[0]["to"], "hall")
+        self.assertEqual(returning[0]["position"], "n")
+        self.assertEqual(returning[0]["label"], "Hall")
+
+    def test_a_one_way_exit_gains_nothing(self):
+        config = {
+            "locations": {
+                "attic": {"known_by_default": True, "exits": [{"to": "cellar", "position": "down", "one_way": True}]},
+                "cellar": {"known_by_default": True},
+            }
+        }
+        filled = add_missing_return_exits(config)
+        self.assertEqual(filled["locations"]["cellar"].get("exits"), [])
+
+    def test_a_declared_return_is_never_overwritten(self):
+        config = {
+            "locations": {
+                "hall": {"known_by_default": True, "exits": [{"to": "yard", "position": "s"}]},
+                "yard": {"known_by_default": True, "exits": [{"to": "hall", "position": "n", "label": "the long way round"}]},
+            }
+        }
+        filled = add_missing_return_exits(config)
+        self.assertEqual(len(filled["locations"]["yard"]["exits"]), 1)
+        self.assertEqual(filled["locations"]["yard"]["exits"][0]["label"], "the long way round")
+
+    def test_an_exit_with_no_position_gains_nothing(self):
+        config = {
+            "locations": {
+                "hall": {"known_by_default": True, "exits": [{"to": "yard", "label": "walk over"}]},
+                "yard": {"known_by_default": True},
+            }
+        }
+        self.assertEqual(add_missing_return_exits(config)["locations"]["yard"].get("exits"), [])
+
+    def test_the_original_config_is_not_modified(self):
+        config = {
+            "locations": {
+                "hall": {"known_by_default": True, "exits": [{"to": "yard", "position": "s"}]},
+                "yard": {"known_by_default": True},
+            }
+        }
+        add_missing_return_exits(config)
+        self.assertNotIn("exits", config["locations"]["yard"])
+
+    def test_the_filled_config_still_validates(self):
+        config = {
+            "locations": {
+                "hall": {"known_by_default": True, "exits": [{"to": "yard", "position": "s"}]},
+                "yard": {"known_by_default": True},
+            }
+        }
+        validate_location_graph(add_missing_return_exits(config))

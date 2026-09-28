@@ -17,7 +17,9 @@ from pathlib import Path as FilePath
 from unittest import TestCase as SimpleTestCase
 
 from ink_engine import engine
-from ink_engine.engine import InkRuntimeState, load_story_root
+from ink_engine.binding import resolve_bindings
+from ink_engine.discovery import discover_plugins
+from ink_engine.engine import InkRuntimeState, load_list_defs, load_story_root
 
 FIXTURES = FilePath(__file__).parent / "fixtures"
 
@@ -300,6 +302,40 @@ class RefreshChoicesTests(SimpleTestCase):
         fresh = InkRuntimeState(load_story_root(_load("refresh_choices.json")))
         fresh.refresh_choices()
         self.assertEqual(fresh.current_choices, [])
+
+
+class RefreshChoicesGuideExampleTests(SimpleTestCase):
+    """The bindings guide's Section 4.1 example (refresh_lantern.ink), run as
+    the guide runs it, so the documented output cannot drift."""
+
+    def setUp(self):
+        """Start the story with the inventory plugin, then give the lantern and refresh."""
+        data = _load("refresh_lantern.ink.json")
+        story_functions = resolve_bindings(discover_plugins(["ink_engine.engine_plugins"]), ["inventory"], {})
+        self.state = engine.start_new_story(load_story_root(data), load_list_defs(data), engine_bindings=story_functions)
+        self.choices_before = [choice.text for choice in self.state.current_choices]
+        self.visits_before = self.state.globals["visits"]
+        self.text_before = self.state.last_turn_text
+        self.turn_count_before = self.state.turn_count
+        story_functions["give_item_to"]("player", "lantern")
+        self.state.refresh_choices()
+
+    def test_the_lantern_choice_appears_after_the_refresh(self):
+        """Only "Go back up" before; the lantern choice joins it after."""
+        self.assertEqual(self.choices_before, ["Go back up"])
+        self.assertEqual([choice.text for choice in self.state.current_choices], ["Light the lantern", "Go back up"])
+
+    def test_the_turn_text_and_turn_count_are_unchanged(self):
+        """The refresh is not a turn."""
+        self.assertEqual(self.state.last_turn_text, self.text_before)
+        self.assertEqual(self.state.last_turn_text.strip(), "The cellar is dark.")
+        self.assertEqual(self.state.turn_count, self.turn_count_before)
+
+    def test_the_turns_assignment_runs_again(self):
+        """`visits` goes from 1 to 2, as the guide's output shows."""
+        self.assertEqual(self.visits_before, 1)
+        # FIXME: the known refresh_choices() re-run defect; this becomes 1 when refresh stops repeating the turn's side effects.
+        self.assertEqual(self.state.globals["visits"], 2)
 
 
 class ChoiceStartContentTests(SimpleTestCase):

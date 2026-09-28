@@ -127,3 +127,22 @@ class TunnelReturnOverrideTests(SimpleTestCase):
         state.continue_story()
         self.assertEqual(state.tunnel_stack, [])
         self.assertEqual(state.eval_stack, [])
+
+
+class VariableTunnelTests(SimpleTestCase):
+    """`-> where ->` — a tunnel whose target is a divert-target variable or
+    parameter (variable_tunnel.ink). Transcript captured from the local
+    inklecate build's -p output."""
+
+    def test_the_tunnel_runs_its_target_and_returns(self):
+        """The tunnel runs its target and returns."""
+        state = InkRuntimeState(load_story_root(_load("variable_tunnel.ink.json")))
+        text = state.continue_story()
+        self.assertEqual(text, "Before.\nInside.\nMiddle.\nInside.\nAfter.\n")
+        self.assertTrue(state.done)
+
+    def test_the_tunnel_stack_is_empty_afterwards(self):
+        """The tunnel stack is empty afterwards."""
+        state = InkRuntimeState(load_story_root(_load("variable_tunnel.ink.json")))
+        state.continue_story()
+        self.assertEqual(state.tunnel_stack, [])
