@@ -31,3 +31,11 @@ Hello, {name}.
 === counted ===
 Counted {counted} times.
 + [Again] -> counted
+
+=== arrive(-> target) ===
+Arriving.
+-> target
+
+=== kitchen_by_target ===
+The kitchen, reached by target.
+-> END

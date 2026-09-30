@@ -9,9 +9,9 @@ to get wrong on your own, which is why this module exists.
 like a divert target and only one is. A knot name as a plain string
 fails loudly at runtime ("the variable didn't contain a divert target,
 it contained 'foo'"). A `DivertTargetValue`, the literal token as it
-appears in compiled JSON, fails *silently*: the divert does nothing and
-the story stays where it was. `build_divert_target()` returns the third,
-which works.
+appears in compiled JSON, does not move the story: the divert goes
+nowhere, and a turn left with no choices raises `StoryRuntimeError`.
+`build_divert_target()` returns the third, which works.
 
 **The move has to be a real choice, and the choice must be unguarded.**
 Taking it advances `turn_count` and the visit counts exactly as a player
@@ -41,9 +41,9 @@ from dataclasses import dataclass
 
 from ink_engine.engine import (
     InkRuntimeState,
-    Path,
     ResolvedDivertTarget,
-    resolve_path,
+    UnknownDivertTargetError,
+    resolve_divert_target,
 )
 
 #: The globals a story's movement knot reads. A game that names its own
@@ -84,12 +84,12 @@ def build_divert_target(state: InkRuntimeState, knot_name: str) -> ResolvedDiver
 
     Raises:
         TravelError: If the story has no such knot. Raised here because
-            the alternative is a divert that silently does nothing.
+            the alternative is a divert that goes nowhere.
     """
-    container = resolve_path(state.root, Path.parse(knot_name))
-    if container is None:
-        raise TravelError(f"story has no knot named '{knot_name}'")
-    return ResolvedDivertTarget(container=container)
+    try:
+        return resolve_divert_target(state.root, knot_name)
+    except UnknownDivertTargetError as error:
+        raise TravelError(str(error)) from error
 
 
 def take_exit(

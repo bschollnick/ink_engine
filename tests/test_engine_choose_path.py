@@ -18,6 +18,7 @@ from ink_engine.engine import (
     load_story_root,
     start_new_story,
 )
+from ink_engine.travel import build_divert_target
 
 FIXTURES = FilePath(__file__).parent / "fixtures"
 STORY = json.loads((FIXTURES / "choose_path.ink.json").read_text(encoding="utf-8"))
@@ -108,6 +109,12 @@ class ChoosePathTests(SimpleTestCase):
             with self.subTest(argument=argument), self.assertRaises(TypeError):
                 self.state.choose_path("greet", argument)
         self.assertEqual(self.state.to_dict(), before)
+
+    def test_a_resolved_divert_target_argument_reaches_a_divert_target_parameter(self):
+        """`choose_path("arrive", build_divert_target(state, "kitchen_by_target"))` -- inkle's own `ChoosePathString` takes no such argument type; this engine's addition, so a test harness can enter a knot declaring `-> target` the same way the story itself would."""
+        target = build_divert_target(self.state, "kitchen_by_target")
+        self.state.choose_path("arrive", target)
+        self.assertEqual(self.state.continue_story(), "Arriving.\nThe kitchen, reached by target.\n")
 
     def test_every_accepted_type_reaches_the_knot(self):
         """int, float, bool and string print as Ink prints them."""

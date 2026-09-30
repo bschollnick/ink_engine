@@ -1,7 +1,7 @@
 # Ink: when it compiles but is wrong
 
 **Date Created:** 2026-09-15  
-**Last Updated:** 2026-09-20  
+**Last Updated:** 2026-09-28  
 **Last Reviewed:** 2026-09-20
 
 This document lists the issues that can arise when authoring Ink code.
@@ -612,7 +612,8 @@ the Section 1.1 hang. **Pin the story seed** (the runtime seeds from the wall cl
 by default) or failures are unreproducible.
 
 A **dead end** — no choices offered while text is still pending — is a real
-defect, distinct from a proper ending.
+defect, distinct from a proper ending. `ink_engine` raises `StoryRuntimeError` on it,
+as inklecate stops with a RUNTIME ERROR.
 
 ### 2.2 Debugging a hang
 

@@ -17,6 +17,7 @@ from unittest import TestCase as SimpleTestCase
 from ink_engine.engine import (
     InkPathError,
     InkRuntimeState,
+    ResolvedDivertTarget,
     apply_native_function,
     load_story_root,
 )
@@ -70,6 +71,35 @@ class ConditionalChoiceTests(SimpleTestCase):
         text = state.continue_story()
         self.assertEqual(text, "A door.\n")
         self.assertEqual(state.current_choices, [])
+
+
+class DivertTargetEqualityTests(SimpleTestCase):
+    """`==` compares divert targets: literals, a VAR and a knot parameter
+    (NativeFunctionCall.cs's DivertTarget table). The transcript is
+    inklecate's `-p` output for divert_target_equality.ink."""
+
+    def test_matches_the_inklecate_transcript(self):
+        """Literal, VAR and parameter comparisons print what inklecate prints."""
+        state = InkRuntimeState(load_story_root(_load("divert_target_equality.ink.json")))
+        self.assertEqual(state.continue_story(), "A T\nB T\nC F\nD T\nE T\n")
+
+    def test_control_another_operator_is_undefined(self):
+        """Control: only == and != are defined, so "+" raises."""
+        target = ResolvedDivertTarget(container=None)
+        self.assertIs(apply_native_function("!=", [target, target]), False)
+        with self.assertRaises(TypeError):
+            apply_native_function("+", [target, target])
+
+
+class StringContainsTests(SimpleTestCase):
+    """`?` and `!?` test for a substring (NativeFunctionCall.cs's string Has
+    and Hasnt). The transcript is inklecate's `-p` output for
+    string_contains.ink."""
+
+    def test_matches_the_inklecate_transcript(self):
+        """Contains, does not contain, an empty string, and `!?`."""
+        state = InkRuntimeState(load_story_root(_load("string_contains.ink.json")))
+        self.assertEqual(state.continue_story(), "A T\nB F\nC F\nD T\n")
 
 
 class NativeFunctionTests(SimpleTestCase):
@@ -159,6 +189,6 @@ class NativeFunctionTests(SimpleTestCase):
         self.assertEqual(apply_native_function("+", ["Score: ", 5]), "Score: 5")
 
     def test_string_subtraction_is_not_defined(self):
-        """String "-" has no defined operation (only +, ==, != exist for strings)."""
+        """String "-" has no defined operation (strings have +, ==, !=, ? and !?)."""
         with self.assertRaises(InkPathError):
             apply_native_function("-", ["a", "b"])

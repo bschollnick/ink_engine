@@ -1,10 +1,10 @@
 # Tests
 
 **Date Created:** 2026-09-20  
-**Last Updated:** 2026-09-26  
+**Last Updated:** 2026-09-28  
 **Last Reviewed:** 2026-09-20
 
-51 files, 1294 collected tests. Run them all:
+52 files, 1310 collected tests. Run them all:
 
 ```bash
 poetry run python -m pytest tests/ -q
@@ -17,9 +17,9 @@ the expected transcript is captured from a real `inklecate` build's `-p`
 play-mode output *before* any assertion is written, then the same story
 is driven turn by turn through `continue_story()` and `choose()`. When
 this engine and inkle's disagree, inkle's is right and this engine is
-fixed. Eleven files carry transcripts captured this way.
+fixed. Fourteen files carry transcripts captured this way.
 
-**Stories are compiled, not mocked.** `tests/fixtures/` holds 150 files:
+**Stories are compiled, not mocked.** `tests/fixtures/` holds 198 files:
 `.ink` sources paired with the `.ink.json` that `inklecate` produced from
 them. A test that needs a story reads one of those, so what is under test
 is the same JSON a shipped game would carry.
@@ -51,10 +51,11 @@ run stays green offline.
 | `test_engine_characters.py` | The characters plugin: per-character storage and known-state. Guards that location is *not* stored here but read through to occupancy. |
 | `test_engine_choices.py` | Diverts and `[choice-only]` choices, driven turn by turn against compiled JSON with inklecate transcripts. |
 | `test_engine_choose_path.py` | `choose_path()`, standard Ink's `ChoosePathString`: a jump to a knot, a stitch, or a knot with arguments that resets the call stack, against inklecate transcripts of the same diverts. |
+| `test_engine_end_of_content.py` | A turn that runs out of content with no choice: `StoryRuntimeError` in inklecate's two wordings where inklecate stops, and no error where it plays on (a thread, a function, the end of the top level). |
 | `test_engine_costs.py` | The cost table plugin: what an action costs and whether it can be afforded. |
 | `test_engine_external_and_validation.py` | `EXTERNAL` fallback resolution and whole-story validation: `find_unbound_externals()`, `UnboundExternalError`. |
 | `test_engine_functions_threads.py` | Ink functions and threads, end to end against compiled JSON with inklecate transcripts. |
-| `test_engine_interlude.py` | `start_interlude()`: a knot run as a tunnel mid-turn, returning to the interrupted turn's choices, surviving a save, and discarding them when the story leaves or ends. |
+| `test_engine_interlude.py` | `start_interlude()`: a knot run as a tunnel mid-turn, returning to the interrupted turn's choices, surviving a save, and discarding them when the story leaves or ends; with a `BindingSandbox`, re-evaluating those choices against what the interlude changed, without repeating the turn. |
 | `test_engine_lists.py` | Ink `LIST`s end to end, plus `apply_native_function()` for the LIST operator family. |
 | `test_engine_location_graph_buildings.py` | `location_graph.buildings()`: a map grouped into a tree of buildings by its entrances. |
 | `test_engine_location_graph_config.py` | The closed config schema the location graph declares, tested through `validate_location_graph()`. |

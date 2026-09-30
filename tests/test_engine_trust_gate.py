@@ -29,7 +29,11 @@ import json
 from pathlib import Path as FilePath
 from unittest import TestCase
 
-from ink_engine.engine import InkRuntimeState, load_story_root
+from ink_engine.engine import (
+    DIVERT_TO_KNOT_EXTERNAL_NAME,
+    InkRuntimeState,
+    load_story_root,
+)
 
 FIXTURES = FilePath(__file__).parent / "fixtures"
 
@@ -72,7 +76,9 @@ class UntrustedExternalCallAlwaysUsesFallbackTests(TestCase):
         genuinely distinguishable by more than just the resulting value."""
         compiled_json = _load("external_dispatch_proof.ink.json")
         state = InkRuntimeState(load_story_root(compiled_json), engine_bindings=_bindings_for(is_engine_trusted=False))
-        self.assertEqual(state.engine_bindings, {})
+        # The engine's own reserved `divert_to_knot` binding is always
+        # present, regardless of trust; no application binding leaked in.
+        self.assertEqual(set(state.engine_bindings), {DIVERT_TO_KNOT_EXTERNAL_NAME})
         state.continue_story()
         self.assertEqual(state.globals.get("ran"), True)
 

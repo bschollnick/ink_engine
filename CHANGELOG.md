@@ -1,7 +1,7 @@
 # Release Notes
 
 **Date Created:** 2026-09-20  
-**Last Updated:** 2026-09-26  
+**Last Updated:** 2026-09-30  
 **Last Reviewed:** 2026-09-20
 
 `ink_engine` began inside QuickBBS, a photo gallery application, as its
@@ -16,9 +16,95 @@ here from commit history so the path to 1.0.0 is legible.
 
 ## Unreleased
 
+- Fixed: `?` and `!?` on strings test for a substring (`{ t ? "sex" }`), as in
+  inkle's runtime. Both used to evaluate as false.
+- Fixed: `==` and `!=` on divert targets (`{ target == -> knot }`) compare
+  the knot they address, as in inkle's runtime. Both used to evaluate as
+  false, because the operator raised internally and pushed no result.
+- `InkRuntimeState.evaluate_function(function_name, *arguments)`: calls an
+  `== function ==` and returns `(result, text_output)`, the equivalent of
+  inkle's `Story.EvaluateFunction`. It runs on a discarded copy of the
+  state, as `knot_choices()` does, so globals, visit counts, the turn
+  count, `output`, the current choices and the call/tunnel stacks are all
+  unchanged afterward — a deliberate divergence from inkle's own
+  `EvaluateFunction`, which runs on the live story and leaves a function's
+  global reassignment in place. A name that resolves to a knot instead of
+  a function raises `NotAFunctionError`, naming the real cause rather than
+  inkle's generic exception for the same case (which also leaves the live
+  story corrupted, confirmed by running `Ink.Runtime.dll` directly); an
+  unknown name raises `InkPathError`. `choose_path()`'s argument-type check
+  is shared with the new method as `_validate_path_call_arguments()`.
+  Fixed alongside it: a function's own trailing newline is no longer
+  trimmed when it returns to no real caller position (only `{fn()}`
+  called mid-line needs that trim, to keep the caller's line unbroken).
+- Fixed: a choice tag interpolating a function call (`* [Go # image:
+  {pick()}]`) whose body evaluated a comparison or a string
+  concatenation showed the operator tokens in the tag's text instead of
+  the returned value (`image: ==\nb.jpg` instead of `image: b.jpg`).
+  `_handle_token_in_capture` captured any non-control-marker token into
+  an open choice tag's buffer before the depth-gated check meant to
+  route an operator/eval-stack token to its real handler ever ran, and
+  `_handle_text_leaf` routed a text leaf into that same buffer even
+  while a deeper `str/../str` capture (a function's own return-value
+  string) should have received it instead. A function frame popping
+  mid-tag also only ever trimmed `self.output`, so a stray structural
+  newline the function's body emitted stayed in whichever buffer it
+  actually landed in.
+- Fixed: a turn that runs out of content without `-> DONE`, `-> END` or a
+  choice raises `StoryRuntimeError`, as inklecate stops with a RUNTIME ERROR.
+  The message names where the content ran out and gives inklecate's
+  wording: "unexpectedly reached end of content. Do you need a '->->' to
+  return from a tunnel?" with a tunnel open, otherwise "ran out of content.
+  Do you need a '-> DONE' or '-> END'?". Content that runs out inside a
+  thread or a function, or at the end of the top-level content, is not an
+  error. Such a turn used to stop silently with no choices and `done`
+  False. `StoryRuntimeError` is the base of `UnboundExternalError`, so an
+  application can catch every runtime error the story raises in one clause.
+  `knot_choices()` lists no choices for a knot that runs out that way.
+- `BindingSandbox(state, bind)`: passed as `engine_bindings`, it supplies
+  `bind(state)` as the bindings, and an interlude's returning `->->` then
+  re-evaluates the interrupted turn's choices against what the interlude
+  changed. The turn runs again from its start on copies of the story state
+  and the binding state, with the interlude's changes to globals, visit
+  counts and binding state held fixed; only its choices are kept. A state
+  with a sandbox also saves its turn's start (`turn_start`, and
+  `resumed_turn` after an interlude returns; each interlude's `start`), as
+  differences from the rest of the save and from the binding state. A save
+  without them, or a state without a sandbox, returns the choices unchanged.
+  `InkRuntimeState.from_dict()` is typed to return the class it is called on.
+- Fixed: `-> END` ends the story with no choices wherever it is reached: in
+  a thread, a nested thread, a thread started inside a tunnel, or the main
+  flow after a thread offered a choice. It also unwinds the tunnels and
+  function calls. The choices threads had already offered used to stay on
+  offer, and a thread's `-> END` let the main flow carry on. `-> DONE` is
+  unchanged.
+- Fixed: a tunnel (`-> knot(arguments) ->`) has its own temp scope, as in
+  inkle's runtime. A tunnel parameter or temp used to overwrite the caller's
+  temp of the same name. `tunnel_stack` now holds `CallFrame`s (return
+  address and temps), and a save writes each as one; a save holding bare
+  return addresses still loads, with the innermost tunnel starting from the
+  saved temps.
+- Fixed: a thread that reaches `->->` with no tunnel to return to ends the
+  story, as the same statement does outside a thread. It used to loop
+  forever, which made a recursive `<-` over a LIST whose last level ends in
+  `->->` never return when its knot was entered with `choose_path()`.
+  inklecate reports a runtime error there.
+- Fixed: a choice generated inside a thread (`<- knot(arguments)`) keeps the
+  temps, arguments and tunnel returns of that thread, in its label and after
+  it is chosen, as `choice.threadAtGeneration` does in inkle's runtime. Every
+  such choice used to see the last thread's values, and a thread's temps and
+  open tunnels leaked into the flow that started it. A saved choice carries
+  its thread under `thread_at_generation`; one saved without it keeps the
+  live call stack when chosen.
 - Fixed: literal text or a string value that spells a control marker
   ("done", "end", "ev", "str", "#", ...) is now text. `~ temp a = "done"`
   used to end the story at that line.
+- `choose_path()` accepts a `ResolvedDivertTarget` argument (build one with
+  `ink_engine.travel.build_divert_target`), for a knot whose own parameter
+  is a divert target (`=== knot(-> target) ===`). This is an engine
+  addition beyond inkle's own `ChoosePathString`, which takes no such
+  argument type; there was previously no way to enter such a knot directly
+  and supply its divert-target parameter from outside the story.
 - Scheduling: `EffectKind.RUN_STORY_HANDLER` and the binding
   `schedule_story_handler(handler, argument, minutes, event_id)` queue a
   handler the game registers by name, for a delayed change that is more

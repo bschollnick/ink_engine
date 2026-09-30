@@ -5,10 +5,13 @@ outside the story, then returning to the interrupted turn's choices
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path as FilePath
+from typing import Any
 from unittest import TestCase as SimpleTestCase
 
 from ink_engine.engine import (
+    BindingSandbox,
     InkRuntimeState,
     InterludeError,
     load_story_root,
@@ -159,3 +162,105 @@ class InterludeRefusalTests(SimpleTestCase):
         _choose(state, "Leave")
         with self.assertRaises(InterludeError):
             state.start_interlude("quick_word")
+
+
+REEVALUATION_STORY = json.loads((FIXTURES / "interlude_reevaluation.ink.json").read_text(encoding="utf-8"))
+REEVALUATION_ROOT = load_story_root(REEVALUATION_STORY)
+#: The hall's choices before the interlude, with the lamp held.
+HALL_CHOICES = ["Unlock the door", "Buy a drink", "First look around", "Light the lamp", "Polish the lamp", "Wait"]
+#: inklecate's `-p` output for the hall with the key taken and the rope given
+#: (interlude_reevaluation.ink with `has_key = false`, `has_rope = true`).
+#: The lamp is used up, so neither lamp choice is offered.
+HALL_CHOICES_AFTER = ["Climb the rope", "Buy a drink", "First look around", "Wait"]
+
+
+def _item_bindings(state: dict[str, Any]) -> dict[str, Callable[..., Any]]:
+    """Bindings over one binding-state dict: an item list and a visit log."""
+
+    def use_item(name: str) -> int:
+        state["items"].remove(name)
+        return 0
+
+    def log_visit() -> int:
+        state["logged"] += 1
+        return 0
+
+    return {"has_item": lambda name: name in state["items"], "use_item": use_item, "log_visit": log_visit}
+
+
+def _hall(*, with_sandbox: bool = True) -> tuple[InkRuntimeState, dict[str, Any]]:
+    """Play the hall's turn, with the lamp held; return the state and the live binding state."""
+    binding_state: dict[str, Any] = {"items": ["lamp"], "logged": 0}
+    state = start_new_story(
+        REEVALUATION_ROOT,
+        {},
+        engine_bindings=BindingSandbox(state=binding_state, bind=_item_bindings) if with_sandbox else _item_bindings(binding_state),
+    )
+    return state, binding_state
+
+
+class InterludeReevaluationTests(SimpleTestCase):
+    """With a `binding_sandbox`, the interrupted turn's choices are re-evaluated
+    when the interlude returns (interlude_reevaluation.ink): the interlude takes
+    the key, gives a rope and uses up the lamp through a binding."""
+
+    def test_the_choices_reflect_what_the_interlude_changed(self):
+        """A choice gated on the key or the lamp goes, one in a threaded block gated on the rope comes."""
+        state, _binding_state = _hall()
+        self.assertEqual(_labels(state), HALL_CHOICES)
+        state.start_interlude("follower_action")
+        self.assertEqual(_labels(state), HALL_CHOICES_AFTER)
+
+    def test_the_turn_s_effects_happen_once(self):
+        """The replay writes no global, binding state, visit count, turn count or text."""
+        state, binding_state = _hall()
+        turn_count, visit_counts = state.turn_count, dict(state.visit_counts)
+        text = state.start_interlude("follower_action")
+        self.assertEqual(binding_state, {"items": [], "logged": 1})
+        self.assertEqual((state.globals["gold"], state.globals["visits_here"]), (5, 1))
+        self.assertEqual(state.turn_count, turn_count + 1)
+        self.assertEqual(text, "The follower takes your key and lamp, and hands you a rope.\n")
+        self.assertEqual({key: state.visit_counts[key] for key in visit_counts}, visit_counts)
+
+    def test_without_a_sandbox_the_choices_come_back_unchanged(self):
+        """The behaviour of a state given no `binding_sandbox`."""
+        state, binding_state = _hall(with_sandbox=False)
+        state.start_interlude("follower_action")
+        self.assertEqual(_labels(state), HALL_CHOICES)
+        self.assertEqual(binding_state, {"items": [], "logged": 1})
+
+    def test_a_save_mid_interlude_still_re_evaluates(self):
+        """Saved inside an application's save while the interlude offers its own choice, loaded, then returned."""
+        state, binding_state = _hall()
+        state.start_interlude("follower_chat")
+        self.assertEqual(_labels(state), ["Let them"])
+        restored_binding_state = json.loads(json.dumps(binding_state))
+        # An application saves its own keys beside the engine's.
+        saved = {**state.to_dict(), "engine_state": binding_state, "transcript": [{"text": "In the hall."}]}
+        restored = InkRuntimeState.from_dict(
+            REEVALUATION_ROOT,
+            json.loads(json.dumps(saved)),
+            {},
+            BindingSandbox(state=restored_binding_state, bind=_item_bindings),
+        )
+        _choose(restored, "Let them")
+        self.assertEqual(_labels(restored), HALL_CHOICES_AFTER)
+        self.assertEqual(restored_binding_state, {"items": [], "logged": 1})
+        self.assertEqual((restored.globals["gold"], restored.globals["visits_here"]), (5, 1))
+
+    def test_an_older_save_offers_the_choices_unchanged(self):
+        """A save without turn records loads; its interlude returns the choices as they were."""
+        state, binding_state = _hall()
+        saved = json.loads(json.dumps(state.to_dict()))
+        del saved["turn_start"]
+        restored = InkRuntimeState.from_dict(REEVALUATION_ROOT, saved, {}, BindingSandbox(state=binding_state, bind=_item_bindings))
+        restored.start_interlude("follower_action")
+        self.assertEqual(_labels(restored), HALL_CHOICES)
+
+    def test_a_saved_turn_start_holds_no_records_of_its_own(self):
+        """The saved records are one level deep, so a save does not grow turn by turn."""
+        state, _binding_state = _hall()
+        state.start_interlude("follower_chat")
+        saved = json.loads(json.dumps(state.to_dict()))
+        for section in (saved["turn_start"], saved["interludes"][0]["start"]):
+            self.assertNotIn('"turn_start"', json.dumps(section))

@@ -4,7 +4,10 @@ InkRuntimeState is driven end-to-end against real compiled JSON
 (tests/fixtures/*.ink), with every expected transcript captured
 from the local inklecate build's -p play-mode transcript before any
 assertion was written (per the plan's standing validate-against-real-data
-rule).
+rule). `-p` play mode does not print choice tags, so a choice's expected
+`.tags` is instead captured by running the compiled JSON directly through
+inkle's own runtime (`Ink.Runtime.dll`, via a small driver program
+printing `Story.currentChoices[i].tags`), not the play-mode transcript.
 """
 
 from __future__ import annotations
@@ -289,6 +292,50 @@ class ChoiceTagTests(SimpleTestCase):
             del choice["tags"]
         restored = InkRuntimeState.from_dict(load_story_root(data), saved, data.get("listDefs", {}))
         self.assertEqual([choice.tags for choice in restored.current_choices], [[], [], [], []])
+
+
+class ChoiceTagFunctionCallTests(SimpleTestCase):
+    """A choice tag interpolating a function call
+    (choice_tag_function_call.ink).
+
+    Before the fix, a called function's own operator/eval-stack tokens
+    ("==", "+") and structural newlines leaked into the tag's captured
+    text as literal characters, instead of being evaluated or trimmed:
+    `_handle_token_in_capture` captured any non-control-marker token
+    into an open choice tag's buffer unconditionally, before the
+    depth-gated check meant to route those tokens to their real
+    handlers ever ran; and `_handle_text_leaf` routed a text leaf
+    straight into the choice tag's buffer even while a function's own
+    deeper `str/../str` return-value capture was the one that should
+    have received it.
+    """
+
+    def setUp(self):
+        """Run the story to its first turn, exposing all five choices."""
+        data = _load("choice_tag_function_call.ink.json")
+        self.state = engine.start_new_story(load_story_root(data), data.get("listDefs", {}))
+
+    def test_a_literal_return_value_is_unaffected(self):
+        """A function returning a plain string literal is unchanged."""
+        self.assertEqual(self.state.current_choices[0].tags, ["image: lit.jpg"])
+
+    def test_a_comparison_inside_the_called_function_does_not_leak_its_operator(self):
+        """`==` is evaluated, not captured as literal tag text."""
+        self.assertEqual(self.state.current_choices[1].tags, ["image: b.jpg"])
+
+    def test_a_concatenation_inside_the_called_function_does_not_leak_its_operator(self):
+        """`+` is evaluated, not captured as literal tag text."""
+        self.assertEqual(self.state.current_choices[2].tags, ["image: face.jpg"])
+
+    def test_a_function_calling_another_function_returns_only_the_final_value(self):
+        """A function returning another function's call sees only the
+        inner function's own return value, not its comparison operator."""
+        self.assertEqual(self.state.current_choices[3].tags, ["image: b.jpg"])
+
+    def test_a_functions_own_printed_text_precedes_its_return_value_in_the_tag(self):
+        """Real ink prints a called function's own text plus its return
+        value, with no separator inserted between them."""
+        self.assertEqual(self.state.current_choices[4].tags, ["image: Side effect.noisy.jpg"])
 
 
 class ChoiceTagVariableTests(SimpleTestCase):

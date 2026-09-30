@@ -146,3 +146,44 @@ class VariableTunnelTests(SimpleTestCase):
         state = InkRuntimeState(load_story_root(_load("variable_tunnel.ink.json")))
         state.continue_story()
         self.assertEqual(state.tunnel_stack, [])
+
+
+class TunnelTempScopeTests(SimpleTestCase):
+    """A tunnel has its own temp scope (tunnel_temp_scope.ink,
+    tunnel_choice_scope.ink). Transcripts copied from the local inklecate
+    build's -p output."""
+
+    def test_a_tunnel_parameter_does_not_overwrite_the_caller_s_temp(self):
+        """Covers a parameter, a nested tunnel declaring the same name, and a
+        `ref` argument to a temp declared inside the tunnel."""
+        state = InkRuntimeState(load_story_root(_load("tunnel_temp_scope.ink.json")))
+        self.assertEqual(
+            state.continue_story(),
+            "Inside t: x is tunnel, y is 2.\n"
+            "After t: x is caller.\n"
+            "Inside t: x is nested, y is 2.\n"
+            "Back in outer: x is outer.\n"
+            "After outer: x is caller.\n",
+        )
+
+    def test_a_choice_inside_a_tunnel_returns_to_the_caller_s_scope(self):
+        """Choosing a choice offered inside the tunnel, then `->->`, reads the caller's own temp."""
+        state = InkRuntimeState(load_story_root(_load("tunnel_choice_scope.ink.json")))
+        state.continue_story()
+        self.assertEqual([choice.text for choice in state.current_choices], ["Answer asked"])
+        state.choose(0)
+        self.assertEqual(state.continue_story(), "You answer asked.\nAfter ask: x is caller.\n")
+
+
+class TunnelReturnWithoutTunnelInThreadTests(SimpleTestCase):
+    """A thread reaching `->->` with no tunnel to return to
+    (thread_tunnel_return_without_tunnel.ink). inklecate stops with a
+    runtime error after "Start."; this engine ends the story there, as it
+    does for the same statement outside a thread."""
+
+    def test_the_story_ends_instead_of_looping(self):
+        """The thread stops; the main flow's own choice is never reached."""
+        state = InkRuntimeState(load_story_root(_load("thread_tunnel_return_without_tunnel.ink.json")))
+        self.assertEqual(state.continue_story(), "Start.\n")
+        self.assertEqual(state.current_choices, [])
+        self.assertTrue(state.done)

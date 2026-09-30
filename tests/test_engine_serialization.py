@@ -246,6 +246,93 @@ class MissingContainerDegradationTests(SimpleTestCase):
         self.assertEqual(state.current_choices, [])
 
 
+class ThreadChoiceRoundTripTests(SimpleTestCase):
+    """A choice generated in a thread keeps its own temps, arguments and
+    tunnel returns through a save. Expected text copied from the local
+    inklecate build's `-p` output."""
+
+    def _saved(self, name: str) -> InkRuntimeState:
+        data = _load(name)
+        state = InkRuntimeState(load_story_root(data), load_list_defs(data))
+        state.continue_story()
+        return _round_trip(state, load_story_root(data), load_list_defs(data))
+
+    def test_each_thread_choice_survives_a_save(self):
+        """Each restored choice continues with its own thread's values."""
+        cases = {
+            "thread_temps.ink.json": [f"You pick {which}." for which in ("zeta", "epsilon", "delta", "gamma", "beta", "alpha")],
+            "thread_tunnel.ink.json": ["You chat with Ann.\nAfter chatting with Ann.", "You chat with Bo.\nAfter chatting with Bo."],
+        }
+        for name, outcomes in cases.items():
+            for index, expected in enumerate(outcomes):
+                with self.subTest(fixture=name, choice=index + 1):
+                    restored = self._saved(name)
+                    restored.choose(index)
+                    self.assertEqual(restored.continue_story().rstrip("\n"), expected)
+
+    def test_a_save_whose_choices_carry_no_thread_still_loads(self):
+        """What a save from before choices carried their thread looks like."""
+        data = _load("thread_temps.ink.json")
+        state = InkRuntimeState(load_story_root(data), load_list_defs(data))
+        state.continue_story()
+        snapshot = json.loads(json.dumps(state.to_dict()))
+        for choice in snapshot["current_choices"]:
+            del choice["thread_at_generation"]
+        restored = InkRuntimeState.from_dict(load_story_root(data), snapshot, load_list_defs(data))
+        self.assertEqual([choice.text for choice in restored.current_choices], [choice.text for choice in state.current_choices])
+        self.assertTrue(all(choice.thread_at_generation is None for choice in restored.current_choices))
+        restored.choose(6)
+        self.assertEqual(restored.continue_story(), "")
+
+
+class TunnelScopeRoundTripTests(SimpleTestCase):
+    """A save taken inside a tunnel keeps the tunnel's own temps apart from
+    the caller's (tunnel_choice_scope.ink; inklecate prints "You answer
+    asked." then "After ask: x is caller.")."""
+
+    def _stopped_in_tunnel(self) -> tuple[InkRuntimeState, dict]:
+        data = _load("tunnel_choice_scope.ink.json")
+        state = InkRuntimeState(load_story_root(data))
+        state.continue_story()
+        return state, data
+
+    def test_a_save_inside_a_tunnel_round_trips(self):
+        """The tunnel's temps and the caller's are each restored to their own scope."""
+        state, data = self._stopped_in_tunnel()
+        restored = _round_trip(state, load_story_root(data))
+        restored.choose(0)
+        self.assertEqual(restored.continue_story(), "You answer asked.\nAfter ask: x is caller.\n")
+
+    def test_a_save_from_before_tunnel_scopes_still_loads(self):
+        """An older save holds bare return pointers and one flat temp scope,
+        where the tunnel's parameter had already replaced the caller's."""
+        state, data = self._stopped_in_tunnel()
+        snapshot = json.loads(json.dumps(state.to_dict()))
+        snapshot["tunnel_stack"] = [frame["return_pointer"] for frame in snapshot["tunnel_stack"]]
+        snapshot["temps"] = {"x": "asked"}
+        for choice in snapshot["current_choices"]:
+            del choice["thread_at_generation"]
+        restored = InkRuntimeState.from_dict(load_story_root(data), snapshot)
+        self.assertEqual([frame.temps for frame in restored.tunnel_stack], [{"x": "asked"}])
+        restored.choose(0)
+        self.assertEqual(restored.continue_story(), "You answer asked.\nAfter ask: x is asked.\n")
+
+
+class EndedStoryRoundTripTests(SimpleTestCase):
+    """A story ended by END inside a thread in a tunnel stays ended, with no
+    choices, through a save (end_in_thread_in_tunnel.ink)."""
+
+    def test_an_ended_story_round_trips(self):
+        """The restored state is done, offers nothing and continues with no text."""
+        data = _load("end_in_thread_in_tunnel.ink.json")
+        state = InkRuntimeState(load_story_root(data))
+        state.continue_story()
+        restored = _round_trip(state, load_story_root(data))
+        self.assertTrue(restored.done)
+        self.assertEqual((restored.current_choices, restored.tunnel_stack), ([], []))
+        self.assertEqual(restored.continue_story(), "")
+
+
 class PersistedKeyContractTests(SimpleTestCase):
     """`to_dict()` output is a persisted format, not an internal detail.
 
@@ -296,6 +383,13 @@ class PersistedKeyContractTests(SimpleTestCase):
 
     def test_the_saved_key_set_is_exactly_what_hosts_persist(self):
         self.assertEqual(set(self._played().to_dict()), set(self.EXPECTED_KEYS))
+
+    def test_a_binding_sandbox_adds_only_the_turn_start(self):
+        """A state given a `BindingSandbox` also saves its turn's start."""
+        data = _load("variables.ink.json")
+        state = InkRuntimeState(load_story_root(data), load_list_defs(data), engine.BindingSandbox(state={}, bind=lambda _state: {}))
+        state.continue_story()
+        self.assertEqual(set(state.to_dict()), set(self.EXPECTED_KEYS) | {"turn_start"})
 
     def test_a_state_missing_every_optional_key_still_loads(self):
         """What an older save looks like: only what that version wrote.

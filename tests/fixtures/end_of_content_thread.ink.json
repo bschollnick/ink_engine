@@ -1,0 +1,1 @@
+{"inkVersion":21,"root":[["^Before.","\n","thread",{"->":"t"},"ev","str","^Own","/str","/ev",{"*":"0.c-0","flg":4},{"c-0":["^ ","end","\n",{"->":"0.g-0"},null],"g-0":["done",null]}],"done",{"t":["^Thread text.","\n",null]}],"listDefs":{}}

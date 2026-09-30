@@ -647,7 +647,9 @@ class OccupancyBindingTests(SimpleTestCase):
     def test_the_bindings_are_published_under_the_method_names(self):
         slot = CHARACTER_OCCUPANCY.init_state(None)
         bindings = CHARACTER_OCCUPANCY.bind(slot, {}, {})
-        self.assertEqual(sorted(bindings), ["assigned_location", "is_anywhere", "is_at", "is_with", "previous_location", "set_location", "where_is", "who_is_at"])
+        self.assertEqual(
+            sorted(bindings), ["assigned_location", "is_anywhere", "is_at", "is_with", "previous_location", "set_location", "where_is", "who_is_at"]
+        )
 
     def test_set_location_clears_with_an_empty_string(self):
         slot = CHARACTER_OCCUPANCY.init_state(None)

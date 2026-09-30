@@ -22,6 +22,7 @@ from ink_engine.engine import (
     DivertTargetValue,
     InkRuntimeState,
     Path,
+    StoryRuntimeError,
     load_story_root,
 )
 from ink_engine.travel import TravelError, build_divert_target, take_exit
@@ -105,14 +106,15 @@ class DivertTargetTests(SimpleTestCase):
         self.assertIn("The bar is empty.", state.continue_story())
 
     def test_a_divert_target_value_does_not_move_the_story(self):
-        """The silent failure this module exists to prevent, asserted as silent."""
+        """The failure this module exists to prevent: the divert goes nowhere and the turn runs out of content."""
         state = _story()
         state.globals["destination"] = DivertTargetValue(target_path=Path.parse("bar"))
         state.globals["travel_text"] = "South."
         state.choose(next(index for index, choice in enumerate(state.current_choices) if choice.text == "GO"))
-        text = state.continue_story()
-        self.assertIn("South.", text)
-        self.assertNotIn("The bar is empty.", text)
+        with self.assertRaisesRegex(StoryRuntimeError, "movement: ran out of content"):
+            state.continue_story()
+        self.assertIn("South.", state.last_turn_text)
+        self.assertNotIn("The bar is empty.", state.last_turn_text)
 
     def test_build_divert_target_refuses_a_name_the_story_does_not_have(self):
         state = _story()

@@ -10,10 +10,12 @@ rule).
 from __future__ import annotations
 
 import json
+import multiprocessing
+import time
 from pathlib import Path as FilePath
 from unittest import TestCase as SimpleTestCase
 
-from ink_engine.engine import InkRuntimeState, load_story_root
+from ink_engine.engine import InkRuntimeState, load_list_defs, load_story_root
 
 FIXTURES = FilePath(__file__).parent / "fixtures"
 
@@ -188,3 +190,187 @@ class FunctionEmittedTextTests(SimpleTestCase):
 
     def test_the_whole_transcript_matches(self):
         self.assertEqual(self.text, "Before MIDDLE after.\nLine two A\nB end.\n")
+
+
+def _play(name: str) -> InkRuntimeState:
+    """Load a fixture with its LIST definitions and run its first turn."""
+    data = _load(name)
+    state = InkRuntimeState(load_story_root(data), load_list_defs(data))
+    state.continue_story()
+    return state
+
+
+#: fixture: (choice labels, text printed after choosing each label, in order)
+THREAD_TRANSCRIPTS: dict[str, tuple[list[str], list[str]]] = {
+    # A thread that recursively threads itself, one temp per level.
+    "thread_temps.ink.json": (
+        [
+            "Pick zeta",
+            "Pick epsilon",
+            "Pick delta",
+            "Pick gamma",
+            "Pick beta",
+            "Pick alpha",
+            "Leave",
+        ],
+        [
+            "You pick zeta.",
+            "You pick epsilon.",
+            "You pick delta.",
+            "You pick gamma.",
+            "You pick beta.",
+            "You pick alpha.",
+            "",
+        ],
+    ),
+    # Threads inside threads, every level declaring the same temp name.
+    "thread_nested_temps.ink.json": (
+        [
+            "Inner A1 inner-A1",
+            "Inner A2 inner-A2",
+            "Outer A outer-A",
+            "Inner B1 inner-B1",
+            "Inner B2 inner-B2",
+            "Outer B outer-B",
+            "Main main",
+        ],
+        [
+            "Inner chose A1, x is inner-A1.",
+            "Inner chose A2, x is inner-A2.",
+            "Outer chose A, x is outer-A.",
+            "Inner chose B1, x is inner-B1.",
+            "Inner chose B2, x is inner-B2.",
+            "Outer chose B, x is outer-B.",
+            "Main chose, x is main.",
+        ],
+    ),
+    # A choice that diverts to a knot, passing the thread's argument
+    # (directly, and through a divert-target parameter).
+    "thread_divert_argument.ink.json": (
+        ["Go left", "Go right", "Walk north", "Walk south"],
+        ["You went left.", "You went right.", "You walked north.", "You walked south."],
+    ),
+    # A choice generated inside a tunnel inside a thread: `->->` must
+    # return into that thread, with its own argument.
+    "thread_tunnel.ink.json": (
+        ["Chat with Ann", "Chat with Bo", "Stay"],
+        ["You chat with Ann.\nAfter chatting with Ann.", "You chat with Bo.\nAfter chatting with Bo.", "You stay."],
+    ),
+}
+
+
+class ThreadChoiceKeepsItsOwnThreadTests(SimpleTestCase):
+    """Each choice generated in a thread keeps that thread's temps,
+    arguments and tunnel returns, as `choice.threadAtGeneration` does in
+    inkle's runtime. Transcripts copied from the local inklecate build's
+    `-p` output, one run per choice.
+    """
+
+    def test_each_choice_label_uses_its_own_thread(self):
+        """A choice's label reads the temps of the thread that generated it."""
+        for name, (labels, _outcomes) in THREAD_TRANSCRIPTS.items():
+            with self.subTest(fixture=name):
+                self.assertEqual([choice.text for choice in _play(name).current_choices], labels)
+
+    def test_each_choice_continues_in_its_own_thread(self):
+        """Choosing a choice resumes with its generating thread's temps, arguments and tunnel returns."""
+        for name, (_labels, outcomes) in THREAD_TRANSCRIPTS.items():
+            for index, expected in enumerate(outcomes):
+                with self.subTest(fixture=name, choice=index + 1):
+                    state = _play(name)
+                    state.choose(index)
+                    self.assertEqual(state.continue_story().rstrip("\n"), expected)
+
+    def test_a_thread_does_not_change_the_flow_that_started_it(self):
+        """The thread's temps and its open tunnel are its own: the main
+        flow's `x` is unchanged and no tunnel return leaks into it."""
+        state = _play("thread_nested_temps.ink.json")
+        self.assertEqual(state.temps, {"x": "main"})
+        state = _play("thread_tunnel.ink.json")
+        self.assertEqual(state.tunnel_stack, [])
+
+
+#: fixture: the text inklecate prints before the story ends
+END_CASES: dict[str, str] = {
+    # A thread ends after an earlier thread offered a choice.
+    "end_in_thread.ink.json": "Start.\nEnder text.\n",
+    # The same, inside a tunnel.
+    "end_in_thread_in_tunnel.ink.json": "Start.\nIn tunnel.\nEnder text.\n",
+    # A thread nested in a thread ends.
+    "end_in_nested_thread.ink.json": "Start.\nEnder text.\n",
+    # The main flow ends after a thread offered a choice.
+    "end_after_thread_choices.ink.json": "Start.\nMain text.\n",
+}
+
+
+class EndInsideAThreadTests(SimpleTestCase):
+    """`-> END` ends the whole story, with no choices, wherever it is reached.
+
+    Source: inkle's vendored runtime format (ink_JSON_runtime_format.md,
+    "end": ends the story flow, closes all threads, unwinds the call stack
+    and removes the choices already created). There is no C# in the
+    snapshot, so the expected text is inklecate's `-p` output for each
+    fixture, copied here: every case prints the text below and then offers
+    no choices.
+    """
+
+    def test_the_story_ends_with_no_choices(self):
+        """Nothing after END runs, and the choices already offered are removed."""
+        for name, text in END_CASES.items():
+            with self.subTest(fixture=name):
+                state = InkRuntimeState(load_story_root(_load(name)))
+                self.assertEqual(state.continue_story(), text)
+                self.assertEqual(state.current_choices, [])
+                self.assertTrue(state.done)
+
+    def test_the_tunnel_is_unwound(self):
+        """No tunnel frame is left to return to after END inside a tunnel's thread."""
+        state = InkRuntimeState(load_story_root(_load("end_in_thread_in_tunnel.ink.json")))
+        state.continue_story()
+        self.assertEqual((state.tunnel_stack, state.call_stack), ([], []))
+
+
+def _timed_turn(fixture: str, knot: str, results: multiprocessing.Queue) -> None:
+    """Run one turn of `fixture` (from `knot`, if given) and report its seconds and choice labels."""
+    data = _load(fixture)
+    state = InkRuntimeState(load_story_root(data), load_list_defs(data))
+    if knot:
+        state.choose_path(knot)
+    start = time.perf_counter()
+    state.continue_story()
+    results.put((time.perf_counter() - start, [choice.text for choice in state.current_choices]))
+
+
+class RecursiveThreadReturningFromATunnelTests(SimpleTestCase):
+    """A thread that recurses over a LIST and ends with `->->`
+    (thread_recursive_tunnel_return.ink), the pattern a game uses to offer
+    one choice per person present. Entered without a tunnel, the `->->` has
+    nothing to return to, and a thread that reached it used to loop forever.
+    Choice labels copied from the local inklecate build's `-p` output."""
+
+    #: Seconds. A turn of this story takes about a millisecond.
+    BOUND = 10.0
+
+    def _run(self, knot: str) -> tuple[float, list[str]]:
+        """Run the turn in a child process, so a turn that never returns fails instead of hanging the suite."""
+        results: multiprocessing.Queue = multiprocessing.Queue()
+        child = multiprocessing.Process(target=_timed_turn, args=("thread_recursive_tunnel_return.ink.json", knot, results))
+        child.start()
+        child.join(timeout=self.BOUND * 3)
+        if child.is_alive():
+            child.terminate()
+            child.join()
+            self.fail(f"the turn did not return within {self.BOUND * 3} seconds")
+        return results.get(timeout=self.BOUND)
+
+    def test_entered_as_a_tunnel_it_matches_inklecate_quickly(self):
+        """Tunnelled into from the story's start, as inklecate plays it."""
+        elapsed, choices = self._run("")
+        self.assertLess(elapsed, self.BOUND)
+        self.assertEqual(choices, ["Leave", "Pick epsilon", "Pick delta", "Pick gamma", "Pick beta", "Pick alpha"])
+
+    def test_entered_without_a_tunnel_it_returns(self):
+        """`choose_path()` straight into the recursion: inklecate reports a
+        runtime error at the `->->`; this engine ends the story there."""
+        elapsed, _choices = self._run("offers")
+        self.assertLess(elapsed, self.BOUND)

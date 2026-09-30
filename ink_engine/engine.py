@@ -38,6 +38,7 @@ import functools
 import math
 import threading
 from collections.abc import Callable, Iterable
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Self
 
@@ -107,13 +108,38 @@ def _one_turn_at_a_time(method: Callable[..., Any]) -> Callable[..., Any]:
     return guarded
 
 
-class UnboundExternalError(ValueError):
+class StoryRuntimeError(ValueError):
+    """Raised where inklecate stops a story with a RUNTIME ERROR.
+
+    Its message names the cause. For a story that runs out of content it
+    repeats inklecate's wording, after the path where the content ran out.
+    """
+
+
+class UnboundExternalError(StoryRuntimeError):
     """Raised when an EXTERNAL call cannot reach a bound Python callable.
 
     Two cases raise it. Unconditionally: the call has neither a binding
     nor a resolvable Ink fallback, matching inklecate's own runtime error.
     Under `strict_externals`: the call has no binding but does have a
     fallback, which would otherwise be taken silently.
+    """
+
+
+class NotAFunctionError(ValueError):
+    """Raised by `InkRuntimeState.evaluate_function()` when the named
+    container is a knot or stitch, not an `== function ==`.
+
+    A well-formed function always leaves via an explicit or implicit
+    `~ret` (the ink compiler refuses a divert inside one), so the call
+    frame `evaluate_function()` pushes always pops cleanly. A knot's
+    content instead reaches `-> DONE`/`-> END`, offers a choice, or runs
+    out of content, none of which pop that frame, and any of which raises
+    this instead. inklecate's own `Story.EvaluateFunction` rejects the
+    same case, but with a generic stack-trace exception that also leaves
+    the live story corrupted (verified by direct run against
+    `Ink.Runtime.dll`); this error names the real cause and is raised
+    against a discarded copy, so the live state is unaffected either way.
     """
 
 
@@ -124,6 +150,23 @@ class _Unresolved:  # pylint: disable=too-few-public-methods
 
 
 _UNRESOLVED = _Unresolved()
+
+
+def _validate_path_call_arguments(arguments: tuple[Any, ...], caller: str) -> None:
+    """Raise `TypeError` if any of `arguments` is not a type `choose_path()`/`evaluate_function()` accepts.
+
+    Args:
+        arguments: The positional arguments the caller was given.
+        caller: The public method name, named in the error message.
+
+    Raises:
+        TypeError: An argument is not int, float, str, bool, `ListValue`
+            or `ResolvedDivertTarget` (inkle's runtime raises
+            ArgumentException for the same case).
+    """
+    for argument in arguments:
+        if not isinstance(argument, (int, float, str, bool, ListValue, ResolvedDivertTarget)):
+            raise TypeError(f"{caller}() arguments must be int, float, str, bool, ListValue or ResolvedDivertTarget, not {type(argument).__name__}")
 
 
 def _container_path(container: Container) -> str:
@@ -345,6 +388,10 @@ class VariableReference:
 #: call frame owns. 0 already means "a global".
 OUTERMOST_TEMP_SCOPE = -2
 
+#: context_index for a temp in `tunnel_stack[0]`'s scope; `tunnel_stack[k]`
+#: is `TUNNEL_TEMP_SCOPE_BASE - k`, below every other marker.
+TUNNEL_TEMP_SCOPE_BASE = -3
+
 
 @dataclass
 class VariablePointer:
@@ -359,6 +406,7 @@ class VariablePointer:
         context_index: Which scope owns it -- -1 while unresolved (the
             compiler's own placeholder), 0 for a global,
             OUTERMOST_TEMP_SCOPE for a temp held outside any call frame,
+            TUNNEL_TEMP_SCOPE_BASE - k for one in `tunnel_stack[k]`,
             otherwise the 1-based call-frame index whose temps hold it.
     """
 
@@ -562,11 +610,16 @@ class Choice:
             order (`* [Go north # image: north.jpg]`). Standard Ink:
             these belong to the choice, not the content it leads to, and
             never appear in `text`.
+        thread_at_generation: The temps, call frames and tunnel returns
+            as they were when the choice was generated; choosing it
+            restores them. None for a choice built without one, which
+            keeps the live call stack when chosen.
     """
 
     text: str
     target: Container
     tags: list[str] = field(default_factory=list)
+    thread_at_generation: _CallStackFork | None = field(default=None, repr=False, compare=False)
 
     @property
     def target_path(self) -> str:
@@ -812,7 +865,7 @@ def start_new_story(
     root: Container,
     list_defs: dict[str, dict[str, int]] | None = None,
     *,
-    engine_bindings: dict[str, Callable[..., Any]] | None = None,
+    engine_bindings: dict[str, Callable[..., Any]] | BindingSandbox | None = None,
     initial_globals: dict[str, Any] | None = None,
     strict_externals: bool = False,
 ) -> InkRuntimeState:
@@ -821,7 +874,8 @@ def start_new_story(
     Args:
         root: The story's root Container (`load_story_root()`'s result).
         list_defs: The story's LIST definitions.
-        engine_bindings: The EXTERNAL bindings for this session.
+        engine_bindings: The EXTERNAL bindings for this session, as for
+            `InkRuntimeState`.
         initial_globals: Ink VAR values applied BEFORE the opening
             `continue_story()` call, e.g. a character-creation answer.
             None leaves the story's own declared VAR defaults untouched.
@@ -1160,6 +1214,54 @@ def resolve_path(start: Container, path: Path) -> Container | Any | None:
     return current
 
 
+#: The EXTERNAL name `InkRuntimeState` always binds to `resolve_divert_target()`.
+#: Not standard Ink — inkle's own diverts-as-variables mechanism
+#: (`VAR x = -> knot`) only stores a divert target already known at
+#: compile time; this is an engine extension for building one from a
+#: string computed at runtime. A story declares it like any other
+#: EXTERNAL, with an Ink fallback for a bare compile or an unbound test:
+#:
+#: ```ink
+#: EXTERNAL divert_to_knot(knot_path)
+#: === function divert_to_knot(knot_path) ===
+#: ~ return -> nowhere_to_go
+#: ```
+DIVERT_TO_KNOT_EXTERNAL_NAME = "divert_to_knot"
+
+
+class UnknownDivertTargetError(StoryRuntimeError):
+    """Raised by `resolve_divert_target()` when `knot_path` names no knot or stitch.
+
+    Raised rather than returning an unresolved target, because a divert
+    to one goes nowhere and leaves the turn stuck with no choices.
+    """
+
+
+def resolve_divert_target(root: Container, knot_path: str) -> ResolvedDivertTarget:
+    """Build a divert target for `knot_path`, resolved against `root`.
+
+    `knot_path` may name a knot (`"a_knot"`) or a knot.stitch path
+    (`"a_knot.a_stitch"`), exactly as it would appear after `->` in Ink
+    source.
+
+    Args:
+        root: The story's root Container.
+        knot_path: The knot or knot.stitch to arrive at.
+
+    Returns:
+        The target, ready to write into a story global or return from an
+        EXTERNAL function.
+
+    Raises:
+        UnknownDivertTargetError: `root` has no knot or stitch at
+            `knot_path`.
+    """
+    container = resolve_path(root, Path.parse(knot_path))
+    if container is None:
+        raise UnknownDivertTargetError(f"story has no knot or stitch named '{knot_path}'")
+    return ResolvedDivertTarget(container=container)
+
+
 GLUE = "<>"
 NEWLINE = "\n"
 
@@ -1459,7 +1561,9 @@ class OutputStream:
         return "".join(output)
 
 
-DONE_COMMANDS = frozenset({"done", "end"})
+DONE_COMMAND = "done"
+END_COMMAND = "end"
+DONE_COMMANDS = frozenset({DONE_COMMAND, END_COMMAND})
 EVAL_START = "ev"
 EVAL_END = "/ev"
 STRING_START = "str"
@@ -1537,8 +1641,8 @@ CONTROL_COMMAND_MARKERS = frozenset(
 
 # Native-function operator set for arithmetic/comparison/logic on
 # Int/Float/String/Bool, ported from NativeFunctionCall.cs's op tables.
-# Excludes list ops (?, !?, ^, LIST_*, in their own table below) and the
-# two DivertTargetValue-only ops (Equal/NotEquals on divert targets).
+# ?, !?, ^ and LIST_* are in the list table below, which is merged into
+# this one; ? and !? also apply to strings (a substring test).
 NATIVE_FUNCTION_ARITY = {
     "+": 2,
     "-": 2,
@@ -1633,9 +1737,9 @@ def _is_truthy(value: Any) -> bool:
     Ports Story.IsTruthy (ink-engine-runtime/Story.cs): bool/int/float
     are truthy iff nonzero (bool included, since Python bools are ints);
     str is truthy iff non-empty; ListValue is truthy iff it has at least
-    one entry. DivertTargetValue truthiness is a compile-time error in
-    real Ink ("did you intend a function call?") and doesn't arise here
-    since nothing ever pushes one onto the eval stack.
+    one entry. Testing a divert target's truthiness is a compile-time
+    error in real Ink ("did you intend a function call?"), so compiled
+    content never asks.
 
     Args:
         value: A value popped off the eval stack.
@@ -1696,6 +1800,8 @@ def apply_native_function(name: str, args: list[Any], list_defs: dict[str, dict[
     """
     if any(isinstance(a, ListValue) for a in args):
         return _apply_list_native_function(name, args, list_defs or {})
+    if any(isinstance(a, ResolvedDivertTarget) for a in args):
+        return _apply_divert_target_native_function(name, args)
 
     target, coerced = _coerce_native_function_operands(args)
 
@@ -1704,21 +1810,34 @@ def apply_native_function(name: str, args: list[Any], list_defs: dict[str, dict[
     return _apply_numeric_native_function(name, coerced, is_float=target is float)
 
 
+def _apply_divert_target_native_function(name: str, args: list[Any]) -> bool:
+    """Compare two divert targets by the container they address.
+
+    Ports NativeFunctionCall.cs's DivertTarget table, which defines only
+    Equal and NotEquals.
+
+    Raises:
+        TypeError: `name` is another operator, or an operand is not a
+            divert target.
+    """
+    if name not in ("==", "!=") or not all(isinstance(a, ResolvedDivertTarget) for a in args):
+        raise TypeError(f"Native function {name!r} is not defined for divert targets {args!r}")
+    same = args[0].container is args[1].container
+    return same if name == "==" else not same
+
+
 def _apply_string_native_function(name: str, args: list[Any]) -> Any:
-    """Apply a string-typed native function (Add=concat, Equal, NotEquals only).
+    """Apply a string-typed native function: +, ==, != and the substring tests ?, !?.
 
     Args:
         name: The operator symbol.
         args: One or two string operands.
 
     Returns:
-        The result (str for "+", bool for "=="/"!=").
+        The result (str for "+", bool for the others).
 
     Raises:
-        InkPathError: If name has no defined string operation. Matches
-            the C# source's AddStringBinaryOp calls: only +, ==, !=.
-            Has/Hasnt (?, !?) are excluded for strings; the LIST-typed
-            ?/!? family goes through _apply_list_native_function.
+        InkPathError: If name has no defined string operation.
     """
     if name == "+":
         return args[0] + args[1]
@@ -1726,6 +1845,10 @@ def _apply_string_native_function(name: str, args: list[Any]) -> Any:
         return args[0] == args[1]
     if name == "!=":
         return args[0] != args[1]
+    if name == "?":
+        return args[1] in args[0]
+    if name == "!?":
+        return args[1] not in args[0]
     raise InkPathError(f"Native function {name!r} is not defined for string operands")
 
 
@@ -2025,20 +2148,221 @@ class Pointer:
 
 @dataclass
 class CallFrame:
-    """One `== function ==` call-stack frame.
-
-    Only functions use this; tunnels use the simpler `tunnel_stack`.
+    """One call-stack frame: a function call (`call_stack`) or a tunnel (`tunnel_stack`).
 
     Args:
         return_pointer: Where to resume the caller once this frame pops
-            (via FUNCTION_RETURN or falling off the end of the function's
-            container).
+            (FUNCTION_RETURN or the end of a function's container; `->->`
+            for a tunnel). `Pointer(None)` for an interlude's tunnel.
         temps: This call's own local `temp=` scope, separate from
             `InkRuntimeState.temps`, which backs the outermost level.
     """
 
     return_pointer: Pointer
     temps: dict[str, Any] = field(default_factory=dict)
+
+    def copy(self) -> CallFrame:
+        """Return an independent copy: a new Pointer and a new temps dict."""
+        return CallFrame(return_pointer=self.return_pointer.copy(), temps=dict(self.temps))
+
+
+@dataclass
+class _CallStackFork:
+    """One thread's call stack: the flow state a `<- knot` thread copies.
+
+    Ports CallStack.Thread (ink-engine-runtime/CallStack.cs). Globals and
+    visit counts are not part of it: they are shared by every thread
+    (WritingWithInk.md, "Threads").
+
+    Args:
+        temps: The outermost temp scope (`InkRuntimeState.temps`).
+        call_stack: The function frames (`InkRuntimeState.call_stack`).
+        tunnel_stack: The tunnel frames (`InkRuntimeState.tunnel_stack`).
+    """
+
+    temps: dict[str, Any]
+    call_stack: list[CallFrame]
+    tunnel_stack: list[CallFrame]
+
+    def copy(self) -> _CallStackFork:
+        """Return an independent copy that shares no dict, list or Pointer with this one."""
+        return _CallStackFork(
+            temps=dict(self.temps),
+            call_stack=[frame.copy() for frame in self.call_stack],
+            tunnel_stack=[frame.copy() for frame in self.tunnel_stack],
+        )
+
+
+@dataclass(frozen=True)
+class BindingSandbox:
+    """The state an application's EXTERNAL bindings read and write, and how to bind over a copy.
+
+    Given to `InkRuntimeState` as `engine_bindings`, it supplies
+    `bind(state)` as the bindings and lets an interlude re-evaluate the turn
+    it interrupted without repeating that turn's effects (see
+    `start_interlude()`).
+
+    Attributes:
+        state: The live, JSON-safe dict the bindings mutate in place (for a
+            plugin session, its `engine_state`).
+        bind: Builds the same bindings over another dict of that form, as
+            `lambda sandbox: resolve_bindings(plugins, names, sandbox, list_defs=...)`.
+    """
+
+    state: dict[str, Any]
+    bind: Callable[[dict[str, Any]], dict[str, Callable[..., Any]]]
+
+    def snapshot(self) -> dict[str, Any]:
+        """Return an independent copy of `state`."""
+        return deepcopy(self.state)
+
+
+#: Marks a key that one of two JSON values has and the other lacks.
+_ABSENT = object()
+
+
+def _json_changes(before: Any, after: Any, path: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], Any]]:
+    """Return `(key path, value in after)` for every leaf that differs; `_ABSENT` marks a removed key."""
+    if isinstance(before, dict) and isinstance(after, dict):
+        changes: list[tuple[tuple[str, ...], Any]] = []
+        for key in before.keys() | after.keys():
+            changes += _json_changes(before.get(key, _ABSENT), after.get(key, _ABSENT), (*path, key))
+        return changes
+    return [] if before == after else [(path, after)]
+
+
+def _apply_json_changes(target: dict[str, Any], changes: list[tuple[tuple[str, ...], Any]]) -> None:
+    """Write each `_json_changes()` result into `target`, in place."""
+    for path, value in changes:
+        node = target
+        for key in path[:-1]:
+            child = node.get(key)
+            if not isinstance(child, dict):
+                child = node[key] = {}
+            node = child
+        if value is _ABSENT:
+            node.pop(path[-1], None)
+        else:
+            node[path[-1]] = deepcopy(value)
+
+
+def _reapply_after(function: Callable[..., Any], sandbox: dict[str, Any], pinned: list[tuple[tuple[str, ...], Any]]) -> Callable[..., Any]:
+    """Wrap a binding so `pinned` is written back into `sandbox` after every call."""
+
+    @functools.wraps(function)
+    def call(*arguments: Any) -> Any:
+        result = function(*arguments)
+        _apply_json_changes(sandbox, pinned)
+        return result
+
+    return call
+
+
+@dataclass
+class _TurnStart:
+    """What re-running a turn from its start needs.
+
+    Args:
+        state: `to_dict()` at the turn's start, without its own
+            `_TurnStart` or any interlude's.
+        bindings: `BindingSandbox.snapshot()` at the same moment.
+    """
+
+    state: dict[str, Any]
+    bindings: dict[str, Any]
+
+
+@dataclass
+class _InterludeStart:
+    """What an interlude's return compares against to find what the interlude changed.
+
+    Args:
+        turn: The interrupted turn's start.
+        globals: The globals when the interlude started, serialized.
+        visit_counts: The visit counts then, keyed by container path.
+        visit_turns: The turn of each container's last visit then, keyed
+            by container path.
+        bindings: `BindingSandbox.snapshot()` then.
+    """
+
+    turn: _TurnStart
+    globals: dict[str, Any]
+    visit_counts: dict[str, int]
+    visit_turns: dict[str, int]
+    bindings: dict[str, Any]
+
+
+#: Keys `_without_turn_records()` drops: the records themselves, and the
+#: output a replay discards.
+_TURN_RECORD_KEYS = ("turn_start", "resumed_turn", "output_tokens", "last_turn_text")
+
+
+def _without_turn_records(saved: dict[str, Any], keys: Iterable[str] | None = None) -> dict[str, Any]:
+    """Return a `to_dict()` result without its turn records, its interludes' or its output.
+
+    Args:
+        saved: The result, possibly inside an application's larger save.
+        keys: The keys the engine itself writes; None keeps every key.
+    """
+    wanted = saved.keys() if keys is None else keys
+    stripped = {key: saved[key] for key in wanted if key in saved and key not in _TURN_RECORD_KEYS}
+    stripped["interludes"] = [{key: value for key, value in interlude.items() if key != "start"} for interlude in saved.get("interludes", [])]
+    return stripped
+
+
+def _json_diff(base: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
+    """Return the JSON-safe changes that turn `base` into `target`; `_json_patch()` applies them."""
+    changes = _json_changes(base, target)
+    return {
+        "set": [[list(path), value] for path, value in changes if value is not _ABSENT],
+        "remove": [list(path) for path, value in changes if value is _ABSENT],
+    }
+
+
+def _json_patch(base: dict[str, Any], diff: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of `base` with a `_json_diff()` result applied."""
+    patched = deepcopy(base)
+    changes = [(tuple(path), value) for path, value in diff.get("set", [])] + [(tuple(path), _ABSENT) for path in diff.get("remove", [])]
+    _apply_json_changes(patched, changes)
+    return patched
+
+
+def _encode_turn_start(record: _TurnStart, base: dict[str, Any], live_bindings: dict[str, Any]) -> dict[str, Any]:
+    """Save a `_TurnStart` as differences from the saved state and the live binding state."""
+    return {"state": _json_diff(base, record.state), "bindings": _json_diff(live_bindings, record.bindings)}
+
+
+def _decode_turn_start(saved: dict[str, Any], base: dict[str, Any], live_bindings: dict[str, Any]) -> _TurnStart:
+    """Rebuild a `_TurnStart` from `_encode_turn_start()`'s result, given the same two bases."""
+    return _TurnStart(state=_json_patch(base, saved["state"]), bindings=_json_patch(live_bindings, saved["bindings"]))
+
+
+def _encode_interlude_start(
+    start: _InterludeStart, base: dict[str, Any], live_bindings: dict[str, Any], *, include_turn: bool = True
+) -> dict[str, Any]:
+    """Save an `_InterludeStart` as differences from the saved state and the live binding state."""
+    saved: dict[str, Any] = {
+        "globals": _json_diff(base.get("globals", {}), start.globals),
+        "visit_counts": start.visit_counts,
+        "visit_turns": start.visit_turns,
+        "bindings": _json_diff(live_bindings, start.bindings),
+    }
+    if include_turn:
+        saved["turn"] = _encode_turn_start(start.turn, base, live_bindings)
+    return saved
+
+
+def _decode_interlude_start(
+    saved: dict[str, Any], base: dict[str, Any], live_bindings: dict[str, Any], turn: _TurnStart | None = None
+) -> _InterludeStart:
+    """Rebuild an `_InterludeStart`; `turn` replaces a turn saved without one."""
+    return _InterludeStart(
+        turn=turn if turn is not None else _decode_turn_start(saved["turn"], base, live_bindings),
+        globals=_json_patch(base.get("globals", {}), saved["globals"]),
+        visit_counts=saved["visit_counts"],
+        visit_turns=saved["visit_turns"],
+        bindings=_json_patch(live_bindings, saved["bindings"]),
+    )
 
 
 @dataclass
@@ -2052,12 +2376,15 @@ class _Interlude:
         done: The interrupted turn's `done` flag.
         turn_start: The interrupted turn's `refresh_choices()` snapshot.
             Not saved, as `_turn_start` itself is not.
+        start: What re-evaluating the interrupted turn needs, or None when
+            the state had no `binding_sandbox` then, or a save predates it.
     """
 
     choices: list[Choice]
     tunnel_depth: int
     done: bool
     turn_start: dict[str, Any] | None = None
+    start: _InterludeStart | None = None
 
 
 #: The plain scalar fields a save carries: (saved key, attribute name,
@@ -2099,30 +2426,49 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             to, keyed by the exact function name declared in the story.
             None/empty by default; whether to pass real bindings is the
             application's decision. Every bound callable must be
-            stateless (see _call_function).
+            stateless (see _call_function). A `BindingSandbox` instead
+            supplies the bindings it builds over its own state, and also
+            lets an interlude's return re-evaluate the turn it interrupted
+            (see `start_interlude()`).
         random_engine: A factory taking a seed and returning a
             `RandomEngine`, called fresh each time a seeded sequence is
             needed. Defaults to `NetRandom`, which reproduces the .NET
             generator inklecate runs — override only to match a
             different story format's reference implementation.
+        strict_externals: Raise `UnboundExternalError` when an EXTERNAL
+            has no bound callable, rather than falling through to the
+            story's own Ink fallback.
     """
 
     def __init__(
         self,
         root: Container,
         list_defs: dict[str, dict[str, int]] | None = None,
-        engine_bindings: dict[str, Callable[..., Any]] | None = None,
+        engine_bindings: dict[str, Callable[..., Any]] | BindingSandbox | None = None,
         random_engine: Callable[[int], RandomEngine] = NetRandom,
         *,
         strict_externals: bool = False,
     ) -> None:
         self.root = root
         self.list_defs = list_defs or {}
-        self.engine_bindings = engine_bindings or {}
+        # Live application setting, never serialized, like engine_bindings.
+        self.binding_sandbox = engine_bindings if isinstance(engine_bindings, BindingSandbox) else None
+        self.engine_bindings: dict[str, Callable[..., Any]] = (
+            engine_bindings.bind(engine_bindings.state) if isinstance(engine_bindings, BindingSandbox) else engine_bindings or {}
+        )
+        # Always present, regardless of what the application binds: the
+        # engine is the only thing holding `root`, so it supplies this one
+        # itself rather than asking every application to wire it.
+        self.engine_bindings[DIVERT_TO_KNOT_EXTERNAL_NAME] = self._divert_to_knot
         self.random_engine = random_engine
         # Live application setting, never serialized -- it says how this process
         # should react to a gap, not anything about the story's progress.
         self.strict_externals = strict_externals
+        # This turn's start, when binding_sandbox was set as it began; saved.
+        self._turn_start_record: _TurnStart | None = None
+        # Set when an interlude returns: a later interlude in the same turn
+        # compares against the same stopping point. Saved.
+        self._resumed_turn: _InterludeStart | None = None
         self.pointer: Pointer | None = Pointer.start_of(root)
         self.previous_pointer: Pointer | None = None
         self.output = OutputStream()
@@ -2170,11 +2516,16 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         # eval run this capture opened" from "back at this capture's own
         # text level".
         self._string_capture_eval_depth: list[int] = []
-        self.tunnel_stack: list[Pointer] = []
+        # Tunnel frames, innermost last; see _follow_divert().
+        self.tunnel_stack: list[CallFrame] = []
         # Innermost last; see start_interlude().
         self._interludes: list[_Interlude] = []
         self.call_stack: list[CallFrame] = []
         self._pending_thread = False
+        # Set by _end_story(), cleared when a turn starts; see _run_thread().
+        self._story_ended = False
+        # The container the pointer last ran off the end of, for an error message.
+        self._ran_out_in: Container | None = None
         self.turn_count = -1
         self.story_seed = self.random_engine(time_seed()).next() % 100
         self.previous_random = 0
@@ -2198,6 +2549,10 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         for list_name, items in self.list_defs.items():
             for item_name, value in items.items():
                 self.globals[item_name] = ListValue.single(list_name, item_name, int(value))
+
+    def _divert_to_knot(self, knot_path: Any) -> ResolvedDivertTarget:
+        """The `divert_to_knot` EXTERNAL: `resolve_divert_target()` against this story's root."""
+        return resolve_divert_target(self.root, str(knot_path))
 
     def _visit_count(self, container: Container) -> int:
         """Return how many times `container` has been stepped into, 0 if never."""
@@ -2280,16 +2635,39 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
     def _current_temps(self) -> dict[str, Any]:
         """Return the temp-variable scope for the innermost active call frame.
 
-        Tunnels push no CallFrame, so a tunnel body shares the outermost
-        flat scope -- real Ink likewise gives a tunnel no new scope.
+        A tunnel has its own scope, as a function does (CallStack.Push
+        with PushPopType.Tunnel), so a tunnel parameter or temp never
+        changes a caller's temp of the same name. A function cannot
+        contain a tunnel, so function frames are always innermost.
 
         Returns:
             self.call_stack[-1].temps if a function call is active,
+            otherwise self.tunnel_stack[-1].temps if a tunnel is,
             otherwise self.temps (the outermost scope).
         """
         if self.call_stack:
             return self.call_stack[-1].temps
+        if self.tunnel_stack:
+            return self.tunnel_stack[-1].temps
         return self.temps
+
+    def _fork_call_stack(self) -> _CallStackFork:
+        """Return an independent copy of the live temps, call frames and tunnel returns (ports CallStack.ForkThread)."""
+        return _CallStackFork(temps=self.temps, call_stack=self.call_stack, tunnel_stack=self.tunnel_stack).copy()
+
+    def _adopt_generation_thread(self, choice: Choice) -> None:
+        """Restore the call stack `choice` was generated on, if it has one.
+
+        Ports Story.ChooseChoiceIndex's `state.callStack.currentThread =
+        choiceToChoose.threadAtGeneration`, which
+        TryFollowDefaultInvisibleChoice repeats for an invisible default.
+        A copy is adopted, so the choice can be chosen again after a
+        reload or an interlude.
+        """
+        if choice.thread_at_generation is None:
+            return
+        adopted = choice.thread_at_generation.copy()
+        self.temps, self.call_stack, self.tunnel_stack = adopted.temps, adopted.call_stack, adopted.tunnel_stack
 
     def _read_variable(self, name: str) -> Any:
         """Look up a variable's current value by name.
@@ -2341,12 +2719,17 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         # Otherwise bind to the scope holding the name right now: the
         # caller's, since the callee's frame is not pushed until after its
         # arguments are evaluated.
-        if pointer.name in self._current_temps:
-            # A temp held outside any call frame needs its own marker: 0
-            # already means "a global", and the frame indices start at 1.
-            scope = len(self.call_stack) or OUTERMOST_TEMP_SCOPE
-            return VariablePointer(name=pointer.name, context_index=scope)
-        return VariablePointer(name=pointer.name, context_index=0)
+        if pointer.name not in self._current_temps:
+            return VariablePointer(name=pointer.name, context_index=0)
+        # Tunnel scopes and the outermost scope need their own markers: 0
+        # already means "a global", and the function frame indices start at 1.
+        if self.call_stack:
+            scope = len(self.call_stack)
+        elif self.tunnel_stack:
+            scope = TUNNEL_TEMP_SCOPE_BASE - (len(self.tunnel_stack) - 1)
+        else:
+            scope = OUTERMOST_TEMP_SCOPE
+        return VariablePointer(name=pointer.name, context_index=scope)
 
     def _pointer_scope(self, pointer: VariablePointer) -> dict[str, Any]:
         """Return the variable dict a resolved pointer addresses.
@@ -2356,11 +2739,14 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
 
         Returns:
             self.globals for context_index 0, self.temps for the outermost
-            temp scope, otherwise that call frame's own temps (falling back
-            to globals if the frame has since been popped).
+            temp scope, otherwise that tunnel or call frame's own temps
+            (falling back to globals if the frame has since been popped).
         """
         if pointer.context_index == OUTERMOST_TEMP_SCOPE:
             return self.temps
+        if pointer.context_index <= TUNNEL_TEMP_SCOPE_BASE:
+            tunnel_index = TUNNEL_TEMP_SCOPE_BASE - pointer.context_index
+            return self.tunnel_stack[tunnel_index].temps if tunnel_index < len(self.tunnel_stack) else self.globals
         if pointer.context_index <= 0:
             return self.globals
         index = pointer.context_index - 1
@@ -2579,19 +2965,22 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             self.pointer = self._advance_past(self.pointer)
             return
 
+        # Resolved before a tunnel frame is pushed: a variable target
+        # (`-> where ->`) names a variable in the caller's scope.
+        start = self._divert_start(divert, holder)
         if divert.pushes_tunnel:
-            # Ports CallStack.push(PushPopType.Tunnel): a `-> knot ->`
-            # divert pushes the position right after itself as a return
-            # address before jumping, so a later `->->` (PopTunnel)
-            # resumes here instead of ending the story. Function frames
-            # are handled separately, via call_stack.
+            # Ports CallStack.Push(PushPopType.Tunnel): a `-> knot ->`
+            # divert pushes a frame holding the position right after
+            # itself, so a later `->->` (PopTunnel) resumes there, and
+            # its own empty temp scope for the tunnel's parameters and
+            # temps. Function frames are handled separately, via call_stack.
             assert self.pointer is not None
             return_address = self._advance_past(self.pointer)
             assert return_address is not None
-            self.tunnel_stack.append(return_address)
+            self.tunnel_stack.append(CallFrame(return_pointer=return_address))
 
         self.previous_pointer = self.pointer
-        self.pointer = self._divert_start(divert, holder)
+        self.pointer = start
         self._visit_changed_containers_due_to_divert()
 
     def _run_thread(self, divert: Divert, holder: Container) -> None:
@@ -2605,9 +2994,16 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         flow's, and choosing one abandons the main flow's pending choices
         and position.
 
-        A bare DONE_COMMANDS inside the thread ends only the thread's
-        sub-walk; self.done is never touched, so the main flow's
-        "-> DONE" still runs.
+        A "done" inside the thread ends only the thread's sub-walk, so the
+        main flow still runs. An "end" ends the whole story
+        (`_end_story()`), and the call stack is then left as that reset
+        it rather than put back.
+
+        The thread runs on a copy of the temps, call frames and tunnel
+        returns (ports CallStack.PushThread), which are put back when it
+        stops, so neither its arguments and temps nor a tunnel it leaves
+        open reach the flow that started it. Each choice it generates
+        keeps its own copy (see `_process_choice_point`).
 
         Args:
             divert: The thread's own target divert (the one immediately
@@ -2619,9 +3015,24 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         if not isinstance(target, Container):
             return
 
+        parent_temps, parent_call_stack, parent_tunnel_stack = self.temps, self.call_stack, self.tunnel_stack
+        fork = self._fork_call_stack()
+        self.temps, self.call_stack, self.tunnel_stack = fork.temps, fork.call_stack, fork.tunnel_stack
+        try:
+            self._walk_thread(target)
+        finally:
+            if not self._story_ended:
+                self.temps, self.call_stack, self.tunnel_stack = parent_temps, parent_call_stack, parent_tunnel_stack
+
+    def _walk_thread(self, target: Container) -> None:
+        """Step a thread from the start of `target` until it stops, keeping self.pointer unchanged.
+
+        The thread also stops when it ends the story (`self.done`), as a
+        `->->` with no tunnel to return to does without moving the pointer.
+        """
         thread_pointer: Pointer | None = Pointer.start_of(target)
         thread_done = False
-        while not thread_done and thread_pointer is not None:
+        while not thread_done and not self.done and thread_pointer is not None:
             thread_pointer = self._descend_into_containers(thread_pointer)
             thread_container = thread_pointer.container
             assert thread_container is not None
@@ -2631,13 +3042,43 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             if content is None:
                 thread_pointer = self._advance_pointer(thread_pointer)
                 continue
-            if isinstance(content, str) and content in DONE_COMMANDS:
+            if content == END_COMMAND and not isinstance(content, TextLeaf):
+                self._end_story()
+                break
+            if content == DONE_COMMAND and not isinstance(content, TextLeaf):
                 break
             saved_pointer = self.pointer
             self.pointer = thread_pointer
             thread_done = self._dispatch_content(content, thread_pointer, thread_container)
             thread_pointer = self.pointer
             self.pointer = saved_pointer
+
+    def _stop_flow(self, command: str) -> None:
+        """Handle "done" (`-> DONE`, which only stops) or "end" (`_end_story()`)."""
+        if command == END_COMMAND:
+            self._end_story()
+        else:
+            self.done = True
+
+    def _end_story(self) -> None:
+        """Handle "end" (`-> END`), in the main flow or in a thread.
+
+        The vendored runtime format (ink_JSON_runtime_format.md, "end")
+        states that it ends the story flow immediately, closes all active
+        threads, unwinds the call stack and removes every choice already
+        created; inklecate plays `-> END` inside a thread, inside a nested
+        thread, inside a thread started from a tunnel, and in the main flow
+        after a thread offered a choice, as a story end with no choices.
+        Interludes set aside are discarded with the tunnels they return to.
+        """
+        self.done = True
+        self._story_ended = True
+        self.current_choices = []
+        self._invisible_default_choices = []
+        self.temps = {}
+        self.call_stack = []
+        self.tunnel_stack = []
+        self._interludes = []
 
     def _pop_tunnel(self) -> None:
         """Handle "->->" (PopTunnel), plain or with an override target.
@@ -2662,7 +3103,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         if not self.tunnel_stack:
             self.done = True
             return
-        return_pointer = self.tunnel_stack.pop()
+        return_pointer = self.tunnel_stack.pop().return_pointer
         interlude = self._interludes.pop() if self._interludes and len(self.tunnel_stack) == self._interludes[-1].tunnel_depth else None
         if isinstance(override, ResolvedDivertTarget) and override.container is not None:
             self.pointer = Pointer.start_of(override.container)
@@ -2670,10 +3111,15 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             return
         if interlude is not None:
             # The turn stops here, offering the interrupted turn's choices.
-            # TODO: re-evaluate them, once refresh_choices() no longer repeats the turn's side effects.
-            self.current_choices = [*self.current_choices, *interlude.choices]
-            self.done = interlude.done
+            choices, done = interlude.choices, interlude.done
+            replay = self._reevaluate_interrupted_turn(interlude.start) if interlude.start is not None else None
+            if replay is not None:
+                choices, done = replay.current_choices, replay.done
+            self.current_choices = [*self.current_choices, *choices]
+            self.done = done
             self._turn_start = interlude.turn_start
+            self._turn_start_record = interlude.start.turn if interlude.start is not None else None
+            self._resumed_turn = interlude.start
             self.pointer = None
             return
         self.pointer = return_pointer
@@ -2759,8 +3205,40 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         self.pointer = frame.return_pointer
         # C#'s functionTrimIndex: newlines the function's own body emitted
         # are dropped as its frame pops, so a call mid-line (`Before
-        # {emit()} after.`) leaves the caller's line unbroken.
-        self.output.trim_newlines_from_end()
+        # {emit()} after.`) leaves the caller's line unbroken. Trimmed
+        # from the destination the function's body actually wrote to
+        # (self.output by default, but a choice tag's own buffer or an
+        # open str/../str capture when the call happened inside one),
+        # not always self.output: a function called from `{fn()}` inside
+        # a choice tag writes there instead, and a stray structural
+        # newline left in that buffer survives into the tag text.
+        # A frame with no real caller position (return_pointer.container
+        # is None, as `evaluate_function()` pushes) has no line to
+        # protect, so the trim is skipped: inkle's own EvaluateFunction
+        # keeps such a function's trailing newline (verified directly
+        # against Ink.Runtime.dll).
+        if frame.return_pointer.container is not None:
+            self._active_output_stream().trim_newlines_from_end()
+
+    def _active_output_stream(self) -> OutputStream:
+        """Return the OutputStream currently receiving printed content.
+
+        Mirrors the destination EVAL_OUTPUT picks when writing an
+        interpolated value (see `_handle_eval_run_command`): the choice
+        tag's own buffer when content sits at the tag's own capture
+        depth, otherwise the innermost open str/../str capture,
+        otherwise the in-progress "#"/../"/#" tag, otherwise self.output.
+
+        Returns:
+            The OutputStream a caller should push to or trim.
+        """
+        if self._choice_tag_buffer is not None and len(self._string_capture_stack) == self._choice_tag_capture_depth:
+            return self._choice_tag_buffer
+        if self._string_capture_stack:
+            return self._string_capture_stack[-1]
+        if self._in_tag:
+            return self._tag_buffer
+        return self.output
 
     def _advance_past(self, pointer: Pointer) -> Pointer | None:
         """Move one content item past pointer, walking up ended containers.
@@ -2814,7 +3292,10 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             self.eval_stack.append(VOID)
             frame = self.call_stack.pop()
             result = frame.return_pointer
-            self.output.trim_newlines_from_end()
+            # See _return_from_function()'s matching check: no real caller
+            # position means no line to protect.
+            if result.container is not None:
+                self._active_output_stream().trim_newlines_from_end()
         return result
 
     def _descend_into_containers(self, pointer: Pointer) -> Pointer:
@@ -2880,7 +3361,10 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             return
 
         text = (str(start_text) + str(choice_only_text)).strip()
-        choice = Choice(text=text, target=target, tags=tags)
+        # Ports Story.ProcessChoice's `choice.threadAtGeneration =
+        # state.callStack.ForkThread()`: a choice keeps the temps,
+        # arguments and tunnel returns of the thread that generated it.
+        choice = Choice(text=text, target=target, tags=tags, thread_at_generation=self._fork_call_stack())
         if choice_point.is_invisible_default:
             self._invisible_default_choices.append(choice)
         else:
@@ -2950,36 +3434,23 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             self._pending_choice_tags.append(self._choice_tag_buffer.get_text().strip())
             self._choice_tag_buffer = None
             return True
-        if self._choice_tag_buffer is not None and content not in CONTROL_COMMAND_MARKERS:
-            self._choice_tag_buffer.push_text(content)
-            return True
-        if content in CONTROL_COMMAND_MARKERS and content != EVAL_OUTPUT:
-            # A bare "nop" can appear inside an active str/../str
-            # capture, not just at the main-stream level — e.g. as a
-            # branch separator in a conditional-choice-text construct
-            # (`* [Follow {cond:A|B}]`). It is consumed silently here,
-            # as the main-stream branch does, rather than captured as
-            # text. No depth gate is needed: a bare "nop" is
-            # unambiguous at any depth, real choice/tag text never
-            # legally containing one.
-            #
-            # EVAL_OUTPUT ("out") is excluded from this unconditional
-            # path despite being in CONTROL_COMMAND_MARKERS: it is
-            # depth-sensitive, always marking a nested eval run's
-            # output, so it must fall through to the depth-gated check
-            # below. Swallowing it here would discard the interpolated
-            # VAR's value before _handle_eval_run_command's EVAL_OUTPUT
-            # handling ever saw it.
-            return True
         if self._eval_run_depth > self._string_capture_eval_depth[-1] and (content in NATIVE_FUNCTION_ARITY or content in EVAL_STACK_COMMANDS):
             # A choice-text conditional's inline condition check
-            # (`{lvl == 2:"A"|B}` inside `* [...]`) or a plain
-            # `{var}`/`{expr}` interpolation compiles to a nested
-            # "ev"/"/ev" pair inside the outer choice-text "str"/"/str"
-            # capture. The operator/EVAL_OUTPUT tokens of that inner
-            # run (the bare string "==", or "out") are eval-stack
-            # machinery, not text, and must reach their normal
-            # handlers rather than being captured as literal text.
+            # (`{lvl == 2:"A"|B}` inside `* [...]`), a plain
+            # `{var}`/`{expr}` interpolation, or a called function's own
+            # condition/concatenation compiles to a nested "ev"/"/ev" pair
+            # inside the outer choice-text "str"/"/str" capture. The
+            # operator/EVAL_OUTPUT tokens of that inner run (the bare
+            # string "==", "+", or "out") are eval-stack machinery, not
+            # text, and must reach their normal handlers rather than being
+            # captured as literal text.
+            #
+            # This gate must run before the choice-tag-buffer branch
+            # below: an active choice tag (`* [Go # image: {pick()}]`)
+            # would otherwise swallow "==" or "+" as literal tag text
+            # before this depth check ever saw them, since both are
+            # ordinary non-control-marker strings from the buffer
+            # branch's point of view.
             #
             # The gate compares _eval_run_depth against the baseline
             # recorded for this specific capture
@@ -2998,6 +3469,31 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             # still routing "out"/"==" to eval-stack handling inside
             # the nested run.
             return False
+        if (
+            self._choice_tag_buffer is not None
+            and len(self._string_capture_stack) == self._choice_tag_capture_depth
+            and content not in CONTROL_COMMAND_MARKERS
+        ):
+            self._choice_tag_buffer.push_text(content)
+            return True
+        if content in CONTROL_COMMAND_MARKERS and content != EVAL_OUTPUT:
+            # A bare "nop" can appear inside an active str/../str
+            # capture, not just at the main-stream level — e.g. as a
+            # branch separator in a conditional-choice-text construct
+            # (`* [Follow {cond:A|B}]`). It is consumed silently here,
+            # as the main-stream branch does, rather than captured as
+            # text. No depth gate is needed: a bare "nop" is
+            # unambiguous at any depth, real choice/tag text never
+            # legally containing one.
+            #
+            # EVAL_OUTPUT ("out") is excluded from this unconditional
+            # path despite being in CONTROL_COMMAND_MARKERS: it is
+            # depth-sensitive, always marking a nested eval run's
+            # output, so it must fall through to the depth-gated check
+            # above. Swallowing it here would discard the interpolated
+            # VAR's value before _handle_eval_run_command's EVAL_OUTPUT
+            # handling ever saw it.
+            return True
         self._handle_string_in_capture(content)
         return True
 
@@ -3458,7 +3954,14 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             content: The text, which is never a control marker.
         """
         if self._string_capture_stack:
-            if self._choice_tag_buffer is not None:
+            # The choice tag's own buffer wins only when nothing deeper
+            # is open: a called function building its return value opens
+            # its own nested str/../str capture (`~return "b.jpg"`
+            # compiles the literal as its own "str"/"^b.jpg"/"/str"), and
+            # that capture — not the choice tag — must receive this text,
+            # or the return value is built empty while the text leaks
+            # into the tag a call stack frame early.
+            if self._choice_tag_buffer is not None and len(self._string_capture_stack) == self._choice_tag_capture_depth:
                 self._choice_tag_buffer.push_text(content)
             else:
                 self._handle_string_in_capture(content)
@@ -3486,7 +3989,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             self._handle_text_leaf(content)
             return False
         if content in DONE_COMMANDS:
-            self.done = True
+            self._stop_flow(content)
             return True
         if content == EVAL_START:
             self._eval_run_depth += 1
@@ -3671,7 +4174,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             # returning None only when there is truly nowhere left to go,
             # including popping an active function call frame.
             self.pointer = self._advance_pointer(pointer)
-            return self.pointer is None
+            return self._ran_out(pointer)
 
         content = pointer.resolve()
 
@@ -3680,10 +4183,17 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             # ended story — only an out-of-range index, checked above,
             # means that.
             self.pointer = self._advance_pointer(self.pointer)
-            return self.pointer is None
+            return self._ran_out(pointer)
 
         story_ended = self._dispatch_content(content, pointer, pointer.container)
-        return story_ended or self.pointer is None or self.pointer.container is None
+        return story_ended or self._ran_out(pointer)
+
+    def _ran_out(self, last: Pointer) -> bool:
+        """Return whether the pointer has run off the story, recording `last` as where it did."""
+        if self.pointer is not None and self.pointer.container is not None:
+            return False
+        self._ran_out_in = last.container
+        return True
 
     def _follow_invisible_default_if_only_choice(self) -> bool:
         """Auto-follow a pending invisible-default choice, if it's the only one.
@@ -3705,10 +4215,11 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             self._invisible_default_choices = []
             return False
 
-        target = self._invisible_default_choices[0].target
+        choice = self._invisible_default_choices[0]
         self._invisible_default_choices = []
+        self._adopt_generation_thread(choice)
         self.previous_pointer = self.pointer
-        self.pointer = Pointer.start_of(target)
+        self.pointer = Pointer.start_of(choice.target)
         self._visit_changed_containers_due_to_divert()
         return True
 
@@ -3754,13 +4265,26 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         Returns:
             The newly produced visible text for this turn (since the last
             continue_story()/choose() call).
+
+        Raises:
+            StoryRuntimeError: The turn ran out of content without reaching
+                DONE/END or offering a choice (see `_check_stopped_cleanly`),
+                or an EXTERNAL call had nothing to run (UnboundExternalError).
+                The turn's text so far is in `last_turn_text`.
         """
         # Kept so refresh_choices() can replay this turn after an application
         # changes state mid-turn; taken here, before anything runs, since
         # by the end the position is past the choices being re-evaluated.
-        self._turn_start = self.to_dict()
+        self._turn_start = self._serialize_without_records()
+        self._turn_start_record = (
+            _TurnStart(state=_without_turn_records(self._turn_start), bindings=self.binding_sandbox.snapshot())
+            if self.binding_sandbox is not None
+            else None
+        )
+        self._resumed_turn = None
         self.current_choices = []
         self._invisible_default_choices = []
+        self._story_ended = False
         # current_tags is per-turn, not cumulative: inklecate's own
         # transcript shows each tagged turn's "# tags:" line carrying only
         # that turn's tags. Without this reset, _handle_tag_command's
@@ -3789,7 +4313,27 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             # The story ended inside an interlude: nothing is left to return to.
             del self.tunnel_stack[self._interludes[0].tunnel_depth :]
             self._interludes = []
+        self._check_stopped_cleanly()
         return self.last_turn_text
+
+    def _check_stopped_cleanly(self) -> None:
+        """Raise if the turn ran out of content with no choices, as inklecate does.
+
+        Ports the end-of-content checks of Story.ContinueInternal: a turn
+        that reaches no `-> DONE` or `-> END` and generates no choice is
+        an error, worded by whether a tunnel is still open. Content that
+        runs out inside a thread or a function is not: the thread ends,
+        and the function returns.
+
+        Raises:
+            StoryRuntimeError: The turn stopped that way.
+        """
+        if self.done or self.current_choices or (self.pointer is not None and self.pointer.container is not None):
+            return
+        where = _container_path(self._ran_out_in) if self._ran_out_in is not None else "the story"
+        if self.tunnel_stack:
+            raise StoryRuntimeError(f"{where}: unexpectedly reached end of content. Do you need a '->->' to return from a tunnel?")
+        raise StoryRuntimeError(f"{where}: ran out of content. Do you need a '-> DONE' or '-> END'?")
 
     @_one_turn_at_a_time
     def start_interlude(self, knot: str | Container) -> str:
@@ -3800,6 +4344,16 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         knot's `->->` returns, the set-aside choices are offered again, in
         the same turn that returned. Until then the knot's own choices
         are offered; an interlude may start inside another.
+
+        With a `binding_sandbox`, the returning `->->` re-evaluates the
+        set-aside choices: the interrupted turn runs again from its start
+        on a copy of this state, with bindings over a copy of the binding
+        state it started with, and only its choices are kept. What the
+        interlude changed -- globals, visit counts, binding state -- is
+        applied to the copy and cannot be overwritten by the replay, and
+        nothing else the replay does reaches this state: no text, visit
+        counts, turn count, globals or binding writes. Without one, or for
+        a turn that began before one was set, the choices return unchanged.
 
         `->-> elsewhere`, or the story ending, discards the set-aside
         choices. A plain divert out of the knot keeps the tunnel open, as
@@ -3824,9 +4378,15 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         if not self.current_choices:
             raise InterludeError("this turn offers no choices for an interlude to return to")
         self._interludes.append(
-            _Interlude(choices=self.current_choices, tunnel_depth=len(self.tunnel_stack), done=self.done, turn_start=self._turn_start)
+            _Interlude(
+                choices=self.current_choices,
+                tunnel_depth=len(self.tunnel_stack),
+                done=self.done,
+                turn_start=self._turn_start,
+                start=self._interlude_start(),
+            )
         )
-        self.tunnel_stack.append(Pointer(None))
+        self.tunnel_stack.append(CallFrame(return_pointer=Pointer(None)))
         self.previous_pointer = self.pointer
         self.pointer = Pointer.start_of(target)
         self.done = False
@@ -3834,6 +4394,49 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         self._visit_changed_containers_due_to_divert()
         self.current_choices = []
         return self.continue_story()
+
+    def _interlude_start(self) -> _InterludeStart | None:
+        """Record this stopping point for an interlude about to start, or None without a turn-start record."""
+        if self._resumed_turn is not None:
+            return self._resumed_turn
+        if self.binding_sandbox is None or self._turn_start_record is None:
+            return None
+        return _InterludeStart(
+            turn=self._turn_start_record,
+            globals=self._serialize_temps(self.globals),
+            visit_counts=self._id_keyed_dict_to_path_keyed(self.visit_counts, self._visited_containers),
+            visit_turns=self._id_keyed_dict_to_path_keyed(self.visit_turns, self._visited_containers),
+            bindings=self.binding_sandbox.snapshot(),
+        )
+
+    def _reevaluate_interrupted_turn(self, start: _InterludeStart) -> _Replay | None:
+        """Replay the interrupted turn on a copy, with what the interlude changed pinned.
+
+        Returns:
+            The replayed copy, stopped where the turn stops, or None without
+            a `binding_sandbox`.
+        """
+        if self.binding_sandbox is None:
+            return None
+        pinned_bindings = _json_changes(start.bindings, self.binding_sandbox.state)
+        sandbox = deepcopy(start.turn.bindings)
+        _apply_json_changes(sandbox, pinned_bindings)
+        bindings = self.binding_sandbox.bind(sandbox)
+        if pinned_bindings:
+            bindings = {name: _reapply_after(function, sandbox, pinned_bindings) for name, function in bindings.items()}
+        replay = _Replay.from_dict(self.root, start.turn.state, self.list_defs, bindings, strict_externals=self.strict_externals)
+        replay.pin_globals({name: value for name, value in self.globals.items() if self._serialize_value(value) != start.globals.get(name, _ABSENT)})
+        # Containers are shared with the replay, so id-keyed counts carry over.
+        counts_before = self._path_keyed_dict_to_id_keyed(start.visit_counts)
+        for key, count in self.visit_counts.items():
+            if count != counts_before.get(key, 0):
+                replay.visit_counts[key] = replay.visit_counts.get(key, 0) + count - counts_before.get(key, 0)
+        turns_before = self._path_keyed_dict_to_id_keyed(start.visit_turns)
+        for key, turn in self.visit_turns.items():
+            if turn != turns_before.get(key):
+                replay.visit_turns[key] = turn
+        replay.continue_story()
+        return replay
 
     @_one_turn_at_a_time
     def refresh_choices(self) -> None:
@@ -3868,7 +4471,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
                 self.root,
                 turn_start,
                 self.list_defs,
-                self.engine_bindings,
+                self.binding_sandbox or self.engine_bindings,
                 strict_externals=self.strict_externals,
             )
         )
@@ -3897,10 +4500,13 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             knot: The knot or stitch, by path, or a container of the story.
 
         Returns:
-            The choices, in the order the knot offers them.
+            The choices, in the order the knot offers them. A knot that
+            shows none and runs out of content lists none: a turn would
+            raise `StoryRuntimeError` there, a listing does not.
 
         Raises:
             InterludeError: `knot` does not name a container of this story.
+            UnboundExternalError: As for `continue_story()`.
         """
         target = knot if isinstance(knot, Container) else resolve_path(self.root, Path.parse(knot))
         if not isinstance(target, Container):
@@ -3909,8 +4515,115 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         copy.pointer = Pointer.start_of(target)
         copy.done = False
         copy.current_choices = []
-        copy.continue_story()
+        try:
+            copy.continue_story()
+        except UnboundExternalError:
+            raise
+        except StoryRuntimeError:
+            return []
         return copy.current_choices
+
+    def _read_only_bindings(self) -> dict[str, Callable[..., Any]]:
+        """Return bindings for a copy that must not touch this state's live plugin state.
+
+        With a `binding_sandbox`, builds fresh bindings over a snapshot of
+        its state, so a binding an evaluation calls writes to a throwaway
+        dict. Without one, falls back to the shared `engine_bindings`
+        dict, exactly as `knot_choices()` does, with the same warning:
+        a binding an evaluation calls still changes the application's
+        live plugin state.
+        """
+        if self.binding_sandbox is None:
+            return self.engine_bindings
+        return self.binding_sandbox.bind(self.binding_sandbox.snapshot())
+
+    def evaluate_function(self, function_name: str, *arguments: Any) -> tuple[Any, str]:
+        """Call an `== function ==` and return its result and printed text, without changing this state.
+
+        Ports Story.EvaluateFunction (ink-engine-runtime/Story.cs), with
+        one deliberate divergence: inkle's own runtime runs the call on
+        the live story, so a function's `~ VAR = ...` assignment is a
+        permanent side effect, and a name that turns out not to be a
+        function corrupts the live story (both confirmed by running
+        `Ink.Runtime.dll` directly). This method instead follows
+        `knot_choices()`'s copy-and-discard pattern: the function runs on
+        a copy of this state, so globals, visit counts, the turn count,
+        `output` and the tunnel and call stacks are all unchanged
+        afterward, win or lose. EXTERNAL bindings are still called; see
+        `_read_only_bindings()` for whether they touch this state's live
+        plugin state.
+
+        A well-formed function returns by popping the call frame this
+        method pushes, whether by an explicit `~ return` or by falling
+        off its own end (an implicit void return, matching inkle's own
+        `null`). A knot instead reaches `-> DONE`/`-> END`, offers a
+        choice, or runs out of content -- none of which pop that frame --
+        and raises `NotAFunctionError` instead of inkle's generic,
+        story-corrupting exception for the same case.
+
+        Args:
+            function_name: The function's name, by path (a top-level
+                function is just its name; a stitch-scoped one is
+                `"knot.function"`).
+            *arguments: Values for the function's parameters, in order,
+                of the same types `choose_path()` accepts: int, float,
+                str, bool, `ListValue`, or `ResolvedDivertTarget`.
+
+        Returns:
+            `(result, text_output)`: `result` is the function's `~
+            return` value (None for a function with no explicit return,
+            matching inkle's `null`); `text_output` is the text it
+            printed while running, exactly as `continue_story()` would
+            return it, and is not added to this state's own `output`.
+
+        Raises:
+            InkPathError: `function_name` does not name a container of
+                this story.
+            NotAFunctionError: `function_name` names a knot or stitch,
+                not a function.
+            TypeError: An argument is of another type.
+            UnboundExternalError: As for `continue_story()`.
+            All four are raised without changing this state.
+        """
+        target = resolve_path(self.root, Path.parse(function_name))
+        if not isinstance(target, Container):
+            raise InkPathError(f"story has no function named {function_name!r}")
+        _validate_path_call_arguments(arguments, "evaluate_function")
+        copy = InkRuntimeState.from_dict(
+            self.root, self.to_dict(), self.list_defs, self._read_only_bindings(), strict_externals=self.strict_externals
+        )
+        call_depth_before_call = len(copy.call_stack)
+        copy.call_stack.append(CallFrame(return_pointer=Pointer(None)))
+        call_depth_with_pushed_frame = len(copy.call_stack)
+        copy.eval_stack.extend(arguments)
+        copy.pointer = Pointer.start_of(target)
+        copy.done = False
+        copy.current_choices = []
+        try:
+            copy.continue_story()
+        except UnboundExternalError:
+            raise
+        except StoryRuntimeError as error:
+            # continue_story()'s own "did this turn stop cleanly" check
+            # (_check_stopped_cleanly) has no notion of the sentinel
+            # return_pointer pushed above: a function that already
+            # returned through it (the pushed frame is gone) trips that
+            # check's "ran out of content" case even though the call
+            # itself succeeded. Only a frame still present is a real
+            # failure.
+            if len(copy.call_stack) >= call_depth_with_pushed_frame:
+                raise NotAFunctionError(f"{function_name!r} is not a callable Ink function: {error}") from error
+        # A knot that generates a choice right where its content runs out
+        # pops the pushed frame the same way a void function falling off
+        # its own end does (_advance_pointer's implicit-return loop
+        # cannot tell them apart); a choice is decisive proof this is not
+        # a function, since the compiler refuses a divert -- and so a
+        # choice -- inside one ("Functions may not contain diverts").
+        if copy._story_ended or copy.current_choices or len(copy.call_stack) != call_depth_before_call:  # pylint: disable=protected-access
+            # copy is this same class's own instance; _story_ended has no public equivalent.
+            raise NotAFunctionError(f"{function_name!r} names a knot or stitch, not a function")
+        result = copy.eval_stack.pop() if copy.eval_stack else None
+        return (None if result is VOID else result), copy.last_turn_text
 
     def _restore_from(self, other: InkRuntimeState) -> None:
         """Adopt another state's position and variables, in place.
@@ -3931,6 +4644,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             IndexError: If index is out of range for current_choices.
         """
         choice = self.current_choices[index]
+        self._adopt_generation_thread(choice)
         self.previous_pointer = self.pointer
         self.pointer = Pointer.start_of(choice.target)
         self.done = False
@@ -3956,7 +4670,9 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             path: `"knot"` or `"knot.stitch"`. Gather and choice labels
                 cannot be addressed, as in standard Ink.
             *arguments: Values for the knot's parameters, in order: int,
-                float, str, bool or `ListValue`.
+                float, str, bool, `ListValue`, or `ResolvedDivertTarget`
+                for a divert-target parameter (build one with
+                `ink_engine.travel.build_divert_target`).
 
         Raises:
             InkPathError: `path` does not name a container of this story.
@@ -3967,9 +4683,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         target = resolve_path(self.root, Path.parse(path))
         if not isinstance(target, Container):
             raise InkPathError(f"story has no knot or stitch at {path!r}")
-        for argument in arguments:
-            if not isinstance(argument, (int, float, str, bool, ListValue)):
-                raise TypeError(f"choose_path() arguments must be int, float, str, bool or ListValue, not {type(argument).__name__}")
+        _validate_path_call_arguments(arguments, "choose_path")
         self.tunnel_stack = []
         self._interludes = []
         self.call_stack = []
@@ -4025,37 +4739,74 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             return None
         return Pointer(container=target, index=int(data["index"]))
 
-    @staticmethod
-    def _serialize_choice(choice: Choice) -> dict[str, Any]:
+    def _serialize_choice(self, choice: Choice) -> dict[str, Any]:
         """Convert a Choice to the JSON-safe dict `_deserialize_choice()` reads."""
-        return {"text": choice.text, "target_path": choice.target_path, "tags": list(choice.tags)}
+        serialized: dict[str, Any] = {"text": choice.text, "target_path": choice.target_path, "tags": list(choice.tags)}
+        fork = choice.thread_at_generation
+        if fork is not None:
+            serialized["thread_at_generation"] = {
+                "temps": self._serialize_temps(fork.temps),
+                "call_stack": [self._serialize_frame(frame) for frame in fork.call_stack],
+                "tunnel_stack": [self._serialize_frame(frame) for frame in fork.tunnel_stack],
+            }
+        return serialized
 
-    def _restore_tunnels(self, data: dict[str, Any]) -> None:
-        """Rebuild `tunnel_stack` and the pending interludes from a to_dict() result.
+    def _serialize_temps(self, temps: dict[str, Any]) -> dict[str, Any]:
+        """Convert one temp scope to a JSON-safe dict."""
+        return {name: self._serialize_value(value) for name, value in temps.items()}
 
-        An interlude's own entry is saved as None, the form of a pointer
-        that no longer resolves, so it is placed back by its recorded
-        index. A saved entry that no longer resolves is dropped, and an
-        interlude whose index is missing is dropped with it.
+    def _serialize_frame(self, frame: CallFrame) -> dict[str, Any]:
+        """Convert a CallFrame to the JSON-safe dict `_deserialize_frame()` reads."""
+        return {"return_pointer": self._serialize_pointer(frame.return_pointer), "temps": self._serialize_temps(frame.temps)}
+
+    def _restore_tunnels(self, data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Rebuild `tunnel_stack` and the pending interludes from a to_dict() result, returning the saved interludes kept.
+
+        Call after `temps` is restored (see `_deserialize_tunnel_stack`).
+        An interlude's own return address is saved as None, the form of a
+        pointer that no longer resolves, so it is placed back by its
+        recorded index. Any other frame whose return address no longer
+        resolves is dropped, and an interlude whose index is missing is
+        dropped with it.
         """
         saved_interludes = data.get("interludes", [])
         interlude_indexes = {int(saved["tunnel_depth"]) for saved in saved_interludes}
         new_index: dict[int, int] = {}
         self.tunnel_stack = []
-        for index, saved_pointer in enumerate(data.get("tunnel_stack", [])):
-            pointer = Pointer(None) if index in interlude_indexes else self._deserialize_pointer(saved_pointer)
-            if pointer is not None:
+        for index, frame in enumerate(self._deserialize_tunnel_stack(data.get("tunnel_stack", []), self.temps)):
+            if index in interlude_indexes or frame.return_pointer.container is not None:
                 new_index[index] = len(self.tunnel_stack)
-                self.tunnel_stack.append(pointer)
+                self.tunnel_stack.append(frame)
+        kept = [saved for saved in saved_interludes if int(saved["tunnel_depth"]) in new_index]
         self._interludes = [
             _Interlude(
                 choices=[choice for choice in map(self._deserialize_choice, saved.get("choices", [])) if choice is not None],
                 tunnel_depth=new_index[int(saved["tunnel_depth"])],
                 done=bool(saved.get("done", False)),
             )
-            for saved in saved_interludes
-            if int(saved["tunnel_depth"]) in new_index
+            for saved in kept
         ]
+        return kept
+
+    def _restore_turn_records(self, data: dict[str, Any], kept_interludes: list[dict[str, Any]]) -> None:
+        """Rebuild the turn records `to_dict()` saved; nothing without them or without a `binding_sandbox`.
+
+        Args:
+            data: A to_dict() result.
+            kept_interludes: The saved interludes `_restore_tunnels()` kept,
+                in the order of `self._interludes`.
+        """
+        if "turn_start" not in data or self.binding_sandbox is None:
+            return
+        # Only the engine's own keys: an application may save its own beside them.
+        base = _without_turn_records(data, keys=self._serialize_without_records().keys())
+        live_bindings = self.binding_sandbox.state
+        self._turn_start_record = _decode_turn_start(data["turn_start"], base, live_bindings)
+        if "resumed_turn" in data:
+            self._resumed_turn = _decode_interlude_start(data["resumed_turn"], base, live_bindings, turn=self._turn_start_record)
+        for interlude, saved_interlude in zip(self._interludes, kept_interludes, strict=True):
+            if "start" in saved_interlude:
+                interlude.start = _decode_interlude_start(saved_interlude["start"], base, live_bindings)
 
     def _serialize_value(self, value: Any) -> Any:
         """Convert one globals/temps/eval_stack entry to a JSON-safe form.
@@ -4131,12 +4882,60 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         """Rebuild one saved choice, or None when its target no longer resolves.
 
         A save written before choices carried tags has no "tags" key; it
-        restores as an untagged choice.
+        restores as an untagged choice. One written before choices carried
+        their generation thread restores with `thread_at_generation` None.
         """
         target = resolve_path(self.root, Path.parse(str(data["target_path"])))
         if not isinstance(target, Container):
             return None
-        return Choice(text=str(data["text"]), target=target, tags=list(data.get("tags", [])))
+        fork = data.get("thread_at_generation")
+        return Choice(
+            text=str(data["text"]),
+            target=target,
+            tags=list(data.get("tags", [])),
+            thread_at_generation=None if fork is None else self._deserialize_fork(fork),
+        )
+
+    def _deserialize_fork(self, data: dict[str, Any]) -> _CallStackFork:
+        """Rebuild a choice's saved generation thread.
+
+        Every tunnel frame stays in place, so the indexes interludes record
+        still match.
+        """
+        temps = {name: self._deserialize_value(value) for name, value in data.get("temps", {}).items()}
+        return _CallStackFork(
+            temps=temps,
+            call_stack=[frame for frame in map(self._deserialize_frame, data.get("call_stack", [])) if frame is not None],
+            tunnel_stack=self._deserialize_tunnel_stack(data.get("tunnel_stack", []), temps),
+        )
+
+    def _deserialize_tunnel_stack(self, saved_frames: list[Any], outermost_temps: dict[str, Any]) -> list[CallFrame]:
+        """Rebuild saved tunnel frames, one per entry, in order.
+
+        A return address that no longer resolves becomes `Pointer(None)`.
+        A save written before tunnels had their own temp scope holds bare
+        return pointers and kept every temp in the outermost scope, so its
+        innermost tunnel frame starts with a copy of `outermost_temps`.
+
+        Args:
+            saved_frames: The saved `tunnel_stack` list.
+            outermost_temps: The restored outermost temp scope of the same
+                save or fork.
+
+        Returns:
+            One CallFrame per saved entry.
+        """
+        frames: list[CallFrame] = []
+        for saved in saved_frames:
+            if isinstance(saved, dict) and "return_pointer" in saved:
+                return_pointer = self._deserialize_pointer(saved["return_pointer"])
+                temps = {name: self._deserialize_value(value) for name, value in saved.get("temps", {}).items()}
+            else:
+                return_pointer, temps = self._deserialize_pointer(saved), {}
+            frames.append(CallFrame(return_pointer=return_pointer or Pointer(None), temps=temps))
+        if frames and not any(isinstance(saved, dict) and "return_pointer" in saved for saved in saved_frames):
+            frames[-1].temps = dict(outermost_temps)
+        return frames
 
     def _deserialize_frame(self, data: dict[str, Any]) -> CallFrame | None:
         """Rebuild one saved call frame, or None when its return address no longer resolves.
@@ -4227,9 +5026,29 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         stopping point can be captured mid-eval-run, and resuming without
         them routes the pending marker down the wrong branch.
 
+        With a `BindingSandbox`, the result also carries what re-evaluating
+        an interrupted turn needs, as differences from the rest of the
+        result and from the sandbox's `state`. Load it with a sandbox over
+        the binding state saved with it.
+
         Returns:
             The serialized state.
         """
+        saved = self._serialize_without_records()
+        if self._turn_start_record is None or self.binding_sandbox is None:
+            return saved
+        base = _without_turn_records(saved)
+        live_bindings = self.binding_sandbox.state
+        saved["turn_start"] = _encode_turn_start(self._turn_start_record, base, live_bindings)
+        if self._resumed_turn is not None:
+            saved["resumed_turn"] = _encode_interlude_start(self._resumed_turn, base, live_bindings, include_turn=False)
+        for saved_interlude, interlude in zip(saved["interludes"], self._interludes, strict=True):
+            if interlude.start is not None:
+                saved_interlude["start"] = _encode_interlude_start(interlude.start, base, live_bindings)
+        return saved
+
+    def _serialize_without_records(self) -> dict[str, Any]:
+        """Return `to_dict()` without the turn records."""
         by_id = self._visited_containers
         return {
             "pointer": self._serialize_pointer(self.pointer),
@@ -4241,9 +5060,9 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
             "current_tags": list(self.current_tags),
             "done": self.done,
             "globals": {name: self._serialize_value(value) for name, value in self.globals.items()},
-            "temps": {name: self._serialize_value(value) for name, value in self.temps.items()},
+            "temps": self._serialize_temps(self.temps),
             "eval_stack": [self._serialize_value(value) for value in self.eval_stack],
-            "tunnel_stack": [self._serialize_pointer(pointer) for pointer in self.tunnel_stack],
+            "tunnel_stack": [self._serialize_frame(frame) for frame in self.tunnel_stack],
             "interludes": [
                 {
                     "choices": [self._serialize_choice(choice) for choice in interlude.choices],
@@ -4252,13 +5071,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
                 }
                 for interlude in self._interludes
             ],
-            "call_stack": [
-                {
-                    "return_pointer": self._serialize_pointer(frame.return_pointer),
-                    "temps": {name: self._serialize_value(value) for name, value in frame.temps.items()},
-                }
-                for frame in self.call_stack
-            ],
+            "call_stack": [self._serialize_frame(frame) for frame in self.call_stack],
             "story_seed": self.story_seed,
             "tag_buffer_tokens": list(self._tag_buffer.tokens),
             "string_capture_stack": [list(capture.tokens) for capture in self._string_capture_stack],
@@ -4272,10 +5085,10 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         root: Container,
         data: dict[str, Any],
         list_defs: dict[str, dict[str, int]] | None = None,
-        engine_bindings: dict[str, Callable[..., Any]] | None = None,
+        engine_bindings: dict[str, Callable[..., Any]] | BindingSandbox | None = None,
         *,
         strict_externals: bool = False,
-    ) -> InkRuntimeState:
+    ) -> Self:
         """Rebuild an InkRuntimeState from a to_dict() result.
 
         Args:
@@ -4306,7 +5119,7 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         state.globals = {name: state._deserialize_value(value) for name, value in data.get("globals", {}).items()}
         state.temps = {name: state._deserialize_value(value) for name, value in data.get("temps", {}).items()}
         state.eval_stack = [state._deserialize_value(value) for value in data.get("eval_stack", [])]
-        state._restore_tunnels(data)
+        state._restore_turn_records(data, state._restore_tunnels(data))
         state.call_stack = [frame for frame in map(state._deserialize_frame, data.get("call_stack", [])) if frame is not None]
         for key, attribute, coerce, default in _SCALAR_STATE_FIELDS:
             setattr(state, attribute, coerce(data.get(key, default)))
@@ -4322,3 +5135,27 @@ class InkRuntimeState:  # pylint: disable=too-many-instance-attributes
         fallback_depths = [state._eval_run_depth] * len(state._string_capture_stack)
         state._string_capture_eval_depth = [int(depth) for depth in data.get("string_capture_eval_depth", fallback_depths)]
         return state
+
+
+class _Replay(InkRuntimeState):
+    """A copy of a state re-running a turn whose effects are discarded, with some globals held fixed."""
+
+    _pinned: frozenset[str] = frozenset()
+
+    def pin_globals(self, values: dict[str, Any]) -> None:
+        """Set these globals, and ignore every later write to them."""
+        self.globals.update(values)
+        self._pinned = frozenset(values)
+
+    def _write_variable(self, assignment: VariableAssignment, value: Any) -> None:
+        """Write as the base class does, except to a pinned global."""
+        if assignment.is_global and assignment.name in self._pinned:
+            return
+        super()._write_variable(assignment, value)
+
+    def _write_through_pointer(self, pointer: VariablePointer, value: Any) -> None:
+        """Write as the base class does, except through a `ref` to a pinned global."""
+        resolved = self._resolve_variable_pointer(pointer)
+        if resolved.context_index == 0 and resolved.name in self._pinned:
+            return
+        super()._write_through_pointer(pointer, value)

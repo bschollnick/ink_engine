@@ -34,6 +34,18 @@ with `find_action()` in a freshly filled context and passes its `target`
 to `InkRuntimeState.start_interlude()`. A menu knot holds only choices:
 it is evaluated on a copy of the story state, but with the live bindings.
 
+A section with `layout` set to `FOLLOWERS_LAYOUT` names both a list of
+entries and a menu knot, built by `followers_section()`. An entry is
+`{id, label, head_shot_function}`: a game builds the list itself (who is
+present is its own vocabulary), naming for each one an `== function ==`
+that returns the picture to show for it now. The knot supplies actions the
+same way an actions section does, matched to an entry by `# group: <id>`;
+an entry with no matching group keeps its head shot and no actions. An
+application calls `fill_followers_sections()`, which adds `rows`: one per
+entry in the order given, each `{id, label, image_urls, actions}`. A row's
+actions are found and run exactly as an action section's are, with
+`find_action()` and `InkRuntimeState.start_interlude()`.
+
 A game's `panel_command()` answers either a string, a message for the
 panel that leaves the story where it is (an Examine, a refusal), or a dict
 naming the story turn that is the command's reaction: `knot` (str,
@@ -56,7 +68,7 @@ from dataclasses import dataclass
 from types import ModuleType
 from typing import Any
 
-from ink_engine.engine import InkRuntimeState, InterludeError
+from ink_engine.engine import InkPathError, InkRuntimeState, InterludeError
 from ink_engine.media_resolver import MediaResolver, parse_media_tags
 from ink_engine.plugin import EngineState
 from ink_engine.travel import MOVE_CHOICE_TEXT
@@ -95,6 +107,10 @@ ACTIONS_LAYOUT = "actions"
 
 #: The choice tag naming the group an action belongs to.
 GROUP_TAG = "group"
+
+#: The `layout` of a section listing entries with a picture from Ink and
+#: actions from a menu knot, some entries having none.
+FOLLOWERS_LAYOUT = "followers"
 
 
 @dataclass(frozen=True, slots=True)
@@ -421,27 +437,145 @@ def fill_action_sections(panel: dict[str, Any] | None, state: InkRuntimeState, *
 
 
 def find_action(panel: dict[str, Any] | None, group: str, label: str) -> dict[str, Any] | None:
-    """Return the action `label` in group `group` from a panel's filled action sections.
+    """Return the action `label` in group `group` from a panel's filled action or followers sections.
 
     An application calls this on a context it has just asked the game for
-    and filled, so the action run is one the story offers now rather than
+    and filled (with `fill_action_sections()`, `fill_followers_sections()`,
+    or both), so the action run is one the story offers now rather than
     whatever the player's screen last showed.
 
     Args:
-        panel: A `fill_action_sections()` result, or None.
+        panel: A filled panel context, or None.
         group: The action's group id; "" for an ungrouped action.
         label: The action's label.
 
     Returns:
         The action, whose `target` goes to `InkRuntimeState.start_interlude()`,
-        or None when no action section offers it now.
+        or None when no action or followers section offers it now.
     """
     for section in action_sections(panel):
         for listed_group in section.get("groups", []):
             for action in listed_group.get("actions", []):
                 if action.get("group") == group and action.get("label") == label:
                     return action
+    for section in followers_sections(panel):
+        for row in section.get("rows", []):
+            for action in row.get("actions", []):
+                if action.get("group") == group and action.get("label") == label:
+                    return action
     return None
+
+
+def followers_section(entries: list[dict[str, Any]], *, heading: str, knot: str, empty_text: str = "") -> dict[str, Any]:
+    """Declare a section listing entries with a head shot from Ink and actions from a menu knot.
+
+    Args:
+        entries: One dict per entry, in the order to show them: `id`,
+            `label`, and `head_shot_function`, an `== function ==` of the
+            story that `fill_followers_sections()` evaluates for the
+            picture to show now.
+        heading: The section's heading.
+        knot: The menu knot whose choices are matched to entries by
+            `# group: <id>` (see `actions_section()`); an entry with no
+            matching group shows only its head shot.
+        empty_text: What to show when `entries` is empty.
+
+    Returns:
+        The section, to be filled by `fill_followers_sections()`.
+    """
+    return {"heading": heading, "layout": FOLLOWERS_LAYOUT, "entries": entries, "knot": knot, "empty_text": empty_text}
+
+
+def followers_sections(panel: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return every followers section in a panel context, across its tabs and slots.
+
+    Args:
+        panel: A `GamePanel.context()` answer, or None.
+
+    Returns:
+        The sections whose `layout` is `FOLLOWERS_LAYOUT`, possibly empty.
+    """
+    return [section for section in _all_sections(panel) if section.get("layout") == FOLLOWERS_LAYOUT]
+
+
+def _entry_head_shot(state: InkRuntimeState, function_name: str, resolver: MediaResolver | None) -> list[str]:
+    """Return the image URLs for one entry's head shot, or none.
+
+    A missing function name is a game authoring mistake, not a player-
+    facing failure, so it is logged and treated as no picture rather than
+    raised.
+    """
+    if not function_name or resolver is None:
+        return []
+    try:
+        image_path, _ = state.evaluate_function(function_name)
+    except InkPathError:
+        logging.getLogger(__name__).warning("ink_engine.game_panel: followers section names no head-shot function %r", function_name)
+        return []
+    if not isinstance(image_path, str) or not image_path:
+        return []
+    return resolver.resolve([("image", image_path)])
+
+
+def _followers_rows(state: InkRuntimeState, section: dict[str, Any], resolver: MediaResolver | None) -> list[dict[str, Any]]:
+    """List one followers section's entries with their pictures and actions."""
+    groups = {group["id"]: group for group in _action_groups(state, str(section.get("knot", "")), resolver)}
+    rows = []
+    for entry in section.get("entries", []):
+        entry_id = str(entry.get("id", ""))
+        group = groups.get(entry_id)
+        rows.append(
+            {
+                "id": entry_id,
+                "label": entry.get("label", ""),
+                "image_urls": _entry_head_shot(state, str(entry.get("head_shot_function", "")), resolver),
+                "actions": group["actions"] if group else [],
+            }
+        )
+    return rows
+
+
+def fill_followers_sections(panel: dict[str, Any] | None, state: InkRuntimeState, *, resolver: MediaResolver | None = None) -> dict[str, Any] | None:
+    """Return a copy of a panel context with every followers section's `rows` listed.
+
+    Each entry's head shot is read with `InkRuntimeState.evaluate_function()`
+    and its actions from the section's menu knot with `InkRuntimeState.knot_choices()`,
+    so the live state is unchanged either way.
+
+    Args:
+        panel: A `GamePanel.context()` answer, or None.
+        state: The session's story state, at the turn being shown.
+        resolver: Turns each entry's head-shot path into displayable
+            references; without one, entries have no images.
+
+    Returns:
+        The filled context, or None when `panel` is None. `panel` itself
+        is not changed.
+
+    Raises:
+        NotAFunctionError: An entry's `head_shot_function` names a knot or
+            stitch of the story, not a function -- a game authoring
+            mistake worth raising rather than silently showing no picture.
+        UnboundExternalError: As for `InkRuntimeState.continue_story()`.
+    """
+    if panel is None:
+        return None
+    filled: dict[int, dict[str, Any]] = {
+        id(section): {**section, "rows": _followers_rows(state, section, resolver)} for section in followers_sections(panel)
+    }
+    if not filled:
+        return panel
+
+    def fill(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [filled.get(id(section), section) for section in sections]
+
+    result = dict(panel)
+    for key in ("panel_sections", "panel_slots"):
+        if panel.get(key):
+            result[key] = fill(panel[key])
+    if panel.get("panel_sections_by_tab"):
+        result["panel_sections_by_tab"] = {tab: fill(sections) for tab, sections in panel["panel_sections_by_tab"].items()}
+    return result
 
 
 def play_reaction(state: InkRuntimeState, result: CommandResult) -> str | None:

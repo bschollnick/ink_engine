@@ -1,7 +1,7 @@
 # Ink Engine — How to use Plugins & Python Functions from Ink
 
 **Date Created:** 2026-09-15  
-**Last Updated:** 2026-09-26  
+**Last Updated:** 2026-09-29  
 **Last Reviewed:** 2026-09-20
 
 How an Ink story reaches Python in this engine: the plugins that ship with
@@ -2546,6 +2546,108 @@ print("3", [choice.text for choice in state.current_choices], state.turn_count)
   knot does not exist, or when the turn offers no choices to return to
   (the story has ended).
 
+**When the interlude changes what the scene offers.** By default the
+set-aside choices come back exactly as they were. An interlude that
+takes an item, spends money or moves a character can leave a choice on
+offer that its guard would now refuse. Pass a `BindingSandbox` as
+`engine_bindings` and the returning `->->` re-evaluates them instead.
+
+A `BindingSandbox` holds the dict your bindings read and write (`state`)
+and a function that builds the same bindings over any dict of that form
+(`bind`). The engine builds the session's bindings with
+`bind(state)`, and copies `state` at the start of every turn. When an
+interlude returns, the interrupted turn runs again from its start, on a
+copy of the story state, with bindings over a copy of the binding state
+it started with. What the interlude changed is applied to both copies
+first, and the replay cannot overwrite it. Only the replay's choices are
+kept: the turn's text, assignments, binding calls, visit counts and turn
+count happen once, in the real turn.
+
+This story's interlude takes the lantern the cellar's choice is guarded
+by:
+
+```ink
+EXTERNAL has_item(holder_id, item_id)
+EXTERNAL take_item_from(holder_id, item_id)
+VAR visits = 0
+-> cellar
+
+=== cellar ===
+~ visits += 1
+The cellar is dark.
++ {has_item("player", "lantern")} [Light the lantern] -> lit
++ [Go back up] -> END
+
+=== lit ===
+The cellar glows.
+-> END
+
+=== lend_the_lantern ===
+~ temp lent = take_item_from("player", "lantern")
+You hand Sam the lantern.
+->->
+
+=== function has_item(holder_id, item_id) ===
+~ return false
+
+=== function take_item_from(holder_id, item_id) ===
+~ return false
+```
+
+```python
+import json
+from pathlib import Path
+
+from ink_engine.binding import resolve_bindings
+from ink_engine.discovery import discover_plugins
+from ink_engine.engine import BindingSandbox, load_list_defs, load_story_root, start_new_story
+
+# Compiled from the Ink above; this repository ships it as
+# tests/fixtures/interlude_lantern.ink.json.
+story_json = json.loads(Path("tests/fixtures/interlude_lantern.ink.json").read_text())
+plugins = discover_plugins(["ink_engine.engine_plugins"])
+game_state = {}
+
+
+def bind(plugin_state):
+    """Build the session's bindings over `plugin_state`."""
+    return resolve_bindings(plugins, ["inventory"], plugin_state)
+
+
+bind(game_state)["give_item_to"]("player", "lantern")  # the player starts with a lantern
+state = start_new_story(
+    load_story_root(story_json),
+    load_list_defs(story_json),
+    engine_bindings=BindingSandbox(state=game_state, bind=bind),
+)
+print("1", [choice.text for choice in state.current_choices], state.globals["visits"])
+
+print("2", state.start_interlude("lend_the_lantern").strip())
+print("3", [choice.text for choice in state.current_choices], state.globals["visits"])
+```
+
+```
+1 ['Light the lantern', 'Go back up'] 1
+2 You hand Sam the lantern.
+3 ['Go back up'] 1
+```
+
+The lantern choice is gone (3), and `visits` is still 1: the cellar's
+`~ visits += 1` ran once. Without the sandbox, (3) would still offer
+"Light the lantern".
+
+- **Saving.** A state with a sandbox also saves its turn's start, as
+  differences from the rest of the save and from the binding state:
+  under a kilobyte for a large game. Load it with a sandbox over the binding state saved
+  with it: the differences are applied to that dict, so a different one
+  rebuilds a different turn start. A save without the turn's start, or a
+  state loaded without a sandbox, returns the choices unchanged.
+- **Cost.** Each turn copies the binding state, and each returning
+  interlude replays one turn with real bindings over the copies.
+- **WARNING:** a binding whose effect is outside `state` -- a log file, a
+  message sent -- runs again during the replay. Keep such effects out of
+  bindings a turn calls before its choices.
+
 ### 4.3 Side-panel slots and action sections
 
 A game's `panel_context()` may return `panel_slots`: sections an
@@ -2607,7 +2709,9 @@ does not come back. The call stack is reset, so pending tunnels, function
 frames, temporary variables and interludes are discarded; the current
 choices are cleared; and the turn count advances, as for `choose()`.
 Arguments fill a knot's parameters in order and must be int, float,
-string, bool or a LIST value; another type raises `TypeError`. Call
+string, bool, a LIST value, or a `ResolvedDivertTarget` (build one with
+`ink_engine.travel.build_divert_target`) for a divert-target parameter;
+another type raises `TypeError`. Call
 `continue_story()` next. A path the story does not have raises
 `InkPathError`; both errors are raised before anything changes. Gather and choice labels cannot be addressed, as in standard Ink.
 
@@ -2653,6 +2757,20 @@ print("3", [choice.text for choice in state.current_choices], state.turn_count)
 
 `bell_rings` ends by diverting back to `shop`, so showing the shop again
 re-evaluates its choices: the one guarded by `bell_rung` appears (3).
+
+#### Jumping to a knot named at runtime, from inside the story
+
+`choose_path()` above is the application jumping to a knot it already
+knows the name of. A story that needs to divert to a knot named by a
+string it only has at runtime — a location record, a save file, a
+value computed mid-turn — cannot do this with plain Ink: inkle's own
+"storing diverts as variables" only holds a target already known when
+the story was compiled. Every `InkRuntimeState` binds an EXTERNAL for
+this itself, `divert_to_knot(knot_path)`, with no application wiring
+needed. See "Every story gets a built-in `divert_to_knot(knot_path)`
+EXTERNAL" in
+[`ink_engine_vs_standard_ink.md`](ink_engine_vs_standard_ink.md) for the
+signature, its error, and a runnable example.
 
 ### 4.5 A panel command that plays a story turn
 
@@ -2717,6 +2835,96 @@ print("7", [choice.text for choice in state.current_choices], state.turn_count)
 
 `GamePanel.command()` still answers the message alone, for an
 application that plays no reactions.
+
+### 4.6 Evaluating a function directly
+
+`state.evaluate_function(function_name, *arguments)` calls an `==
+function ==` (not a knot) and returns `(result, text_output)`: `result`
+is its `~ return` value (`None` for a function with no explicit return),
+and `text_output` is whatever text it printed while running. Arguments
+are positional, of the same types `choose_path()` accepts. The call runs
+on a copy of the state, exactly as `knot_choices()` does: globals, visit
+counts, the turn count, `output` and the current choices are all
+unchanged afterward, whether the call succeeds or raises. An EXTERNAL
+binding the function calls still fires; with a `binding_sandbox` it runs
+over a snapshot of the plugin state, so its effect is discarded too — see
+"Side-panel slots and action sections" above for the same distinction
+without one, where a binding an evaluated knot calls does change the
+live plugin state.
+
+A name that resolves to a knot instead of a function raises
+`NotAFunctionError`, and a name the story does not have at all raises
+`InkPathError` — both before anything changes.
+
+```ink
+VAR score = 0
+EXTERNAL double_it(x)
+
+-> intro
+
+=== intro
+Welcome to the story.
++ [Continue]
+    -> chapter_two
+
+=== chapter_two
+This is chapter two.
+-> END
+
+=== function describe_score(current)
+~ temp label = "low"
+{ current >= 10:
+    ~ label = "high"
+- else:
+    { current >= 5:
+        ~ label = "medium"
+    }
+}
+~ return "score is " + label + " (" + "{current}" + ")"
+
+=== function callsExternal(x)
+~ return double_it(x)
+```
+
+```python
+import json
+from pathlib import Path
+
+from ink_engine.engine import load_list_defs, load_story_root, start_new_story
+
+# Compiled from the Ink above; this repository ships it as
+# tests/fixtures/evaluate_function.ink.json.
+story_json = json.loads(Path("tests/fixtures/evaluate_function.ink.json").read_text())
+state = start_new_story(
+    load_story_root(story_json),
+    load_list_defs(story_json),
+    engine_bindings={"double_it": lambda x: x * 2},
+)
+print("1", [choice.text for choice in state.current_choices], state.globals["score"])
+
+result, text_output = state.evaluate_function("describe_score", 12)
+print("2", result, repr(text_output))
+
+result, text_output = state.evaluate_function("callsExternal", 4)
+print("3", result)
+
+print("4", state.globals["score"], [choice.text for choice in state.current_choices])
+```
+
+```
+1 ['Continue'] 0
+2 score is high (12) ''
+3 8
+4 0 ['Continue']
+```
+
+`describe_score`'s own `~ VAR = ...` reassignments are all to its own
+`temp label`, so `score` (4) is untouched either way; a function that
+reassigned a global would still leave it unchanged, since the whole call
+runs on a discarded copy. inkle's own `Story.EvaluateFunction` does not
+make this guarantee: it runs on the live story, so the same call there
+leaves a global reassignment in place, and a name that turns out to be a
+knot rather than a function leaves the live story corrupted.
 
 ---
 

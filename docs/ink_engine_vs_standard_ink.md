@@ -1,7 +1,7 @@
 # ink_engine vs. standard Ink
 
 **Date Created:** 2026-09-15  
-**Last Updated:** 2026-09-26  
+**Last Updated:** 2026-09-29  
 **Last Reviewed:** 2026-09-19
 
 For Ink authors and developers who know inkle's Ink and want to know what
@@ -201,9 +201,10 @@ that offers no panels.
 
 An application can also run a knot in the middle of a turn, as a tunnel
 the story did not write: `start_interlude(knot)` sets the turn's choices
-aside, plays the knot, and offers them again when its `->->` returns. A
-side panel can list a knot's choices as buttons and run the one picked
-this way.
+aside, plays the knot, and offers them again when its `->->` returns.
+Given a `BindingSandbox`, it first re-evaluates them against what the
+knot changed, without repeating the turn. A side panel can list a knot's
+choices as buttons and run the one picked this way.
 
 Character creation works the same way: the answers a player gives before
 the story opens are already in your `VAR`s on turn one, so no prologue
@@ -221,19 +222,93 @@ these a story author never touches.
 `"knot.stitch"` and resets the call stack, discarding pending tunnels,
 function frames, temporary variables and interludes; it clears the current
 choices, advances the turn count, and counts the arrival as a visit.
-Arguments must be int, float, string, bool or a LIST value; another type
-raises `TypeError` where inkle raises `ArgumentException`. To run a knot
-and come back instead, `start_interlude(knot)` calls it as a tunnel,
+Arguments must be int, float, string, bool, a LIST value, or a
+`ResolvedDivertTarget` (build one with
+`ink_engine.travel.build_divert_target`) for a knot whose own parameter is
+a divert target; another type raises `TypeError` where inkle raises
+`ArgumentException`. The `ResolvedDivertTarget` argument type is an engine
+addition: inkle's `ChoosePathString` takes no such argument, so standard
+Ink has no way to enter a knot like `=== arrive(-> target) ===` directly
+and supply its divert-target parameter from outside the story. To run a
+knot and come back instead, `start_interlude(knot)` calls it as a tunnel,
 keeping the call stack and returning to the interrupted turn's choices.
 
 **`ChoosePathString(path, resetCallstack: false)` is not built;** a jump
 always resets the call stack.
+
+**`Story.EvaluateFunction` is `evaluate_function(function_name,
+*arguments)`, and it is read-only where inkle's is not.** It ports
+`Story.EvaluateFunction` (inkle's `ink-engine-runtime/Story.cs`), calling
+an `== function ==` and returning `(result, text_output)`: `result` is
+its `~ return` value (`None` for a function with no explicit return),
+`text_output` is the text it printed. Arguments are the same types
+`choose_path()` accepts. inkle's own `EvaluateFunction` runs the call on
+the live story: a function's own global reassignment is a permanent side
+effect, and a name that turns out to name a knot instead of a function
+leaves the live story corrupted (both confirmed by running
+`Ink.Runtime.dll` directly). This engine's `evaluate_function()` instead
+runs the call on a discarded copy of the state, as `knot_choices()` does:
+globals, visit counts, the turn count, `output`, the current choices and
+the call/tunnel stacks are all unchanged afterward, whether the call
+succeeds or raises. A knot name raises `NotAFunctionError`, naming the
+real cause, rather than inkle's generic exception for the same case; an
+unknown name raises `InkPathError`.
 
 **Two application APIs are unbuilt:** variable observers and named flows.
 Each was evaluated and deferred because inkle documents little more than
 the signature — whether an observer fires on assignment or only on
 change is left unstated. An application can already reread variables each
 turn. Better documentation or a real use case reopens the question.
+
+**Every story gets a built-in `divert_to_knot(knot_path)` EXTERNAL, for a
+divert target built from a string computed at runtime.** This is an
+engine extension, not standard Ink: inkle's own mechanism for storing a
+divert as a variable (`VAR x = -> a_knot`, "Advanced: storing diverts as
+variables" in `WritingWithInk.md`) only holds a target already known at
+compile time, with no way to turn an arbitrary runtime string into one.
+`InkRuntimeState` binds the name itself — `ink_engine.engine.
+resolve_divert_target(root, knot_path)` — so it is present on every
+session regardless of what an application's own bindings supply, and an
+application binding under the same name does not replace it. `knot_path`
+is `"a_knot"` or `"a_knot.a_stitch"`, exactly as it would appear after
+`->`; an unresolvable path raises `UnknownDivertTargetError`
+(`StoryRuntimeError`'s subclass for a name that would otherwise divert
+nowhere). A story declares it like any other EXTERNAL, with an Ink
+fallback:
+
+```ink
+-> go("a_destination")
+
+EXTERNAL divert_to_knot(knot_path)
+=== function divert_to_knot(knot_path) ===
+~ return -> nowhere_to_go
+
+=== go(knot_path) ===
+~ temp target = divert_to_knot(knot_path)
+-> target
+
+=== a_destination ===
+You arrive.
+-> DONE
+
+=== nowhere_to_go ===
+This location has no scene yet.
+-> DONE
+```
+
+Running this prints:
+
+```
+You arrive.
+```
+
+`go("a_destination")` passes the knot name into `divert_to_knot`, which
+resolves it against the story's own root and returns a real divert
+target; `-> target` then follows it, exactly as `-> a_destination`
+written directly would. The same pattern lets an application's own
+plugin binding supply the knot name (looked up from wherever it stores
+one per location) while `divert_to_knot` does the actual resolution, so
+no consumer needs its own copy of `resolve_path()` to do this.
 
 **A misspelled function name degrades instead of raising.** Where the
 reference runtime reports an unresolvable function call as a story error,
