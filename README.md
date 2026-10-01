@@ -4,8 +4,7 @@
 **Last Updated:** 2026-09-20  
 **Last Reviewed:** 2026-09-20
 
-A standalone Ink interactive-fiction interpreter and plugin engine, with no
-web framework or database of its own.
+A standalone Ink interactive-fiction interpreter and plugin engine.
 
 `ink-engine` runs compiled Ink stories (`.ink.json`/`.inkj`) and provides a minimal
 plugin contract for applications (games) to extend the interpreter with their
